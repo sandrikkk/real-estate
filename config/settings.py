@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""
 
+    # Proxy / ScraperAPI (For Cloud Runners / GitHub Actions)
+    SCRAPER_API_KEY: str = ""
+
     # Polling & Performance
     CHECK_INTERVAL_SECONDS: int = 180
     REQUEST_TIMEOUT_SECONDS: int = 15

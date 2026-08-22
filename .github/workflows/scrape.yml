@@ -33,6 +33,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
         run: |
           python tests/test_dry_run.py
 
@@ -41,5 +42,10 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
-          git commit -m "Auto-update seen properties database [skip ci]" || echo "No new properties to commit"
-          git push
+          if ! git diff --staged --quiet; then
+            git commit -m "Auto-update seen properties database [skip ci]"
+            git pull --rebase origin master
+            git push origin master
+          else
+            echo "No new database changes to commit"
+          fi

@@ -1,7 +1,9 @@
+import urllib.parse
 from abc import ABC, abstractmethod
 from typing import List, Optional
 from curl_cffi.requests import AsyncSession
 from core.models import PropertyListing, SearchFilters
+from config import settings
 
 
 class BaseScraper(ABC):
@@ -25,9 +27,17 @@ class BaseScraper(ABC):
         return AsyncSession(impersonate="chrome124")
 
     async def fetch_html(self, url: str) -> Optional[str]:
+        target_url = url
+        req_headers = self.headers
+        timeout = self.timeout
+        if settings.SCRAPER_API_KEY:
+            target_url = f"https://api.scraperapi.com?api_key={settings.SCRAPER_API_KEY}&url={urllib.parse.quote_plus(url)}"
+            req_headers = {}
+            timeout = max(self.timeout, 45)
+
         try:
             async with AsyncSession(impersonate="chrome124") as session:
-                response = await session.get(url, headers=self.headers, timeout=self.timeout)
+                response = await session.get(target_url, headers=req_headers if req_headers else None, timeout=timeout)
                 if response.status_code == 200:
                     return response.text
                 else:
