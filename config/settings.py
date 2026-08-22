@@ -14,13 +14,13 @@ class Settings(BaseSettings):
     )
 
     # NTFY Notification Settings
-    NTFY_TOPIC: str = ""                       # e.g., "my_tbilisi_apartments_123"
-    NTFY_SERVER_URL: str = "https://ntfy.sh"   # Default ntfy.sh public server or self-hosted
-    NTFY_AUTH_TOKEN: Optional[str] = None     # Optional Bearer token for protected topics
+    NTFY_TOPIC: str = "apartments_tbilisi_notification"
+    NTFY_SERVER_URL: str = "https://ntfy.sh"
+    NTFY_AUTH_TOKEN: Optional[str] = None
 
-    # Telegram Bot (Optional fallback)
-    TELEGRAM_BOT_TOKEN: str = ""
-    TELEGRAM_CHAT_ID: str = ""
+    # Telegram Bot
+    TELEGRAM_BOT_TOKEN: str = "REDACTED_TELEGRAM_BOT_TOKEN"
+    TELEGRAM_CHAT_ID: str = "REDACTED_CHAT_ID"
 
     # Proxy / Cloudflare Worker / ScraperAPI (For Cloud Runners / GitHub Actions)
     CLOUDFLARE_PROXY_URL: str = "https://your-worker.your-subdomain.workers.dev"
