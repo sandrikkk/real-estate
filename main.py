@@ -45,11 +45,10 @@ class RealEstateOrchestrator:
         print("[Init]: Initializing Market Analytics Engine...")
         self.analytics = MarketAnalytics()
 
-        print("[Init]: Initializing Scraper Modules (MyHome.ge, SS.ge, Area.ge)...")
+        print("[Init]: Initializing Scraper Modules (MyHome.ge, SS.ge)...")
         self.scrapers = [
             MyHomeScraper(timeout=settings.REQUEST_TIMEOUT_SECONDS),
             SSGeScraper(timeout=settings.REQUEST_TIMEOUT_SECONDS),
-            AreaGeScraper(timeout=settings.REQUEST_TIMEOUT_SECONDS),
         ]
 
         print(f"[Init]: Initializing NTFY Notification Engine (Topic: '{settings.NTFY_TOPIC or 'Console Mode'}')...")
