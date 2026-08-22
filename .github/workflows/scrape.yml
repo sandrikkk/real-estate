@@ -1,10 +1,9 @@
 name: Real Estate Scraper Cron
 
 on:
-  schedule:
-    # ეშვება ყოველ 10 წუთში
-    - cron: '*/10 * * * *'
-  workflow_dispatch: # საშუალებას გაძლევთ ხელითაც გაუშვათ Actions ტაბიდან
+  # schedule:
+  #   - cron: '*/10 * * * *'
+  workflow_dispatch: # საშუალებას გაძლევთ საჭიროებისას ხელით გაუშვათ Actions ტაბიდან
 
 permissions:
   contents: write # საჭიროა ბაზის დასამახსოვრებლად (commit/push)
