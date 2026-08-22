@@ -9,17 +9,24 @@ class BaseScraper(ABC):
         self.name = name
         self.timeout = timeout
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "ka,en-US;q=0.9,en;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": "ka-GE,ka;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Sec-Ch-Ua": '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
         }
 
     async def _get_session(self) -> AsyncSession:
-        return AsyncSession(impersonate="chrome120")
+        return AsyncSession(impersonate="chrome124")
 
     async def fetch_html(self, url: str) -> Optional[str]:
         try:
-            async with AsyncSession(impersonate="chrome120") as session:
+            async with AsyncSession(impersonate="chrome124") as session:
                 response = await session.get(url, headers=self.headers, timeout=self.timeout)
                 if response.status_code == 200:
                     return response.text

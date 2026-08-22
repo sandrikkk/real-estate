@@ -26,7 +26,7 @@ class MyHomeScraper(BaseScraper):
             parsed = urllib.parse.urlsplit(filters.myhome_url)
             query_params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
             query_params["page"] = [str(page)]
-            new_query = urllib.parse.urlencode(query_params, doseq=True)
+            new_query = urllib.parse.urlencode(query_params, doseq=True, safe=",")
             return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
 
         deal_path = "iyideba" if filters.deal_type == "sale" else "qiravdeba"
