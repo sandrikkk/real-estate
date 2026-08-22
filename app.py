@@ -26,6 +26,8 @@ def add_log(message: str):
 
 def run_worker_loop():
     global orchestrator, last_run_stats, is_running
+    # Small initial pause to allow Gradio server to bind and complete HF proxy health-check
+    time.sleep(10)
     add_log("🚀 Background 24/7 Polling Engine Initialized...")
     
     # Run async event loop in this background worker thread
