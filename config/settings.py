@@ -22,7 +22,8 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""
 
-    # Proxy / ScraperAPI (For Cloud Runners / GitHub Actions)
+    # Proxy / Cloudflare Worker / ScraperAPI (For Cloud Runners / GitHub Actions)
+    CLOUDFLARE_PROXY_URL: str = "https://your-worker.your-subdomain.workers.dev"
     SCRAPER_API_KEY: str = ""
 
     # Polling & Performance

@@ -30,7 +30,11 @@ class BaseScraper(ABC):
         target_url = url
         req_headers = self.headers
         timeout = self.timeout
-        if settings.SCRAPER_API_KEY:
+        if settings.CLOUDFLARE_PROXY_URL:
+            target_url = f"{settings.CLOUDFLARE_PROXY_URL.rstrip('/')}/?url={urllib.parse.quote_plus(url)}"
+            req_headers = {}
+            timeout = max(self.timeout, 30)
+        elif settings.SCRAPER_API_KEY:
             target_url = f"https://api.scraperapi.com?api_key={settings.SCRAPER_API_KEY}&url={urllib.parse.quote_plus(url)}"
             req_headers = {}
             timeout = max(self.timeout, 45)
