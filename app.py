@@ -81,21 +81,19 @@ def manual_scan():
 # Simple Gradio UI
 with gr.Blocks(title="Tbilisi Real Estate Radar 24/7") as demo:
     gr.Markdown("# 🏢 Tbilisi Real Estate Radar (24/7 Cloud Tracker)")
-    gr.Markdown("Real-time automated scraper for MyHome.ge and SS.ge. Sends instant alerts to Telegram & NTFY when new apartments appear.")
+    gr.Markdown("Real-time automated scraper for MyHome.ge and SS.ge. Sends instant alerts to Telegram when new apartments appear.")
     
-    with gr.Row():
-        status_md = gr.Markdown()
+    status_md = gr.Markdown(value="### 🟢 System Status: Active (24/7 Background Polling)")
     
     with gr.Row():
         scan_btn = gr.Button("🔄 Run Instant Check Now", variant="primary")
         refresh_btn = gr.Button("📋 Refresh Logs")
     
-    with gr.Row():
-        logs_box = gr.Textbox(label="Live Activity & Alert Logs", lines=14, max_lines=25)
+    logs_box = gr.Textbox(value="Initializing live activity logs...", label="Live Activity & Alert Logs", lines=14, max_lines=25)
     
     demo.load(fn=get_live_status, outputs=[status_md, logs_box])
     refresh_btn.click(fn=get_live_status, outputs=[status_md, logs_box])
     scan_btn.click(fn=manual_scan, outputs=[status_md, logs_box])
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860, show_api=False)
+    demo.launch()
