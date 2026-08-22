@@ -18,15 +18,15 @@ class TestEndToEndSystemFlow(unittest.TestCase):
         self.temp_db.close()
         self.db = DatabaseEngine(self.temp_db.name)
 
-        # Filters configured according to user specifications
+        # Filters configured according to user specifications (40m2+, any room count)
         self.filters = SearchFilters(
             city="თბილისი",
             deal_type="sale",
             price_min_usd=45000,
             price_max_usd=75000,
-            area_min_m2=30,
+            area_min_m2=40,
             area_max_m2=70,
-            rooms=[1],
+            rooms=None,
             owner_type="physical",
             target_districts=["დიღომი", "დიდი დიღომი", "საბურთალო", "ვაკე", "გლდანი", "დიდუბე", "თემქა"],
             stop_words=["დაგირავება", "იპოთეკური"]
@@ -41,7 +41,7 @@ class TestEndToEndSystemFlow(unittest.TestCase):
 
     def test_new_matching_listing_triggers_alert_and_saves_to_db(self):
         """
-        Scenario 1: A new 1-room apartment in Dighomi matching price ($60,000)
+        Scenario 1: A new 2-room apartment in Dighomi matching price ($60,000)
         and area (45m²) is posted.
         -> Must NOT be seen previously.
         -> Must MATCH filters.
@@ -51,11 +51,11 @@ class TestEndToEndSystemFlow(unittest.TestCase):
             id="myhome_999001",
             source="myhome",
             source_id="999001",
-            title="იყიდება 1 ოთახიანი ბინა დიდ დიღომში",
+            title="იყიდება 2 ოთახიანი ბინა დიდ დიღომში",
             price_usd=60000,
             area_m2=45,
             district="დიდი დიღომი",
-            rooms=1,
+            rooms=2,
             url="https://www.myhome.ge/ka/pr/999001"
         )
 
@@ -87,11 +87,11 @@ class TestEndToEndSystemFlow(unittest.TestCase):
             id="ss_ge_888002",
             source="ss_ge",
             source_id="888002",
-            title="1 ოთახიანი ბინა საბურთალოზე",
+            title="ბინა საბურთალოზე",
             price_usd=65000,
-            area_m2=38,
+            area_m2=48,
             district="საბურთალო",
-            rooms=1,
+            rooms=2,
             url="https://home.ss.ge/ka/udzravi-qoneba/l/888002"
         )
 
@@ -104,7 +104,7 @@ class TestEndToEndSystemFlow(unittest.TestCase):
 
     def test_non_matching_listing_filtered_out_cleanly(self):
         """
-        Scenario 3: A listing with 2 rooms or price outside range ($90,000)
+        Scenario 3: A listing with area < 40m2 or price outside range ($95,000)
         -> Filter must reject it.
         """
         too_expensive = PropertyListing(
@@ -120,18 +120,18 @@ class TestEndToEndSystemFlow(unittest.TestCase):
         )
         self.assertFalse(self.filter_engine.matches(too_expensive))
 
-        wrong_rooms = PropertyListing(
+        too_small_area = PropertyListing(
             id="myhome_777004",
             source="myhome",
             source_id="777004",
-            title="2 ოთახიანი ბინა",
-            price_usd=60000,
-            area_m2=50,
-            rooms=2,
+            title="პატარა ბინა (35მ2)",
+            price_usd=50000,
+            area_m2=35,
+            rooms=1,
             district="საბურთალო",
             url="https://www.myhome.ge/ka/pr/777004"
         )
-        self.assertFalse(self.filter_engine.matches(wrong_rooms))
+        self.assertFalse(self.filter_engine.matches(too_small_area))
 
         wrong_district = PropertyListing(
             id="myhome_777005",

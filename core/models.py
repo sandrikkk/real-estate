@@ -15,7 +15,7 @@ class SearchFilters(BaseModel):
     deal_type: Literal["sale", "rent"] = "sale"
     price_min_usd: Optional[float] = 45000
     price_max_usd: Optional[float] = 75000
-    area_min_m2: Optional[float] = 30
+    area_min_m2: Optional[float] = 40
     area_max_m2: Optional[float] = 70
     price_per_m2_max_usd: Optional[float] = None
     rooms: Optional[List[int]] = None
