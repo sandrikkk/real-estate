@@ -113,10 +113,12 @@ class RealEstateOrchestrator:
             # 4. Save to Database
             self.db.save_listing(listing)
 
-            # 5. Dispatch Alert via NTFY (and optional Telegram)
-            sent = await self.ntfy_notifier.send_notification(listing)
+            # 5. Dispatch Alert via Telegram (Primary)
+            sent = False
             if self.telegram_notifier:
-                await self.telegram_notifier.send_notification(listing)
+                sent = await self.telegram_notifier.send_notification(listing)
+            elif self.ntfy_notifier and self.ntfy_notifier.topic:
+                sent = await self.ntfy_notifier.send_notification(listing)
 
             if sent:
                 self.db.mark_as_notified(listing.id)
