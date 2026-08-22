@@ -13,12 +13,15 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
-    # NTFY Notification Settings
-    NTFY_TOPIC: str = "apartments_tbilisi_notification"
+    # NTFY Notification Settings (Disabled / Commented out)
+    # NTFY_TOPIC: str = ""
+    # NTFY_SERVER_URL: str = "https://ntfy.sh"
+    # NTFY_AUTH_TOKEN: Optional[str] = None
+    NTFY_TOPIC: str = ""
     NTFY_SERVER_URL: str = "https://ntfy.sh"
     NTFY_AUTH_TOKEN: Optional[str] = None
 
-    # Telegram Bot
+    # Telegram Bot (Primary Notifier)
     TELEGRAM_BOT_TOKEN: str = "REDACTED_TELEGRAM_BOT_TOKEN"
     TELEGRAM_CHAT_ID: str = "REDACTED_CHAT_ID"
 

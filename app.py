@@ -61,8 +61,7 @@ def get_live_status():
         f"- **Last Run Time:** `{last_run_stats['time']}`\n"
         f"- **Last Cycle Stats:** `{last_run_stats['stats']}`\n"
         f"- **Filter Criteria:** `$45,000 – $75,000` | `40 – 70 m²` | `Physical Owner`\n"
-        f"- **Telegram Alerts:** `Active (Chat ID: {settings.TELEGRAM_CHAT_ID or 'Configured'})`\n"
-        f"- **NTFY Alerts:** `Active (Topic: {settings.NTFY_TOPIC or 'Default'})`\n"
+        f"- **Telegram Bot:** `Active (@tbilisi_real_estate1_bot)`\n"
         f"- **Cloudflare Proxy:** `Active (0.1s Fast Fetch)`"
     )
     return summary_text, logs_text
