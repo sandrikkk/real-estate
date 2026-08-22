@@ -1,3 +1,14 @@
+---
+title: Tbilisi Real Estate Radar 24/7
+emoji: 🏢
+colorFrom: blue
+colorTo: indigo
+sdk: gradio
+sdk_version: 4.44.0
+app_file: app.py
+pinned: false
+---
+
 # Real Estate Market Tracker & NTFY Notifier 🏢
 
 Autonomous asynchronous Python system designed to scrape, aggregate, deduplicate, filter, and alert on real estate listings from major Georgian portals (**MyHome.ge**, **SS.ge**, **Area.ge**) via **NTFY.sh** push notifications.
