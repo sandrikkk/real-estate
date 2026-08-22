@@ -77,8 +77,8 @@ class RealEstateOrchestrator:
         notified_count = 0
 
         for listing in all_listings:
-            # 1. Deduplication Check
-            if self.db.is_seen(listing.id):
+            # 1. Deduplication Check (ID & Fingerprint)
+            if self.db.is_seen(listing.id, listing):
                 continue
 
             new_count += 1

@@ -60,11 +60,33 @@ class DatabaseEngine:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_properties_is_notified ON properties(is_notified)")
             conn.commit()
 
-    def is_seen(self, listing_id: str) -> bool:
+    def is_seen(self, listing_id: str, listing: Optional[PropertyListing] = None) -> bool:
         with self._connection() as conn:
             cursor = conn.cursor()
+            # 1. Exact ID check
             cursor.execute("SELECT 1 FROM properties WHERE id = ?", (listing_id,))
-            return cursor.fetchone() is not None
+            if cursor.fetchone() is not None:
+                return True
+
+            # 2. Cross-portal / Reposted duplicate fingerprint check
+            if listing and listing.district and listing.area_m2 and listing.price_usd:
+                cursor.execute("""
+                    SELECT 1 FROM properties 
+                    WHERE district = ? 
+                      AND abs(price_usd - ?) <= 200
+                      AND abs(area_m2 - ?) <= 0.5
+                      AND (floor = ? OR floor IS NULL OR ? = '')
+                """, (
+                    listing.district,
+                    listing.price_usd,
+                    listing.area_m2,
+                    listing.floor or "",
+                    listing.floor or ""
+                ))
+                if cursor.fetchone() is not None:
+                    return True
+
+        return False
 
     def save_listing(self, listing: PropertyListing) -> bool:
         with self._connection() as conn:
