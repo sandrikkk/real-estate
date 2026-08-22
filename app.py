@@ -96,4 +96,6 @@ with gr.Blocks(title="Tbilisi Real Estate Radar 24/7") as demo:
     scan_btn.click(fn=manual_scan, outputs=[status_md, logs_box])
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.queue().launch(server_name="0.0.0.0", server_port=7860)
+    while True:
+        time.sleep(3600)
