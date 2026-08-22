@@ -1,12 +1,13 @@
-name: Real Estate Scraper Cron
+name: Real Estate Scraper 24/7
 
 on:
-  # schedule:
-  #   - cron: '*/10 * * * *'
-  workflow_dispatch: # საშუალებას გაძლევთ საჭიროებისას ხელით გაუშვათ Actions ტაბიდან
+  schedule:
+    # ეშვება ავტომატურად ყოველ 15 წუთში (24/7/365)
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # საშუალებას გაძლევთ ნებისმიერ დროს ხელითაც გაუშვათ Actions ტაბიდან
 
 permissions:
-  contents: write # საჭიროა ბაზის დასამახსოვრებლად (commit/push)
+  contents: write # საჭიროა ნანახი ბინების ბაზის შესანახად
 
 jobs:
   scrape:
@@ -27,17 +28,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run 1 Scraping Cycle
+      - name: Run 1 Scraping & Telegram Alert Cycle
         env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONUNBUFFERED: "1"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || 'REDACTED_TELEGRAM_BOT_TOKEN' }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || 'REDACTED_CHAT_ID' }}
           CLOUDFLARE_PROXY_URL: https://your-worker.your-subdomain.workers.dev
-          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
         run: |
-          python tests/test_dry_run.py
+          python main.py --once
 
-      - name: Commit & Push Seen Listings DB
+      - name: Commit & Push Seen Listings Database
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Auto-update seen properties database [skip ci]"

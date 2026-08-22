@@ -166,6 +166,12 @@ class RealEstateOrchestrator:
 async def main():
     orchestrator = RealEstateOrchestrator()
 
+    if "--once" in sys.argv:
+        print("[Run-Once Mode]: Executing 1 full market scan & alert cycle...")
+        stats = await orchestrator.run_cycle()
+        print(f"[Finished]: Fetched: {stats.get('total_fetched', 0)} | New: {stats.get('new_listings', 0)} | Matched: {stats.get('matched_filters', 0)} | Alerts: {stats.get('notifications_sent', 0)}")
+        return
+
     # Graceful shutdown handler for signals
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
