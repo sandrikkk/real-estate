@@ -30,7 +30,6 @@ from core.analytics import MarketAnalytics
 from scrapers.myhome import MyHomeScraper
 from scrapers.ss_ge import SSGeScraper
 from scrapers.area_ge import AreaGeScraper
-from notifier.ntfy_notifier import NtfyNotifier
 from notifier.telegram_bot import TelegramNotifier
 
 
@@ -51,22 +50,12 @@ class RealEstateOrchestrator:
             SSGeScraper(timeout=settings.REQUEST_TIMEOUT_SECONDS),
         ]
 
-        print(f"[Init]: Initializing NTFY Notification Engine (Topic: '{settings.NTFY_TOPIC or 'Console Mode'}')...")
-        self.ntfy_notifier = NtfyNotifier(
-            topic=settings.NTFY_TOPIC,
-            server_url=settings.NTFY_SERVER_URL,
-            auth_token=settings.NTFY_AUTH_TOKEN,
+        print(f"[Init]: Initializing Telegram Bot Notifier (Chat ID: {settings.TELEGRAM_CHAT_ID})...")
+        self.telegram_notifier = TelegramNotifier(
+            bot_token=settings.TELEGRAM_BOT_TOKEN,
+            chat_id=settings.TELEGRAM_CHAT_ID,
             enable_console=settings.ENABLE_CONSOLE_NOTIFICATIONS
         )
-
-        self.telegram_notifier = None
-        if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
-            print("[Init]: Telegram credentials detected, enabling dual Telegram alerts...")
-            self.telegram_notifier = TelegramNotifier(
-                bot_token=settings.TELEGRAM_BOT_TOKEN,
-                chat_id=settings.TELEGRAM_CHAT_ID,
-                enable_console=False
-            )
 
         self.running = True
 
@@ -112,12 +101,10 @@ class RealEstateOrchestrator:
             # 4. Save to Database
             self.db.save_listing(listing)
 
-            # 5. Dispatch Alert via Telegram (Primary)
+            # 5. Dispatch Alert via Telegram Bot
             sent = False
             if self.telegram_notifier:
                 sent = await self.telegram_notifier.send_notification(listing)
-            elif self.ntfy_notifier and self.ntfy_notifier.topic:
-                sent = await self.ntfy_notifier.send_notification(listing)
 
             if sent:
                 self.db.mark_as_notified(listing.id)
