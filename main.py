@@ -91,11 +91,18 @@ class RealEstateOrchestrator:
 
             matched_count += 1
 
-            # 3. Market Analytics & Bargain Evaluation
+            # 3. Market Analytics & Bargain / Valuation Scale Evaluation
+            myhome_label = None
+            if listing.source == "myhome":
+                myhome_scraper = next((s for s in self.scrapers if s.name == "MyHome.ge"), None)
+                if myhome_scraper and hasattr(myhome_scraper, "fetch_price_label"):
+                    myhome_label = await myhome_scraper.fetch_price_label(listing.source_id)
+
             self.analytics.evaluate_listing(
                 listing,
                 db=self.db,
-                discount_threshold_pct=settings.BARGAIN_DISCOUNT_THRESHOLD_PCT
+                discount_threshold_pct=settings.BARGAIN_DISCOUNT_THRESHOLD_PCT,
+                myhome_price_label=myhome_label
             )
 
             # 4. Save to Database
@@ -124,10 +131,10 @@ class RealEstateOrchestrator:
 
     async def start(self):
         print("=" * 60)
-        print("  Real Estate Market Tracker & NTFY Notifier Running")
-        print(f"  NTFY Topic:     {settings.NTFY_TOPIC or '(Not set - printing to console)'}")
-        print(f"  Check Interval: {settings.CHECK_INTERVAL_SECONDS} seconds")
-        print(f"  Database Path:  {settings.DATABASE_PATH}")
+        print("  Real Estate Market Tracker & Telegram Notifier Running")
+        print(f"  Telegram Chat ID: {settings.TELEGRAM_CHAT_ID or '(Console only)'}")
+        print(f"  Check Interval:   {settings.CHECK_INTERVAL_SECONDS} seconds")
+        print(f"  Database Path:    {settings.DATABASE_PATH}")
         print("=" * 60)
 
         while self.running:
@@ -152,6 +159,15 @@ class RealEstateOrchestrator:
 
 async def main():
     orchestrator = RealEstateOrchestrator()
+
+    if "--stats" in sys.argv or "--report" in sys.argv:
+        print("\n[Market Intelligence]: Computing comprehensive statistics...")
+        report = orchestrator.analytics.format_market_report(orchestrator.db)
+        print("\n" + report + "\n")
+        if "--telegram" in sys.argv:
+            await orchestrator.telegram_notifier.send_market_report(report)
+            print("[Telegram]: Market report sent successfully.")
+        return
 
     if "--once" in sys.argv:
         print("[Run-Once Mode]: Executing 1 full market scan & alert cycle...")

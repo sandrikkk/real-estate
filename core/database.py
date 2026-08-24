@@ -143,21 +143,57 @@ class DatabaseEngine:
             return None
         with self._connection() as conn:
             cursor = conn.cursor()
+            # Clean filtering: only realistic $/m2 between 350 and 6000 USD
             cursor.execute("""
-                SELECT price_per_m2 FROM properties 
-                WHERE district = ? AND price_per_m2 > 100 AND price_per_m2 < 10000
-            """, (district,))
+                SELECT price_per_m2, rooms, bedrooms FROM properties 
+                WHERE (district = ? OR subdistrict = ?) 
+                  AND price_per_m2 >= 350 AND price_per_m2 <= 6000
+            """, (district, district))
             rows = cursor.fetchall()
-            if not rows or len(rows) < 3:
+            if not rows or len(rows) < 2:
                 return None
+
             prices = [r["price_per_m2"] for r in rows]
+            sorted_prices = sorted(prices)
+            n = len(sorted_prices)
+
+            # Robust IQR calculation
+            if n >= 4:
+                try:
+                    q = statistics.quantiles(sorted_prices, n=4, method="inclusive")
+                    p25, p75 = round(q[0], 2), round(q[2], 2)
+                except Exception:
+                    p25 = round(sorted_prices[int(n * 0.25)], 2)
+                    p75 = round(sorted_prices[int(n * 0.75)], 2)
+            else:
+                p25 = round(sorted_prices[0], 2)
+                p75 = round(sorted_prices[-1], 2)
+
+            std_dev = round(statistics.stdev(prices), 2) if n >= 2 else 0.0
+
+            # Compute medians by room count (e.g. 1-room, 2-room, 3-room)
+            room_groups: Dict[int, list] = {}
+            for r in rows:
+                room_cnt = r["rooms"] or r["bedrooms"]
+                if room_cnt and 1 <= room_cnt <= 6:
+                    room_groups.setdefault(room_cnt, []).append(r["price_per_m2"])
+
+            room_medians: Dict[int, float] = {}
+            for r_cnt, r_prices in room_groups.items():
+                if len(r_prices) >= 1:
+                    room_medians[r_cnt] = round(statistics.median(r_prices), 2)
+
             return DistrictPriceStats(
                 district=district,
-                sample_count=len(prices),
-                avg_price_per_m2=round(sum(prices) / len(prices), 2),
+                sample_count=n,
+                avg_price_per_m2=round(sum(prices) / n, 2),
                 median_price_per_m2=round(statistics.median(prices), 2),
+                iqr_p25=p25,
+                iqr_p75=p75,
                 min_price_per_m2=round(min(prices), 2),
-                max_price_per_m2=round(max(prices), 2)
+                max_price_per_m2=round(max(prices), 2),
+                std_dev=std_dev,
+                room_medians=room_medians
             )
 
     def get_all_district_stats(self) -> Dict[str, DistrictPriceStats]:
@@ -171,3 +207,28 @@ class DatabaseEngine:
             if s:
                 stats[d] = s
         return stats
+
+    def get_market_overview_summary(self) -> dict:
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) as total, SUM(is_bargain) as bargains FROM properties")
+            row = cursor.fetchone()
+            total_count = row["total"] if row else 0
+            bargains_count = row["bargains"] if row and row["bargains"] else 0
+
+            cursor.execute("""
+                SELECT price_per_m2 FROM properties 
+                WHERE price_per_m2 >= 350 AND price_per_m2 <= 6000
+            """)
+            all_prices = [r["price_per_m2"] for r in cursor.fetchall()]
+
+        city_median = round(statistics.median(all_prices), 2) if all_prices else 0.0
+        city_avg = round(sum(all_prices) / len(all_prices), 2) if all_prices else 0.0
+
+        return {
+            "total_listings": total_count,
+            "total_bargains": bargains_count,
+            "city_median_m2": city_median,
+            "city_avg_m2": city_avg,
+            "district_stats": self.get_all_district_stats()
+        }

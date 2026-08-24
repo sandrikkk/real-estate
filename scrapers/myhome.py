@@ -208,3 +208,26 @@ class MyHomeScraper(BaseScraper):
                     all_listings.append(normalized)
 
         return all_listings
+
+    async def fetch_price_label(self, source_id: str) -> Optional[dict]:
+        """
+        Fetches the official MyHome price valuation scale metadata for a listing
+        directly from the detail statement payload.
+        """
+        try:
+            url = f"https://www.myhome.ge/ka/pr/{source_id}"
+            html = await self.fetch_html(url)
+            if not html:
+                return None
+            match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+            if not match:
+                return None
+            data = json.loads(match.group(1))
+            queries = data.get("props", {}).get("pageProps", {}).get("dehydratedState", {}).get("queries", [])
+            for q in queries:
+                if "details" in str(q.get("queryKey")):
+                    statement = q.get("state", {}).get("data", {}).get("data", {}).get("statement", {})
+                    return statement.get("price_label")
+        except Exception as e:
+            print(f"[MyHome Price Label Error for {source_id}]: {e}")
+        return None
