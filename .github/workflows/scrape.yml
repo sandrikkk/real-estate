@@ -38,8 +38,17 @@ jobs:
           python main.py --once
 
       - name: Commit & Push Seen Listings Database
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "Auto-update seen properties database [skip ci]"
-          file_pattern: "data/properties.db"
-          skip_dirty_check: false
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin master
+          git pull --rebase origin master || true
+          if [ -f data/properties.db ]; then
+            git add -f data/properties.db
+            if ! git diff --staged --quiet; then
+              git commit -m "Auto-update seen properties database [skip ci]"
+              git push origin master
+            else
+              echo "No database changes to commit."
+            fi
+          fi
