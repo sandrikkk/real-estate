@@ -75,9 +75,15 @@ class RealEstateOrchestrator:
         new_count = 0
         matched_count = 0
         notified_count = 0
+        seen_in_batch = set()
 
         for listing in all_listings:
-            # 1. Deduplication Check (ID & Fingerprint)
+            # In-memory batch deduplication
+            if listing.id in seen_in_batch:
+                continue
+            seen_in_batch.add(listing.id)
+
+            # 1. Database Deduplication Check (ID & Fingerprint)
             if self.db.is_seen(listing.id, listing):
                 continue
 
