@@ -29,6 +29,10 @@ class SSGeScraper(BaseScraper):
             params.append(f"priceFrom={int(filters.price_min_usd)}")
         if filters.price_max_usd is not None:
             params.append(f"priceTo={int(filters.price_max_usd)}")
+        if filters.area_min_m2 is not None:
+            params.append(f"totalAreaFrom={int(filters.area_min_m2)}")
+        if filters.area_max_m2 is not None:
+            params.append(f"totalAreaTo={int(filters.area_max_m2)}")
 
         if params:
             url += "&" + "&".join(params)
