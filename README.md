@@ -9,15 +9,15 @@ The entire pipeline runs serverless 24/7 on **GitHub Actions** with zero hosting
 ## 🌟 Key Features
 
 1. **Direct TNET / MyHome REST API Integration**:
-   - Queries `https://api-statements.tnet.ge/v1/statements` directly with `X-Website-Key: myhome` and modern TLS fingerprint impersonation (`curl_cffi` Chrome 124).
-   - Completely bypasses Cloudflare bot protection and anti-scraping challenges while retrieving structured JSON payloads in under 2 seconds.
+   - Directly queries `https://api-statements.tnet.ge/v1/statements` using the required `X-Website-Key: myhome` header and modern TLS fingerprint impersonation (`curl_cffi` Chrome 124).
+   - Bypasses Cloudflare bot detection and anti-scraping challenges while fetching structured JSON payloads in under 2 seconds.
    - Secondary fallback to SSR HTML extraction via `__NEXT_DATA__` dehydrated state.
 
 2. **Defensive Post-Processing & Filtering**:
    - **Price & Area Boundaries**: $48,000 – $72,000 USD | 48 – 62 m² | Minimum 2 rooms (1 bedroom + living room/studio; studio single-room layouts excluded).
-   - **100% Under Construction Exclusion**: Immediate drop for status `მშენებარე` (`status_id == 3` or keywords such as „ჩაბარდება“, „2027“, „2028“, „2029“). Only completed / delivered buildings accepted.
-   - **Black Frame (შავი კარკასი) Exclusion**: Dropped immediately (`condition_id == 6`).
-   - **Frame Price Ceiling**: Green Frame (მწვანე კარკასი) and White Frame (თეთრი კარკასი) permitted **ONLY if price $\le \$54,000$** (leaving budget headroom for finishing works). Discarded if $> \$54,000$.
+   - **100% Under Construction Exclusion**: Immediate drop for status "Under Construction" (`status_id == 3` or keywords like "completion in 2027/2028"). Only completed / delivered buildings accepted.
+   - **Black Frame Exclusion**: Dropped immediately (`condition_id == 6`).
+   - **Frame Price Ceiling**: Green Frame and White Frame permitted **ONLY if price $\le \$54,000$** (leaving budget headroom for finishing works). Discarded if $> \$54,000$.
    - **Turnkey / Renovated**: Permitted up to $\le \$72,000$.
 
 3. **Strict Location Safeguards**:
@@ -34,7 +34,7 @@ The entire pipeline runs serverless 24/7 on **GitHub Actions** with zero hosting
 4. **Deal Tagging & Seller Identification**:
    - `🚨 HOT DEAL (RENOVATED)`: Fully renovated apartment with price per sq.m $\le \$1,350/m²$.
    - `🔥 VALUE FRAME (<$54k)`: Green/White Frame priced $\le \$54,000$ with price per sq.m $\le \$1,050/m²$.
-   - **Seller Verification**: Distinguishes `👤 მესაკუთრე (Owner)` vs `👤 სააგენტო (Agent)` via metadata and description inspection.
+   - **Seller Verification**: Distinguishes `Owner` vs `Agent` via metadata and description inspection.
 
 5. **Stateful Deduplication & GitHub Sync**:
    - SQLite store (`data/properties.db`) tracks processed listing IDs and fingerprint hashes.
@@ -67,11 +67,11 @@ Formatted for fast mobile decision-making:
 🚨 HOT DEAL (RENOVATED)
 💰 $68,000 | 52.0 m² | $1,307/m²
 
-🛠 მდგომარეობა: ახალი გარემონტებული
-📍 ლოკაცია: ისანი | ნადირაშვილის ქ. | 🚇 მ. ისანი
-👤 მესაკუთრე (Owner) | 🏢 სართული: 4/9 | 🚪 2 ოთახი, 1 საძინებელი
+🛠 Condition: Newly Renovated
+📍 Location: Isani | Nadirashvili St. | 🚇 Metro Isani
+👤 Owner | 🏢 Floor: 4/9 | 🚪 2 Rooms, 1 Bedroom
 
-🔗 განცხადების ლინკი (MyHome.ge)
+🔗 Listing Link (MyHome.ge)
 📞 +995 599 12 34 56 (One-tap direct calling)
 ```
 
