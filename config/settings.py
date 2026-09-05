@@ -14,11 +14,11 @@ class Settings(BaseSettings):
     )
 
     # Telegram Bot Notifier (Exclusive)
-    TELEGRAM_BOT_TOKEN: str = "REDACTED_TELEGRAM_BOT_TOKEN"
-    TELEGRAM_CHAT_ID: str = "REDACTED_CHAT_ID"
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""
 
     # Proxy / Cloudflare Worker / ScraperAPI (For Cloud Runners / GitHub Actions)
-    CLOUDFLARE_PROXY_URL: str = "https://your-worker.your-subdomain.workers.dev"
+    CLOUDFLARE_PROXY_URL: str = ""
     SCRAPER_API_KEY: str = ""
 
     # Polling & Performance

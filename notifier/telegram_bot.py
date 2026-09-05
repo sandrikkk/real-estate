@@ -1,4 +1,5 @@
 import asyncio
+import html
 import re
 import sys
 from typing import Optional
@@ -41,27 +42,28 @@ class TelegramNotifier:
         # Header: [Tag if applicable] [Price in USD] | [Area sq.m] | [$/sq.m]
         price_info = f"${listing.price_usd:,.0f} | {listing.area_m2} მ² | ${listing.price_per_m2:,.0f}/მ²"
         if listing.deal_tag:
-            header = f"<b>{listing.deal_tag}</b>\n💰 <b>{price_info}</b>"
+            header = f"<b>{html.escape(listing.deal_tag)}</b>\n💰 <b>{price_info}</b>"
         elif listing.is_hot_deal:
             header = f"🚨 <b>HOT DEAL</b>\n💰 <b>{price_info}</b>"
         else:
             header = f"🏠 <b>{price_info}</b>"
 
         # Condition: [ახალი გარემონტებული / მწვანე კარკასი / etc.]
-        condition_line = f"🛠 <b>მდგომარეობა:</b> {listing.condition_name or 'მითითებული არ არის'}"
+        safe_condition = html.escape(listing.condition_name or 'მითითებული არ არის')
+        condition_line = f"🛠 <b>მდგომარეობა:</b> {safe_condition}"
 
         # Location: District / Street / Metro proximity
         loc_parts = []
         if listing.district:
-            loc_parts.append(f"<b>{listing.district}</b>")
+            loc_parts.append(f"<b>{html.escape(listing.district)}</b>")
         elif listing.city:
-            loc_parts.append(f"<b>{listing.city}</b>")
+            loc_parts.append(f"<b>{html.escape(listing.city)}</b>")
 
         if listing.street:
-            loc_parts.append(listing.street)
+            loc_parts.append(html.escape(listing.street))
 
         if listing.metro_station_name:
-            loc_parts.append(f"🚇 <b>მ. {listing.metro_station_name}</b>")
+            loc_parts.append(f"🚇 <b>მ. {html.escape(listing.metro_station_name)}</b>")
 
         location_line = f"📍 <b>ლოკაცია:</b> {' | '.join(loc_parts)}" if loc_parts else "📍 <b>ლოკაცია:</b> თბილისი"
 
@@ -74,10 +76,11 @@ class TelegramNotifier:
             owner_str = "👤 <b>განმცხადებელი</b>"
 
         if listing.floor:
+            safe_floor = html.escape(str(listing.floor))
             if listing.total_floors:
-                floor_str = f"🏢 სართული: <b>{listing.floor}/{listing.total_floors}</b>"
+                floor_str = f"🏢 სართული: <b>{safe_floor}/{listing.total_floors}</b>"
             else:
-                floor_str = f"🏢 სართული: <b>{listing.floor}</b>"
+                floor_str = f"🏢 სართული: <b>{safe_floor}</b>"
         else:
             floor_str = "🏢 სართული: <b>-</b>"
 
@@ -98,11 +101,13 @@ class TelegramNotifier:
             "ss_ge": "SS.ge",
             "area_ge": "Area.ge"
         }.get(listing.source, listing.source.upper())
-        link_line = f'🔗 <a href="{listing.url}">განცხადების ლინკი ({source_name})</a>'
+        safe_url = html.escape(listing.url)
+        link_line = f'🔗 <a href="{safe_url}">განცხადების ლინკი ({source_name})</a>'
 
         # Phone number for one-tap calling
         if listing.phone_number:
             clean_digits = re.sub(r"\D", "", listing.phone_number)
+            safe_phone = html.escape(listing.phone_number)
             if "*" not in listing.phone_number:
                 if len(clean_digits) == 9 and clean_digits.startswith("5"):
                     tel_url = f"+995{clean_digits}"
@@ -110,9 +115,9 @@ class TelegramNotifier:
                     tel_url = f"+{clean_digits}"
                 else:
                     tel_url = clean_digits
-                phone_line = f'📞 <a href="tel:{tel_url}">{listing.phone_number}</a>'
+                phone_line = f'📞 <a href="tel:{tel_url}">{safe_phone}</a>'
             else:
-                phone_line = f'📞 <code>{listing.phone_number}</code> <i>(ნომრის სანახავად გადადით ლინკზე)</i>'
+                phone_line = f'📞 <code>{safe_phone}</code> <i>(ნომრის სანახავად გადადით ლინკზე)</i>'
         else:
             phone_line = '📞 <i>ტელეფონი მითითებულია განცხადებაში</i>'
 
@@ -126,8 +131,10 @@ class TelegramNotifier:
 
         # Valuation scale / analytics if present
         if listing.valuation_scale_label:
+            safe_scale_vis = html.escape(listing.valuation_scale_visual or '')
+            safe_scale_lbl = html.escape(listing.valuation_scale_label)
             lines.append("")
-            lines.append(f"📈 <b>MyHome შეფასება:</b> {listing.valuation_scale_visual or ''} <b>{listing.valuation_scale_label}</b>")
+            lines.append(f"📈 <b>MyHome შეფასება:</b> {safe_scale_vis} <b>{safe_scale_lbl}</b>")
         elif listing.market_median_price_m2:
             lines.append("")
             lines.append(f"📊 <b>საბაზრო შედარება:</b> უბნის ეტალონი <b>${listing.market_median_price_m2:,.0f}/მ²</b>")
@@ -197,7 +204,7 @@ class TelegramNotifier:
             return True
 
         try:
-            formatted_text = f"<pre>{report_text}</pre>"
+            formatted_text = f"<pre>{html.escape(report_text)}</pre>"
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=formatted_text,
