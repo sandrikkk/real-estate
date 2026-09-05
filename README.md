@@ -1,82 +1,129 @@
----
-title: Tbilisi Real Estate Radar 24/7
-emoji: 🏢
-colorFrom: blue
-colorTo: indigo
-sdk: gradio
-app_file: app.py
-pinned: false
----
+# Real Estate Scraper & Telegram Alert Bot 🏢⚡
 
-# Real Estate Market Tracker & NTFY Notifier 🏢
+ავტონომიური, ასინქრონული Python სისტემა, რომელიც 24/7 რეჟიმში აკონტროლებს თბილისის უძრავი ქონების წამყვან პორტალებს (**MyHome.ge**, **SS.ge**) და მკაცრი ბიზნეს-ფილტრებით გაცხრილულ, სარფიან ბინებს მყისიერად გზავნის **Telegram**-ში.
 
-Autonomous asynchronous Python system designed to scrape, aggregate, deduplicate, filter, and alert on real estate listings from major Georgian portals (**MyHome.ge**, **SS.ge**, **Area.ge**) via **NTFY.sh** push notifications.
+სისტემა სრულად ავტომატიზებულია და ეშვება **GitHub Actions**-ის მეშვეობით (სერვერის ყოველთვიური ხარჯის გარეშე).
 
 ---
 
-## 📱 რატომ NTFY?
+## 🌟 ძირითადი შესაძლებლობები
 
-- **არანაირი ბოტის შექმნა არ გჭირდებათ!**
-- მუშაობს iOS, Android და Web ბრაუზერებზე.
-- აგზავნის ფოტოებს, ფასს, ფართობს, მისამართს, სარფიანობის შეფასებას და პირდაპირ ღილაკს ბინაზე გადასასვლელად.
+1. **Direct TNET / MyHome REST API**:
+   - `scrapers/myhome.py` მიმართავს პირდაპირ `https://api-statements.tnet.ge/v1/statements` ენდფოინთს `X-Website-Key: myhome` ჰედერითა და `curl_cffi` (Chrome 124 TLS Impersonation)-ით.
+   - არ იბლოკება Cloudflare-ით და იღებს უახლეს მონაცემებს სულ რამდენიმე წამში.
+2. **მკაცრი ბიზნეს-ვალიდაცია & გაცხრილვა**:
+   - **ფასი & ფართობი**: $48,000 – $72,000 | 48 – 62 მ² | მინიმუმ 2 ოთახი (1 საძინებელი + მისაღები).
+   - **მშენებარეები (Under Construction)**: 100%-ით დაბლოკილია (`status_id == 3`, „მშენებარე“, „ჩაბარდება 2027/2028“ და სხვ.).
+   - **შავი კარკასი**: ვარდება მომენტალურად (`condition_id == 6`).
+   - **თეთრი / მწვანე კარკასი**: დაშვებულია **მხოლოდ $\le \$54,000$** (რემონტის ხარჯის რეზერვისთვის).
+   - **გარემონტებული (Turnkey)**: დაშვებულია $\le \$72,000$-მდე.
+3. **ლოკაციის მკაცრი ფილტრები**:
+   - **შავი სია (მომენტალური ბლოკი)**: ბერი გაბრიელ სალოსი, ბოგდან ხმელნიცკი, ლილო (დიდი/პატარა), დიდი დიღომი, მუხიანი, აფრიკა, დამპალო, ზემო პლატოები (მე-3/მე-4 პლატო), ორთაჭალის ზემოთ, ფონიჭალა, ორხევი, აეროპორტის დასახლება.
+   - **გლდანი**: დაშვებულია **მხოლოდ I და II მიკრორაიონები** (ან მეტროსთან). 3-დან 8-მდე მიკრორაიონები იბლოკება.
+   - **სამიზნე მეტროსადგურები**: ახმეტელი, სარაჯიშვილი, ღრმაღელე, დიდუბე, გოცირიძე, ნაძალადევი, სადგურის მოედანი, ისანი, სამგორი, დელისი, ვაჟა-ფშაველა, სახელმწიფო უნივერსიტეტი.
+   - **თეთრი სია (უბნები)**: დიდუბე, ნაძალადევი, ჩუღურეთი, ისანი (მეტროს მიმდებარე), გლდანი (1-2 მ/რ).
+4. **ჭკვიანი თეგები & მობილური ალერტი**:
+   - `🚨 HOT DEAL (RENOVATED)`: გარემონტებული ბინა $\le \$1,350/მ²$.
+   - `🔥 VALUE FRAME (<$54k)`: მწვანე/თეთრი კარკასი $\le \$1,050/მ²$.
+   - `👤 მესაკუთრე (Owner)` vs `👤 სააგენტო (Agent)`.
+   - ერთი შეხებით დარეკვის ბმული (`tel:+995...`).
+5. **დუბლიკატების პრევენცია**:
+   - SQLite ბაზა (`data/properties.db`) ინახავს ნანახი ბინების უნიკალურ ID-ებს და ჰეშებს. ბაზა ავტომატურად სინქრონიზდება GitHub-ზე (`[skip ci]`).
 
 ---
 
-## 🏗 Directory & File Structure
+## ⏱ GitHub Actions განრიგი & კვოტის ოპტიმიზაცია
+
+სამუშაო პროცესი გაწერილია [`.github/workflows/scrape.yml`](file:///.github/workflows/scrape.yml)-ში:
+
+| პერიოდი | თბილისის დრო | სიხშირე | გაშვებები/დღეში |
+| :--- | :--- | :--- | :--- |
+| **დღის აქტიური საათები** | **08:00 – 00:00** | **ყოველ 10 წუთში** | 96 გაშვება |
+| **ღამის საათები** | **00:00 – 08:00** | **ყოველ 2 საათში** (02:00, 04:00, 06:00) | 3 გაშვება |
+| **სულ დღეში** | — | — | **99 გაშვება (წუთი)** |
+
+* **თვიური ხარჯი**: ~2,574 – 2,610 წუთი 3,000-წუთიანი ლიმიტიდან (**~87%**).
+* **სარეზერვო ბუფერი**: **~390 წუთი (13%)** გაუთვალისწინებელი შემთხვევებისთვის (ლიმიტს არასოდეს აცდება, ბილინგი არის **$0**).
+
+---
+
+## 📱 Telegram შეტყობინების ნიმუში
 
 ```text
-real_estate_tracker/
-├── config/
-│   ├── __init__.py
-│   ├── settings.py              # NTFY configurations & runtime constants
-│   └── filters.json             # Search criteria & parameter thresholds
-├── core/
-│   ├── __init__.py
-│   ├── models.py                # Pydantic data schemas & DistrictPriceStats
-│   ├── database.py              # SQLite storage & deduplication engine
-│   ├── analytics.py             # Price/m² analytics & bargain/outlier detector
-│   └── filters.py               # Regex stop-words & multi-parameter filter
-├── scrapers/
-│   ├── __init__.py
-│   ├── base.py                  # Abstract base scraper interface (curl_cffi)
-│   ├── myhome.py                # MyHome.ge Next.js __NEXT_DATA__ extractor
-│   ├── ss_ge.py                 # SS.ge Next.js __NEXT_DATA__ extractor
-│   └── area_ge.py               # Area.ge scraper with resilient timeout handling
-├── notifier/
-│   ├── __init__.py
-│   ├── ntfy_notifier.py         # Asynchronous NTFY push notification engine
-│   └── telegram_bot.py          # Telegram bot engine (optional secondary fallback)
-├── data/
-│   └── properties.db            # SQLite database file
-├── main.py                      # Async orchestrator & scheduling loop
-├── requirements.txt
-└── README.md
+🚨 HOT DEAL (RENOVATED)
+💰 $68,000 | 52.0 მ² | $1,307/მ²
+
+🛠 მდგომარეობა: ახალი გარემონტებული
+📍 ლოკაცია: ისანი | ნადირაშვილის ქ. | 🚇 მ. ისანი
+👤 მესაკუთრე (Owner) | 🏢 სართული: 4/9 | 🚪 2 ოთახი, 1 საძინებელი
+
+🔗 განცხადების ლინკი (MyHome.ge)
+📞 +995 599 12 34 56 (ერთი შეხებით დარეკვა)
 ```
 
 ---
 
-## 🚀 სწრაფი დაყენება და გაშვება (1 წუთში)
+## 🏗 პროექტის არქიტექტურა
 
-### 1. NTFY აპლიკაცია თქვენს ტელეფონზე
-1. გადმოწერეთ **ntfy** აპლიკაცია თქვენს მობილურში ([App Store (iOS)](https://apps.apple.com/app/ntfy/id1625396347) ან [Google Play (Android)](https://play.google.com/store/apps/details?id=io.heckel.ntfy)) ან გახსენით ბრაუზერში: [ntfy.sh](https://ntfy.sh).
-2. აპლიკაციაში დააჭირეთ **`+`** (Subscribe to topic) და ჩაწერეთ თქვენთვის სასურველი უნიკალური სახელი, მაგალითად: `tbilisi_flats_9911`
-
-### 2. კონფიგურაცია (`.env`)
-პროექტის საქაღალდეში შექმენით `.env` ფაილი და მიუთითეთ თქვენი Topic-ის სახელი:
-
-```env
-NTFY_TOPIC=tbilisi_flats_9911
-NTFY_SERVER_URL=https://ntfy.sh
-CHECK_INTERVAL_SECONDS=180
-BARGAIN_DISCOUNT_THRESHOLD_PCT=15.0
+```text
+├── config/
+│   ├── filters.json                 # ძიების ცოცხალი კრიტერიუმები & შავი/თეთრი სიები
+│   └── settings.py                  # გარემოს ცვლადები & ტელეგრამის კონფიგურაცია
+├── core/
+│   ├── models.py                    # Pydantic მონაცემთა მოდელები (PropertyListing, SearchFilters)
+│   ├── filters.py                   # ListingFilter მკაცრი ვალიდაციის & თეგინგის ძრავა
+│   ├── database.py                  # SQLite ავტო-მიგრირებადი რეპოზიტორი
+│   └── analytics.py                 # საბაზრო ფასების შედარება & სტატისტიკა
+├── scrapers/
+│   ├── base.py                      # BaseScraper აბსტრაქტული კლასი & TLS სესია
+│   ├── myhome.py                    # TNET statements REST API კლიენტი + SSR fallback
+│   ├── ss_ge.py                     # SS.ge Next.js __NEXT_DATA__ ექსტრაქტორი
+│   └── area_ge.py                   # Area.ge პარსერი
+├── notifier/
+│   └── telegram_bot.py              # მობილურზე მორგებული Telegram შეტყობინებები
+├── .agents/
+│   └── skills/deploy-action/        # ავტომატური დიფლოიმენთის Skill & PowerShell სკრიპტი
+├── tests/                           # 33+ იუნიტ-ტესტი (100% Code Coverage)
+├── .github/workflows/scrape.yml     # 24/7 GitHub Actions განრიგი & ავტო-კომიტი
+└── main.py                          # მთავარი ასინქრონული ორკესტრატორი
 ```
 
-### 3. ფილტრების მორგება
-[`config/filters.json`](file:///c:/Users/user/PycharmProjects/PythonProject1/config/filters.json) ფაილში მიუთითეთ სასურველი ფასის ზღვრები, ფართობი და უბნები.
+---
 
-### 4. გაშვება
+## 🚀 ლოკალური გაშვება & ტესტირება
+
+### 1. დამოკიდებულებების ინსტალაცია
 ```bash
-python main.py
+pip install -r requirements.txt
 ```
 
-ახალი ბინის გამოქვეყნებისთანავე თქვენს ტელეფონზე მომენტალურად მოვა Push შეტყობინება ფოტოთი, დეტალებით და ბმულით! 🔥
+### 2. გარემოს ცვლადები (`.env`)
+```env
+TELEGRAM_BOT_TOKEN="თქვენი_ბოტის_ტოკენი"
+TELEGRAM_CHAT_ID="თქვენი_ჩატის_ID"
+```
+
+### 3. ტესტების გაშვება
+```bash
+python -m unittest discover tests
+```
+
+### 4. ერთი სრული სკანირების ციკლის გაშვება
+```bash
+python main.py --once
+```
+
+---
+
+## 🚢 ავტომატური დიფლოი (Deploy Action)
+
+კოდში ნებისმიერი ცვლილების შეტანის შემდეგ, GitHub-ზე უსაფრთხო დიფლოისთვის გამოიყენეთ ჩაშენებული Skill ან გაუშვით სკრიპტი:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .agents/skills/deploy-action/scripts/deploy.ps1 -CommitMessage "თქვენი აღწერა"
+```
+სკრიპტი თავისით:
+1. უშვებს ყველა იუნიტ-ტესტს (`unittest discover tests`).
+2. აკეთებს ქირურგიულ სტეიჯინგს.
+3. იცავს მონაცემთა ბაზას (`properties.db`) კონფლიქტისგან და აკეთებს `git pull --rebase origin master`-ს.
+4. ატვირთავს (`git push`) და აახლებს GitHub Actions-ის სამუშაო პროცესს.
