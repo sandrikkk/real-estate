@@ -28,7 +28,7 @@ class TestEndToEndSystemFlow(unittest.TestCase):
             area_max_m2=70,
             rooms=None,
             owner_type="physical",
-            target_districts=["დიღომი", "დიდი დიღომი", "საბურთალო", "ვაკე", "გლდანი", "დიდუბე", "თემქა"],
+            target_districts=["დიღომი", "დიდუბე", "საბურთალო", "ვაკე", "გლდანი", "თემქა"],
             stop_words=["დაგირავება", "იპოთეკური"]
         )
         self.filter_engine = ListingFilter(self.filters)
@@ -41,7 +41,7 @@ class TestEndToEndSystemFlow(unittest.TestCase):
 
     def test_new_matching_listing_triggers_alert_and_saves_to_db(self):
         """
-        Scenario 1: A new 2-room apartment in Dighomi matching price ($60,000)
+        Scenario 1: A new 2-room apartment in Didube matching price ($60,000)
         and area (45m²) is posted.
         -> Must NOT be seen previously.
         -> Must MATCH filters.
@@ -51,10 +51,10 @@ class TestEndToEndSystemFlow(unittest.TestCase):
             id="myhome_999001",
             source="myhome",
             source_id="999001",
-            title="იყიდება 2 ოთახიანი ბინა დიდ დიღომში",
+            title="იყიდება 2 ოთახიანი ბინა დიდუბეში",
             price_usd=60000,
             area_m2=45,
-            district="დიდი დიღომი",
+            district="დიდუბე",
             rooms=2,
             url="https://www.myhome.ge/ka/pr/999001"
         )

@@ -97,12 +97,22 @@ class RealEstateOrchestrator:
 
             matched_count += 1
 
-            # 3. Market Analytics & Bargain / Valuation Scale Evaluation
+            # 3. Statement Detail Enrichment & Valuation Scale Evaluation
             myhome_label = None
             if listing.source == "myhome":
                 myhome_scraper = next((s for s in self.scrapers if s.name == "MyHome.ge"), None)
-                if myhome_scraper and hasattr(myhome_scraper, "fetch_price_label"):
-                    myhome_label = await myhome_scraper.fetch_price_label(listing.source_id)
+                if myhome_scraper and hasattr(myhome_scraper, "fetch_statement_details"):
+                    details = await myhome_scraper.fetch_statement_details(listing.source_id)
+                    if details:
+                        if not listing.condition_id and details.get("condition_id"):
+                            listing.condition_id = details.get("condition_id")
+                            cond_obj = details.get("condition")
+                            listing.condition_name = cond_obj.get("name") if isinstance(cond_obj, dict) else (cond_obj or None)
+                        if not listing.phone_number:
+                            from scrapers.myhome import _extract_phone_number
+                            listing.phone_number = _extract_phone_number(details.get("user_phone_number"), details.get("comment") or listing.description)
+                        if details.get("price_label"):
+                            myhome_label = details.get("price_label")
 
             self.analytics.evaluate_listing(
                 listing,
@@ -110,6 +120,12 @@ class RealEstateOrchestrator:
                 discount_threshold_pct=settings.BARGAIN_DISCOUNT_THRESHOLD_PCT,
                 myhome_price_label=myhome_label
             )
+
+            # Re-check is_hot_deal flag in case condition was just enriched
+            if listing.price_per_m2 <= self.filter_engine.filters.hot_deal_price_per_sqm:
+                if listing.condition_id in [1, 2] or (listing.condition_name and "გარემონტებული" in listing.condition_name):
+                    listing.is_hot_deal = True
+                    listing.is_bargain = True
 
             # 4. Save to Database
             self.db.save_listing(listing)
@@ -196,6 +212,11 @@ async def main():
 
 
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
