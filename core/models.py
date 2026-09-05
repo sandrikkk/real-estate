@@ -13,16 +13,38 @@ def utc_now() -> datetime:
 class SearchFilters(BaseModel):
     city: str = "თბილისი"
     deal_type: Literal["sale", "rent"] = "sale"
-    price_min_usd: Optional[float] = 45000
-    price_max_usd: Optional[float] = 65000
-    area_min_m2: Optional[float] = 40
-    area_max_m2: Optional[float] = 60
+    price_min_usd: Optional[float] = 48000
+    price_max_usd: Optional[float] = 72000
+    area_min_m2: Optional[float] = 48
+    area_max_m2: Optional[float] = 62
     price_per_m2_max_usd: Optional[float] = None
     rooms: Optional[List[int]] = None
+    rooms_min: int = 2
     owner_type: Optional[str] = None
     myhome_url: Optional[str] = None
+    target_metro_ids: List[int] = Field(
+        default_factory=lambda: [1, 2, 3, 7, 9, 10, 16, 17, 18, 19, 21, 22]
+    )
+    whitelist_districts: List[str] = Field(
+        default_factory=lambda: ["დიდუბე", "ნაძალადევი", "ჩუღურეთი", "ისანი", "გლდანი"]
+    )
+    blacklist_keywords: List[str] = Field(
+        default_factory=lambda: [
+            "დიდი დიღომი", "მუხიანი", "აფრიკა", "დამპალო",
+            "ზემო პლატო", "3-ე პლატო", "მე-3 პლატო", "მე-4 პლატო",
+            "ორთაჭალის ზემოთ", "ორთაჭალის გორა"
+        ]
+    )
     target_districts: List[str] = Field(default_factory=list)
-    stop_words: List[str] = Field(default_factory=list)
+    stop_words: List[str] = Field(
+        default_factory=lambda: [
+            "ჩაბარდება", "ბარდება", "2027", "2028", "2029",
+            "სართული დაშენება", "დაშენების პერსპექტივით", "იტალიური ეზო",
+            "ნახევარსარდაფი", "სარდაფი", "შავი კარკასი"
+        ]
+    )
+    white_frame_max_price: float = 55000.0
+    hot_deal_price_per_sqm: float = 1350.0
     require_images: bool = False
 
 
@@ -48,6 +70,15 @@ class PropertyListing(BaseModel):
     images: List[str] = Field(default_factory=list)
     published_at: Optional[str] = None
     scraped_at: datetime = Field(default_factory=utc_now)
+    metro_station_id: Optional[int] = None
+    metro_station_name: Optional[str] = None
+    condition_id: Optional[int] = None
+    condition_name: Optional[str] = None
+    status_id: Optional[int] = None
+    user_type: Optional[str] = None
+    is_owner: Optional[bool] = None
+    phone_number: Optional[str] = None
+    is_hot_deal: bool = False
     is_bargain: bool = False
     market_avg_price_m2: Optional[float] = None
     market_median_price_m2: Optional[float] = None

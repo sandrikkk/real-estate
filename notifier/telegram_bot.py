@@ -1,4 +1,5 @@
 import asyncio
+import re
 import sys
 from typing import Optional
 from core.models import PropertyListing
@@ -37,66 +38,106 @@ class TelegramNotifier:
                 print(f"[Telegram Notifier Warning]: Failed to initialize Telegram Bot: {e}")
 
     def format_message(self, listing: PropertyListing) -> str:
+        # Header: [🚨 HOT DEAL (if applicable)] [Price in USD] | [Area sq.m] | [$/sq.m]
+        if listing.is_hot_deal:
+            header = f"🚨 <b>HOT DEAL | ${listing.price_usd:,.0f} | {listing.area_m2} მ² | ${listing.price_per_m2:,.0f}/მ²</b>"
+        else:
+            header = f"🏠 <b>${listing.price_usd:,.0f} | {listing.area_m2} მ² | ${listing.price_per_m2:,.0f}/მ²</b>"
+
+        # Location: District / Street / Metro proximity
+        loc_parts = []
+        if listing.district:
+            loc_parts.append(f"<b>{listing.district}</b>")
+        elif listing.city:
+            loc_parts.append(f"<b>{listing.city}</b>")
+
+        if listing.street:
+            loc_parts.append(listing.street)
+
+        if listing.metro_station_name:
+            loc_parts.append(f"🚇 <b>მ. {listing.metro_station_name}</b>")
+
+        location_line = f"📍 {' | '.join(loc_parts)}" if loc_parts else "📍 თბილისი"
+
+        # Details: Owner vs Agent | Floor / Total Floors | Renovation status
+        # 1. Owner vs Agent
+        if listing.is_owner is True:
+            owner_str = "👤 <b>მესაკუთრე (Owner)</b>"
+        elif listing.is_owner is False:
+            owner_str = "👤 <b>სააგენტო (Agent)</b>"
+        else:
+            owner_str = "👤 <b>განმცხადებელი</b>"
+
+        # 2. Floor
+        floor_str = ""
+        if listing.floor:
+            if listing.total_floors:
+                floor_str = f"🏢 სართული: <b>{listing.floor}/{listing.total_floors}</b>"
+            else:
+                floor_str = f"🏢 სართული: <b>{listing.floor}</b>"
+        else:
+            floor_str = "🏢 სართული: <b>-</b>"
+
+        # 3. Renovation status
+        condition_str = f"🛠 <b>{listing.condition_name or 'რემონტი: -'}</b>"
+
+        details_line = f"{owner_str} | {floor_str} | {condition_str}"
+
+        # Rooms if available
+        rooms_line = ""
+        if listing.rooms or listing.bedrooms:
+            r_parts = []
+            if listing.rooms:
+                r_parts.append(f"ოთახი: {listing.rooms}")
+            if listing.bedrooms:
+                r_parts.append(f"საძინებელი: {listing.bedrooms}")
+            rooms_line = f"🚪 {', '.join(r_parts)}"
+
+        # Direct listing link
         source_name = {
             "myhome": "MyHome.ge",
             "ss_ge": "SS.ge",
             "area_ge": "Area.ge"
         }.get(listing.source, listing.source.upper())
+        link_line = f'🔗 <a href="{listing.url}">განცხადების ლინკი ({source_name})</a>'
 
-        header = "🏠 <b>ახალი უძრავი ქონება!</b>"
-        if listing.is_bargain and listing.valuation_scale_label in ["დაბალი ფასი", "საშუალოზე იაფი"]:
-            header = f"🔥 <b>სარფიანი შეთავაზება! (MyHome: {listing.valuation_scale_label})</b> 🔥"
-        elif listing.is_bargain and listing.discount_pct and listing.discount_pct >= 15.0:
-            header = f"🔥 <b>სარფიანი შეთავაზება! ({listing.discount_pct}% ფასდაკლება)</b> 🔥"
-
-        gel_price_str = f" (~{int(listing.price_gel):,} ₾)" if listing.price_gel else ""
-        location_str = ", ".join(filter(None, [listing.city, listing.district, listing.street]))
-
-        floor_str = ""
-        if listing.floor:
-            floor_str = f" | 🏢 სართული: {listing.floor}"
-            if listing.total_floors:
-                floor_str += f"/{listing.total_floors}"
-
-        rooms_str = ""
-        if listing.rooms or listing.bedrooms:
-            rooms_count = listing.rooms or listing.bedrooms
-            rooms_str = f" | 🛏 ოთახები: {rooms_count}"
+        # Phone number for one-tap calling
+        if listing.phone_number:
+            clean_digits = re.sub(r"\D", "", listing.phone_number)
+            if "*" not in listing.phone_number:
+                if len(clean_digits) == 9 and clean_digits.startswith("5"):
+                    tel_url = f"+995{clean_digits}"
+                elif len(clean_digits) == 12 and clean_digits.startswith("995"):
+                    tel_url = f"+{clean_digits}"
+                else:
+                    tel_url = clean_digits
+                phone_line = f'📞 <a href="tel:{tel_url}">{listing.phone_number}</a>'
+            else:
+                phone_line = f'📞 <code>{listing.phone_number}</code> <i>(ნომრის სანახავად გადადით ლინკზე)</i>'
+        else:
+            phone_line = '📞 <i>ტელეფონი მითითებულია განცხადებაში</i>'
 
         lines = [
             header,
-            f"<b>{listing.title}</b>",
             "",
-            f"💰 <b>ფასი:</b> ${listing.price_usd:,.0f}{gel_price_str}",
-            f"📐 <b>ფართობი:</b> {listing.area_m2} მ² (<b>${listing.price_per_m2:,.0f}/მ²</b>)",
-            f"📍 <b>მისამართი:</b> {location_str}{floor_str}{rooms_str}",
+            location_line,
+            details_line,
         ]
+        if rooms_line:
+            lines.append(rooms_line)
 
-        # Official Valuation Scale (ღირებულების შკალა - MyHome.ge ოფიციალური შეფასება)
+        # Valuation scale / analytics if present
         if listing.valuation_scale_label:
-            scale_icon = {
-                1: "🟢",
-                2: "🟢",
-                3: "🟡",
-                4: "🟠",
-                5: "🔴"
-            }.get(listing.valuation_scale_tier, "📈")
             lines.append("")
-            lines.append(f"📈 <b>ღირებულების შკალა (MyHome.ge):</b> {scale_icon} <b>{listing.valuation_scale_label}</b>")
-            if listing.valuation_scale_visual:
-                lines.append(f"<code>{listing.valuation_scale_visual}</code>")
+            lines.append(f"📈 <b>MyHome შეფასება:</b> {listing.valuation_scale_visual or ''} <b>{listing.valuation_scale_label}</b>")
         elif listing.market_median_price_m2:
-            district_name = listing.district or listing.city
             lines.append("")
-            lines.append(f"📊 <b>საბაზრო შედარება ({district_name}):</b>")
-            lines.append(f"• უბნის საბაზრო ეტალონი: <b>${listing.market_median_price_m2:,.0f}/მ²</b>")
-            if listing.price_status_label:
-                lines.append(f"• შეფასება: <b>{listing.price_status_label}</b>")
+            lines.append(f"📊 <b>საბაზრო შედარება:</b> უბნის ეტალონი <b>${listing.market_median_price_m2:,.0f}/მ²</b>")
 
         lines.extend([
             "",
-            f"🌐 <b>პორტალი:</b> {source_name}",
-            f'🔗 <a href="{listing.url}">განცხადების ლინკი</a>'
+            link_line,
+            phone_line,
         ])
 
         return "\n".join(lines)

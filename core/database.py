@@ -58,6 +58,19 @@ class DatabaseEngine:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_properties_district ON properties(district)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_properties_scraped_at ON properties(scraped_at)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_properties_is_notified ON properties(is_notified)")
+
+            # Auto-migrate existing database schema with newly introduced columns
+            cursor.execute("PRAGMA table_info(properties)")
+            cols = {row["name"] for row in cursor.fetchall()}
+            if "metro_station_id" not in cols:
+                cursor.execute("ALTER TABLE properties ADD COLUMN metro_station_id INTEGER")
+            if "condition_id" not in cols:
+                cursor.execute("ALTER TABLE properties ADD COLUMN condition_id INTEGER")
+            if "is_hot_deal" not in cols:
+                cursor.execute("ALTER TABLE properties ADD COLUMN is_hot_deal INTEGER DEFAULT 0")
+            if "phone_number" not in cols:
+                cursor.execute("ALTER TABLE properties ADD COLUMN phone_number TEXT")
+
             conn.commit()
 
     def is_seen(self, listing_id: str, listing: Optional[PropertyListing] = None) -> bool:
@@ -99,8 +112,9 @@ class DatabaseEngine:
                         city, district, subdistrict, street,
                         floor, total_floors, rooms, bedrooms,
                         url, images_json, published_at, scraped_at,
-                        is_bargain, is_notified
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_bargain, is_notified,
+                        metro_station_id, condition_id, is_hot_deal, phone_number
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     listing.id,
                     listing.source,
@@ -124,7 +138,11 @@ class DatabaseEngine:
                     listing.published_at,
                     listing.scraped_at.isoformat(),
                     1 if listing.is_bargain else 0,
-                    0
+                    0,
+                    listing.metro_station_id,
+                    listing.condition_id,
+                    1 if listing.is_hot_deal else 0,
+                    listing.phone_number
                 ))
                 conn.commit()
                 return cursor.rowcount > 0
