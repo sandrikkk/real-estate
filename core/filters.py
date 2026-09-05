@@ -77,14 +77,14 @@ class ListingFilter:
         if listing.condition_id == 6 or "შავი კარკასი" in text_corpus:
             return False
 
-        # White Frame condition: condition_id 5 (თეთრი კარკასი) or 8 (თეთრი პლიუსი)
-        is_white_frame = (
-            listing.condition_id in [5, 8]
-            or (listing.condition_name and "თეთრი კარკასი" in listing.condition_name)
-            or ("თეთრი კარკასი" in text_corpus)
+        # Green / White Frame condition: condition_id 5 (თეთრი), 7 (მწვანე), 8 (თეთრი პლიუსი)
+        is_frame = (
+            listing.condition_id in [5, 7, 8]
+            or (listing.condition_name and any(c in listing.condition_name for c in ["თეთრი კარკასი", "მწვანე კარკასი", "თეთრი პლიუსი"]))
+            or any(c in text_corpus for c in ["თეთრი კარკასი", "მწვანე კარკასი", "თეთრი პლიუსი"])
         )
-        if is_white_frame and listing.price_usd > self.filters.white_frame_max_price:
-            # White Frame allowed ONLY if price <= $55,000
+        if is_frame and listing.price_usd > self.filters.white_frame_max_price:
+            # Green/White Frame allowed ONLY if price <= $54,000
             return False
 
         # 7. Stop-words in Title / Description
@@ -103,6 +103,20 @@ class ListingFilter:
         location_corpus = f"{listing.district or ''} {listing.subdistrict or ''} {listing.street or ''} {text_corpus}"
         for pattern in self._compiled_blacklist:
             if pattern.search(location_corpus):
+                return False
+
+        # Gldani: Allow Micro-districts 1-2 only (drop micro-districts 3 to 9)
+        loc_lower = location_corpus.lower()
+        if "გლდანი" in loc_lower or (listing.district and "გლდანი" in listing.district.lower()):
+            gldani_deep_mr = [
+                "3 მ/რ", "3-ე მ/რ", "მე-3 მ/რ", "3 მ/რაიონი", "iii მ/რ", "iii მ/რაიონი",
+                "4 მ/რ", "4-ე მ/რ", "მე-4 მ/რ", "4 მ/რაიონი", "iv მ/რ", "iv მ/რაიონი",
+                "5 მ/რ", "5-ე მ/რ", "მე-5 მ/რ", "5 მ/რაიონი", "v მ/რ", "v მ/რაიონი",
+                "6 მ/რ", "6-ე მ/რ", "მე-6 მ/რ", "6 მ/რაიონი", "vi მ/რ", "vi მ/რაიონი",
+                "7 მ/რ", "7-ე მ/რ", "მე-7 მ/რ", "7 მ/რაიონი", "vii მ/რ", "vii მ/რაიონი",
+                "8 მ/რ", "8-ე მ/რ", "მე-8 მ/რ", "8 მ/რაიონი", "viii მ/რ", "viii მ/რაიონი"
+            ]
+            if any(mr in loc_lower for mr in gldani_deep_mr):
                 return False
 
         # 10. Location Priority: Target Metro Stations or Whitelist Districts / Target Districts
@@ -126,15 +140,24 @@ class ListingFilter:
                 if not matched_district:
                     return False
 
-        # 11. HOT DEAL Flagging: price_per_sqm <= 1350 and condition is renovated
-        is_renovated = (
-            listing.condition_id in [1, 2]
-            or (listing.condition_name and ("გარემონტებული" in listing.condition_name or "ახალი გარემონტებული" in listing.condition_name))
-            or ("ახალი გარემონტებული" in text_corpus or "გარემონტებული" in text_corpus)
-        )
-        if listing.price_per_m2 <= self.filters.hot_deal_price_per_sqm and is_renovated:
-            listing.is_hot_deal = True
-            listing.is_bargain = True
+        # 11. Deal Tagging:
+        # - Green/White Frame: price_per_sqm <= 1050 -> "🔥 VALUE FRAME (<$54k)"
+        # - Renovated: price_per_sqm <= 1350 -> "🚨 HOT DEAL (RENOVATED)"
+        if is_frame:
+            if listing.price_per_m2 <= self.filters.value_frame_price_per_sqm:
+                listing.is_hot_deal = True
+                listing.deal_tag = "🔥 VALUE FRAME (<$54k)"
+                listing.is_bargain = True
+        else:
+            is_renovated = (
+                listing.condition_id in [1, 2, 3]
+                or (listing.condition_name and ("გარემონტებული" in listing.condition_name or "ახალი გარემონტებული" in listing.condition_name))
+                or ("ახალი გარემონტებული" in text_corpus or "გარემონტებული" in text_corpus)
+            )
+            if is_renovated and listing.price_per_m2 <= self.filters.hot_deal_price_per_sqm:
+                listing.is_hot_deal = True
+                listing.deal_tag = "🚨 HOT DEAL (RENOVATED)"
+                listing.is_bargain = True
 
         # 12. Owner vs Agent Tagging
         if listing.user_type == "physical" or listing.is_owner is True:

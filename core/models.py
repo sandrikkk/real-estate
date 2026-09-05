@@ -23,16 +23,20 @@ class SearchFilters(BaseModel):
     owner_type: Optional[str] = None
     myhome_url: Optional[str] = None
     target_metro_ids: List[int] = Field(
-        default_factory=lambda: [1, 2, 3, 7, 9, 10, 16, 17, 18, 19, 21, 22]
+        default_factory=lambda: [1, 7, 9, 10, 16, 17, 18, 19, 21, 22, 24, 25]
     )
     whitelist_districts: List[str] = Field(
         default_factory=lambda: ["დიდუბე", "ნაძალადევი", "ჩუღურეთი", "ისანი", "გლდანი"]
     )
     blacklist_keywords: List[str] = Field(
         default_factory=lambda: [
-            "დიდი დიღომი", "მუხიანი", "აფრიკა", "დამპალო",
-            "ზემო პლატო", "3-ე პლატო", "მე-3 პლატო", "მე-4 პლატო",
-            "ორთაჭალის ზემოთ", "ორთაჭალის გორა"
+            "დიდი დიღომი", "მუხიანი", "აფრიკა", "აფრიკის", "დამპალო", "დამპალოს",
+            "ზემო პლატო", "3-ე პლატო", "მე-3 პლატო", "მე-4 პლატო", "4-ე პლატო",
+            "ორთაჭალის ზემოთ", "ორთაჭალის გორა", "ორთაჭალის ზედა",
+            "ლილო", "დიდი ლილო", "პატარა ლილო",
+            "ბერი გაბრიელ სალოსი", "გაბრიელ სალოსი", "სალოსის", "სალოსი",
+            "ბოგდან ხმელნიცკი", "ხმელნიცკი", "ხმელნიცკის",
+            "ფონიჭალა", "ორხევი", "აეროპორტი", "აეროპორტის დასახლება", "ვარკეთილის მეურნეობა"
         ]
     )
     target_districts: List[str] = Field(default_factory=list)
@@ -43,7 +47,8 @@ class SearchFilters(BaseModel):
             "ნახევარსარდაფი", "სარდაფი", "შავი კარკასი"
         ]
     )
-    white_frame_max_price: float = 55000.0
+    white_frame_max_price: float = 54000.0
+    value_frame_price_per_sqm: float = 1050.0
     hot_deal_price_per_sqm: float = 1350.0
     require_images: bool = False
 
@@ -79,6 +84,7 @@ class PropertyListing(BaseModel):
     is_owner: Optional[bool] = None
     phone_number: Optional[str] = None
     is_hot_deal: bool = False
+    deal_tag: Optional[str] = None
     is_bargain: bool = False
     market_avg_price_m2: Optional[float] = None
     market_median_price_m2: Optional[float] = None
