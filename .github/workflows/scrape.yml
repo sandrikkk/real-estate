@@ -33,9 +33,9 @@ jobs:
       - name: Run 1 Scraping & Telegram Alert Cycle
         env:
           PYTHONUNBUFFERED: "1"
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || 'REDACTED_TELEGRAM_BOT_TOKEN' }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || 'REDACTED_CHAT_ID' }}
-          CLOUDFLARE_PROXY_URL: https://your-worker.your-subdomain.workers.dev
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CLOUDFLARE_PROXY_URL: ${{ secrets.CLOUDFLARE_PROXY_URL }}
         run: |
           python main.py --once
 

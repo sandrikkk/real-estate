@@ -74,7 +74,7 @@ class TestTelegramFormatting(unittest.TestCase):
         )
 
         msg = self.notifier.format_message(listing)
-        self.assertIn("<b>🔥 VALUE FRAME (<$54k)</b>", msg)
+        self.assertIn("<b>🔥 VALUE FRAME (&lt;$54k)</b>", msg)
         self.assertIn("💰 <b>$50,000 | 50.0 მ² | $1,000/მ²</b>", msg)
         self.assertIn("🛠 <b>მდგომარეობა:</b> მწვანე კარკასი", msg)
         self.assertIn("👤 <b>სააგენტო (Agent)</b>", msg)
