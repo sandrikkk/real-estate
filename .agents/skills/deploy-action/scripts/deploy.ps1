@@ -66,6 +66,15 @@ if ($LASTEXITCODE -ne 0) {
 
 # 5. Safe remote synchronization (rebase onto origin/master)
 Write-Host "`n[Step 4/5]: Synchronizing with origin/master..." -ForegroundColor Yellow
+
+# Discard local uncommitted changes to tracked database (e.g. from local test runs)
+if (Test-Path "data/properties.db") {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    git checkout HEAD -- data/properties.db 2>&1 | Out-Null
+    $ErrorActionPreference = $prevEAP
+}
+
 $hasLocalDb = Test-Path "data/properties.db"
 $isDbTrackedLocally = git ls-files "data/properties.db"
 
