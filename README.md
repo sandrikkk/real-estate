@@ -17,8 +17,8 @@ The entire pipeline runs serverless 24/7 on **GitHub Actions** with zero hosting
    - **Price & Area Boundaries**: $48,000 – $72,000 USD | 48 – 62 m² | Minimum 2 rooms (1 bedroom + living room/studio; studio single-room layouts excluded).
    - **100% Under Construction Exclusion**: Immediate drop for status "Under Construction" (`status_id == 3` or keywords like "completion in 2027/2028"). Only completed / delivered buildings accepted.
    - **Black Frame Exclusion**: Dropped immediately (`condition_id == 6`).
-   - **Frame Price Ceiling**: Green Frame and White Frame permitted **ONLY if price $\le \$54,000$** (leaving budget headroom for finishing works). Discarded if $> \$54,000$.
-   - **Turnkey / Renovated**: Permitted up to $\le \$72,000$.
+   - **Frame Price Ceiling**: Green Frame and White Frame permitted **ONLY if price <= $54,000** (leaving budget headroom for finishing works). Discarded if price > $54,000.
+   - **Turnkey / Renovated**: Permitted up to <= $72,000.
 
 3. **Strict Location Safeguards**:
    - **Blacklisted Areas (Instant Drop)**:
@@ -32,9 +32,9 @@ The entire pipeline runs serverless 24/7 on **GitHub Actions** with zero hosting
    - **District Whitelist Fallback**: Didube, Nadzaladevi, Chugureti, Isani (metro proximity), Gldani (m/r 1-2 only).
 
 4. **Deal Tagging & Seller Identification**:
-   - `🚨 HOT DEAL (RENOVATED)`: Fully renovated apartment with price per sq.m $\le \$1,350/m²$.
-   - `🔥 VALUE FRAME (<$54k)`: Green/White Frame priced $\le \$54,000$ with price per sq.m $\le \$1,050/m²$.
-   - **Seller Verification**: Distinguishes `Owner` vs `Agent` via metadata and description inspection.
+   - `🚨 HOT DEAL (RENOVATED)`: Fully renovated apartment with price <= $1,350 / m².
+   - `🔥 VALUE FRAME (<$54k)`: Green or White Frame priced <= $54,000 with price <= $1,050 / m².
+   - **Seller Verification**: Distinguishes **Owner** vs **Agent** via metadata and description inspection.
 
 5. **Stateful Deduplication & GitHub Sync**:
    - SQLite store (`data/properties.db`) tracks processed listing IDs and fingerprint hashes.
@@ -53,7 +53,7 @@ Configured in [`.github/workflows/scrape.yml`](file:///.github/workflows/scrape.
 | **Total Daily** | — | — | — | **99 runs / day** |
 
 ### Budget & Cost Safety
-- **Monthly Usage**: $99 \text{ runs} \times 26 \text{ days} = 2,574 \text{ min} + 37 \text{ min used} = \mathbf{2,611\text{ minutes}}$ out of 3,000 (**87.0% quota**).
+- **Monthly Usage**: 99 runs/day × 26 days = 2,574 min + 37 min used = **2,611 minutes** out of 3,000 (**87.0% quota**).
 - **Safety Reserve**: **389 minutes (13.0%)** reserved for network fluctuations and runner delays.
 - **Billed Amount**: **$0** (guaranteed free of charge).
 
