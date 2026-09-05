@@ -21,7 +21,7 @@ def make_sample_listing(**kwargs):
         "status_id": 2,          # New built
         "condition_id": 1,       # Newly renovated
         "condition_name": "ახალი გარემონტებული",
-        "metro_station_id": 10,  # Isani
+        "metro_station_id": 16,  # Isani
         "metro_station_name": "ისანი",
         "user_type": "physical",
         "is_owner": True,
@@ -41,8 +41,8 @@ class TestFiltersValidation(unittest.TestCase):
         self.assertTrue(self.filter_engine.matches(listing))
         self.assertTrue(listing.is_owner)
         self.assertEqual(listing.price_per_m2, 1200.0)
-        # 1200 <= 1350 and condition is renovated -> Hot deal!
         self.assertTrue(listing.is_hot_deal)
+        self.assertEqual(listing.deal_tag, "🚨 HOT DEAL (RENOVATED)")
 
     def test_under_construction_status_excluded(self):
         # status_id 3 is "მშენებარე"
@@ -62,21 +62,31 @@ class TestFiltersValidation(unittest.TestCase):
         listing2 = make_sample_listing(condition_id=1, description="ბინა ბარდება შავი კარკასი კონდიციით")
         self.assertFalse(self.filter_engine.matches(listing2))
 
-    def test_white_frame_price_limit(self):
-        # White frame at $52,000 (<= $55,000) -> Allowed
-        listing_allowed = make_sample_listing(
+    def test_frame_price_limit_and_tag(self):
+        # White frame at $53,000 (<= $54,000) -> Allowed
+        listing_white = make_sample_listing(
             condition_id=5,
             condition_name="თეთრი კარკასი",
-            price_usd=52000.0,
+            price_usd=53000.0,
+            area_m2=52.0
+        )
+        self.assertTrue(self.filter_engine.matches(listing_white))
+
+        # Green frame at $50,000, 50m² -> $1000/m² <= 1050 -> Tagged as VALUE FRAME (<$54k)
+        listing_green_val = make_sample_listing(
+            condition_id=7,
+            condition_name="მწვანე კარკასი",
+            price_usd=50000.0,
             area_m2=50.0
         )
-        self.assertTrue(self.filter_engine.matches(listing_allowed))
+        self.assertTrue(self.filter_engine.matches(listing_green_val))
+        self.assertEqual(listing_green_val.deal_tag, "🔥 VALUE FRAME (<$54k)")
 
-        # White frame at $60,000 (> $55,000) -> Rejected
+        # Frame at $55,000 (> $54,000) -> Rejected
         listing_rejected = make_sample_listing(
             condition_id=5,
             condition_name="თეთრი კარკასი",
-            price_usd=60000.0,
+            price_usd=55000.0,
             area_m2=50.0
         )
         self.assertFalse(self.filter_engine.matches(listing_rejected))
@@ -115,15 +125,32 @@ class TestFiltersValidation(unittest.TestCase):
             {"district": "დამპალო"},
             {"street": "ზემო პლატო მე-3"},
             {"description": "ბინა მდებარეობს ორთაჭალის ზემოთ"},
+            {"district": "ისანი", "street": "ბერი გაბრიელ სალოსის გამზირი"},
+            {"district": "ისანი", "street": "ბოგდან ხმელნიცკის ქ."},
+            {"district": "ლილო"},
+            {"street": "დიდი ლილო"},
         ]
 
         for item in blacklisted_samples:
             listing = make_sample_listing(**item)
             self.assertFalse(self.filter_engine.matches(listing), f"Failed to reject blacklisted location: {item}")
 
+    def test_gldani_microdistricts_rule(self):
+        # Gldani Microdistrict 1 & 2 -> Allowed
+        gldani_1 = make_sample_listing(district="გლდანი", street="გლდანის I მ/რ")
+        self.assertTrue(self.filter_engine.matches(gldani_1))
+
+        gldani_2 = make_sample_listing(district="გლდანი", street="გლდანი - მე-2 მ/რ")
+        self.assertTrue(self.filter_engine.matches(gldani_2))
+
+        # Gldani Microdistricts 3 to 8 -> Rejected
+        for mr in ["3 მ/რ", "4-ე მ/რ", "5 მ/რ", "7 მ/რ", "VIII მ/რ"]:
+            gldani_deep = make_sample_listing(district="გლდანი", street=f"გლდანის {mr}")
+            self.assertFalse(self.filter_engine.matches(gldani_deep), f"Should reject {mr}")
+
     def test_target_metro_stations(self):
-        # In target metro: Akhmeteli (22), Isani (10), Didube (18), State University (1)
-        for mid in [1, 2, 3, 7, 9, 10, 16, 17, 18, 19, 21, 22]:
+        # Target metro IDs: [1, 7, 9, 10, 16, 17, 18, 19, 21, 22, 24, 25]
+        for mid in [1, 7, 9, 10, 16, 17, 18, 19, 21, 22, 24, 25]:
             listing = make_sample_listing(metro_station_id=mid, district="სხვა უბანი")
             self.assertTrue(self.filter_engine.matches(listing), f"Target metro {mid} should be accepted")
 
@@ -141,15 +168,17 @@ class TestFiltersValidation(unittest.TestCase):
         self.assertFalse(self.filter_engine.matches(listing_other))
 
     def test_hot_deal_flagging(self):
-        # Price $65,000, 50m² -> $1300/m² <= 1350, Renovated -> HOT DEAL
+        # Price $65,000, 50m² -> $1300/m² <= 1350, Renovated -> HOT DEAL (RENOVATED)
         listing_hot = make_sample_listing(price_usd=65000.0, area_m2=50.0, condition_id=1)
         self.assertTrue(self.filter_engine.matches(listing_hot))
         self.assertTrue(listing_hot.is_hot_deal)
+        self.assertEqual(listing_hot.deal_tag, "🚨 HOT DEAL (RENOVATED)")
 
-        # Price $70,000, 50m² -> $1400/m² > 1350, Renovated -> NOT HOT DEAL
-        listing_normal = make_sample_listing(price_usd=70000.0, area_m2=50.0, condition_id=1)
+        # Price $71,000, 50m² -> $1420/m² > 1350, Renovated -> Passes filter but no deal tag
+        listing_normal = make_sample_listing(price_usd=71000.0, area_m2=50.0, condition_id=1)
         self.assertTrue(self.filter_engine.matches(listing_normal))
         self.assertFalse(listing_normal.is_hot_deal)
+        self.assertIsNone(listing_normal.deal_tag)
 
 
 if __name__ == "__main__":

@@ -38,11 +38,17 @@ class TelegramNotifier:
                 print(f"[Telegram Notifier Warning]: Failed to initialize Telegram Bot: {e}")
 
     def format_message(self, listing: PropertyListing) -> str:
-        # Header: [🚨 HOT DEAL (if applicable)] [Price in USD] | [Area sq.m] | [$/sq.m]
-        if listing.is_hot_deal:
-            header = f"🚨 <b>HOT DEAL | ${listing.price_usd:,.0f} | {listing.area_m2} მ² | ${listing.price_per_m2:,.0f}/მ²</b>"
+        # Header: [Tag if applicable] [Price in USD] | [Area sq.m] | [$/sq.m]
+        price_info = f"${listing.price_usd:,.0f} | {listing.area_m2} მ² | ${listing.price_per_m2:,.0f}/მ²"
+        if listing.deal_tag:
+            header = f"<b>{listing.deal_tag}</b>\n💰 <b>{price_info}</b>"
+        elif listing.is_hot_deal:
+            header = f"🚨 <b>HOT DEAL</b>\n💰 <b>{price_info}</b>"
         else:
-            header = f"🏠 <b>${listing.price_usd:,.0f} | {listing.area_m2} მ² | ${listing.price_per_m2:,.0f}/მ²</b>"
+            header = f"🏠 <b>{price_info}</b>"
+
+        # Condition: [ახალი გარემონტებული / მწვანე კარკასი / etc.]
+        condition_line = f"🛠 <b>მდგომარეობა:</b> {listing.condition_name or 'მითითებული არ არის'}"
 
         # Location: District / Street / Metro proximity
         loc_parts = []
@@ -57,10 +63,9 @@ class TelegramNotifier:
         if listing.metro_station_name:
             loc_parts.append(f"🚇 <b>მ. {listing.metro_station_name}</b>")
 
-        location_line = f"📍 {' | '.join(loc_parts)}" if loc_parts else "📍 თბილისი"
+        location_line = f"📍 <b>ლოკაცია:</b> {' | '.join(loc_parts)}" if loc_parts else "📍 <b>ლოკაცია:</b> თბილისი"
 
-        # Details: Owner vs Agent | Floor / Total Floors | Renovation status
-        # 1. Owner vs Agent
+        # Details: Owner vs Agent | Floor / Total Floors
         if listing.is_owner is True:
             owner_str = "👤 <b>მესაკუთრე (Owner)</b>"
         elif listing.is_owner is False:
@@ -68,8 +73,6 @@ class TelegramNotifier:
         else:
             owner_str = "👤 <b>განმცხადებელი</b>"
 
-        # 2. Floor
-        floor_str = ""
         if listing.floor:
             if listing.total_floors:
                 floor_str = f"🏢 სართული: <b>{listing.floor}/{listing.total_floors}</b>"
@@ -78,20 +81,16 @@ class TelegramNotifier:
         else:
             floor_str = "🏢 სართული: <b>-</b>"
 
-        # 3. Renovation status
-        condition_str = f"🛠 <b>{listing.condition_name or 'რემონტი: -'}</b>"
-
-        details_line = f"{owner_str} | {floor_str} | {condition_str}"
-
-        # Rooms if available
-        rooms_line = ""
+        details_parts = [owner_str, floor_str]
         if listing.rooms or listing.bedrooms:
             r_parts = []
             if listing.rooms:
-                r_parts.append(f"ოთახი: {listing.rooms}")
+                r_parts.append(f"{listing.rooms} ოთახი")
             if listing.bedrooms:
-                r_parts.append(f"საძინებელი: {listing.bedrooms}")
-            rooms_line = f"🚪 {', '.join(r_parts)}"
+                r_parts.append(f"{listing.bedrooms} საძინებელი")
+            details_parts.append(f"🚪 {', '.join(r_parts)}")
+
+        details_line = " | ".join(details_parts)
 
         # Direct listing link
         source_name = {
@@ -120,11 +119,10 @@ class TelegramNotifier:
         lines = [
             header,
             "",
+            condition_line,
             location_line,
             details_line,
         ]
-        if rooms_line:
-            lines.append(rooms_line)
 
         # Valuation scale / analytics if present
         if listing.valuation_scale_label:
