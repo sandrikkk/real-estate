@@ -2,8 +2,10 @@ name: Real Estate Scraper 24/7
 
 on:
   schedule:
-    # ეშვება ავტომატურად ყოველ 15 წუთში (24/7/365)
-    - cron: '*/15 * * * *'
+    # დღის აქტიური საათები (თბილისის დროით 08:00 - 22:00 / UTC 04:00 - 18:00): ყოველ 10 წუთში (84 გაშვება დღეში)
+    - cron: '*/10 4-17 * * *'
+    # ღამის საათები (თბილისის დროით 23:30, 03:30, 06:30 / UTC 19:30, 23:30, 02:30): 3 გაშვება ღამით
+    - cron: '30 19,23,2 * * *'
   workflow_dispatch: # საშუალებას გაძლევთ ნებისმიერ დროს ხელითაც გაუშვათ Actions ტაბიდან
 
 permissions:
@@ -12,6 +14,7 @@ permissions:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
 
     steps:
       - name: Checkout Repository
@@ -25,7 +28,6 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run 1 Scraping & Telegram Alert Cycle
