@@ -117,30 +117,29 @@ class RealEstateOrchestrator:
                 continue
             seen_in_batch.add(listing.id)
 
-            # 1. Database Deduplication Check (ID & Fingerprint)
-            if self.db.is_seen(listing.id, listing):
-                continue
+            is_new_listing = listing.id not in self.db._seen_ids
+            if is_new_listing:
+                new_count += 1
 
-            new_count += 1
-
-            # 2. Baseline Filter Hygiene (Under Construction, Black Frame, Stop-words, Location Blacklist)
+            # 1. Baseline Filter Hygiene (Under Construction, Black Frame, Stop-words, Location Blacklist)
             if not self.filter_engine.matches_hygiene(listing):
                 self.db.save_listing(listing)
                 continue
 
-            # Check which active users match this listing
+            # 2. Identify active users who match this listing AND have not received it yet
             matching_users = [
                 u for u in active_users
-                if self.filter_engine.matches_user(u, listing)
+                if not self.db.is_user_notified(u.chat_id, listing.id)
+                and self.filter_engine.matches_user(u, listing)
             ]
 
             # Fallback for single-admin / legacy mode if no user matched via multi-user
             if not matching_users and not getattr(settings, "ENABLE_MULTI_USER", True):
-                if self.filter_engine.matches(listing):
-                    matching_users = active_users
+                if not self.db.is_user_notified(settings.TELEGRAM_CHAT_ID, listing.id) and self.filter_engine.matches(listing):
+                    matching_users = [u for u in active_users if u.chat_id == settings.TELEGRAM_CHAT_ID]
 
             if not matching_users:
-                # Save as seen so we don't re-process in subsequent cycles
+                # Save to database so property details are archived
                 self.db.save_listing(listing)
                 continue
 
@@ -179,7 +178,7 @@ class RealEstateOrchestrator:
             # 4. Save to Database
             self.db.save_listing(listing)
 
-            # 5. Dispatch Alert to each matching user via Telegram Bot
+            # 5. Dispatch Alert to each matching unnotified user via Telegram Bot
             sent_any = False
             if self.telegram_notifier:
                 for user in matching_users:
@@ -188,6 +187,7 @@ class RealEstateOrchestrator:
                         if sent:
                             sent_any = True
                             notified_count += 1
+                            self.db.mark_user_notified(user.chat_id, listing.id)
                     except Exception as e:
                         print(f"[Telegram Notification Error for {user.chat_id}]: {e}")
                     await asyncio.sleep(settings.RATE_LIMIT_DELAY_SECONDS)

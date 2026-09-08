@@ -14,9 +14,9 @@ from scrapers.ss_ge import SSGeScraper
 
 class TestEndToEndSystemFlow(unittest.TestCase):
     def setUp(self):
-        self.temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        self.temp_db.close()
-        self.db = DatabaseEngine(self.temp_db.name)
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.temp_dir.name, "test.db")
+        self.db = DatabaseEngine(self.db_path)
 
         # Filters configured according to user specifications (40m2+, any room count)
         self.filters = SearchFilters(
@@ -36,8 +36,7 @@ class TestEndToEndSystemFlow(unittest.TestCase):
         self.notifier = NtfyNotifier(topic="test_topic", enable_console=False)
 
     def tearDown(self):
-        if os.path.exists(self.temp_db.name):
-            os.remove(self.temp_db.name)
+        self.temp_dir.cleanup()
 
     def test_new_matching_listing_triggers_alert_and_saves_to_db(self):
         """

@@ -10,13 +10,12 @@ from notifier.ntfy_notifier import NtfyNotifier
 
 class TestCoreComponents(unittest.TestCase):
     def setUp(self):
-        self.temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        self.temp_db.close()
-        self.db = DatabaseEngine(self.temp_db.name)
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.temp_dir.name, "test.db")
+        self.db = DatabaseEngine(self.db_path)
 
     def tearDown(self):
-        if os.path.exists(self.temp_db.name):
-            os.remove(self.temp_db.name)
+        self.temp_dir.cleanup()
 
     def test_property_listing_model(self):
         listing = PropertyListing(

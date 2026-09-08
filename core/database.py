@@ -1,9 +1,10 @@
 import json
 import sqlite3
 import statistics
+from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, Set
 from core.models import PropertyListing, DistrictPriceStats
 
 
@@ -13,6 +14,9 @@ class DatabaseEngine:
         self._ensure_db_dir()
         self.seen_ids_path = Path(self.db_path).parent / "seen_ids.txt"
         self._seen_ids = self._load_seen_ids()
+        self.user_seen_path = Path(self.db_path).parent / "user_seen.json"
+        self._user_seen: Dict[str, Set[str]] = defaultdict(set)
+        self._load_user_seen()
         self.init_db()
 
     def _ensure_db_dir(self):
@@ -30,6 +34,25 @@ class DatabaseEngine:
             except Exception as e:
                 print(f"[Warning]: Failed to load seen_ids.txt: {e}")
         return seen
+
+    def _load_user_seen(self):
+        if self.user_seen_path.exists():
+            try:
+                with open(self.user_seen_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        for cid, ids in data.items():
+                            self._user_seen[str(cid)] = set(ids)
+            except Exception as e:
+                print(f"[Warning]: Failed to load user_seen.json: {e}")
+
+    def _save_user_seen(self):
+        try:
+            serializable = {cid: sorted(list(ids)) for cid, ids in self._user_seen.items()}
+            with open(self.user_seen_path, "w", encoding="utf-8") as f:
+                json.dump(serializable, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[Warning]: Failed to save user_seen.json: {e}")
 
     def _append_seen_id(self, listing_id: str):
         if listing_id and listing_id not in self._seen_ids:
@@ -83,6 +106,16 @@ class DatabaseEngine:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_properties_scraped_at ON properties(scraped_at)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_properties_is_notified ON properties(is_notified)")
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_notifications (
+                    chat_id TEXT NOT NULL,
+                    listing_id TEXT NOT NULL,
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (chat_id, listing_id)
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_notif ON user_notifications(chat_id, listing_id)")
+
             # Auto-migrate existing database schema with newly introduced columns
             cursor.execute("PRAGMA table_info(properties)")
             cols = {row["name"] for row in cursor.fetchall()}
@@ -102,13 +135,44 @@ class DatabaseEngine:
             for row in cursor.fetchall():
                 self._seen_ids.add(row["id"])
 
-        # Persist full set to seen_ids.txt
+            # Synchronize user_seen cache with user_notifications table
+            cursor.execute("SELECT chat_id, listing_id FROM user_notifications")
+            for row in cursor.fetchall():
+                self._user_seen[str(row["chat_id"])].add(row["listing_id"])
+
+            # Seed default admin (Sandro) with existing seen_ids if not already seeded
+            sandro_chat_id = "1105321687"
+            if not self._user_seen.get(sandro_chat_id):
+                for sid in self._seen_ids:
+                    self._user_seen[sandro_chat_id].add(sid)
+
+        # Persist full set to seen_ids.txt and user_seen.json
         try:
             with open(self.seen_ids_path, "w", encoding="utf-8") as f:
                 for sid in sorted(self._seen_ids):
                     f.write(f"{sid}\n")
         except Exception as e:
             print(f"[Warning]: Failed to write seen_ids.txt: {e}")
+        self._save_user_seen()
+
+    def is_user_notified(self, chat_id: str, listing_id: str) -> bool:
+        return listing_id in self._user_seen.get(str(chat_id), set())
+
+    def mark_user_notified(self, chat_id: str, listing_id: str):
+        cid = str(chat_id)
+        if listing_id not in self._user_seen[cid]:
+            self._user_seen[cid].add(listing_id)
+            self._save_user_seen()
+            with self._connection() as conn:
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO user_notifications (chat_id, listing_id)
+                        VALUES (?, ?)
+                    """, (cid, listing_id))
+                    conn.commit()
+                except Exception as e:
+                    print(f"[Warning]: Failed to insert into user_notifications: {e}")
 
     def is_seen(self, listing_id: str, listing: Optional[PropertyListing] = None) -> bool:
         # 1. Fast in-memory / persistent set check
