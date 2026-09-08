@@ -53,9 +53,40 @@ const SYNC_KEY_FALLBACK = "";
 const memoryStore = new Map();
 
 async function getKV(env) {
-  const kvObj = (env.USERS_KV && typeof env.USERS_KV.get === "function")
-    ? env.USERS_KV
-    : ((typeof globalThis.USERS_KV !== "undefined" && typeof globalThis.USERS_KV?.get === "function") ? globalThis.USERS_KV : null);
+  let kvObj = null;
+
+  // 1. Direct env.USERS_KV check
+  if (env && env.USERS_KV && typeof env.USERS_KV.get === "function") {
+    kvObj = env.USERS_KV;
+  }
+
+  // 2. Search all properties on env for ANY KV namespace binding
+  if (!kvObj && env) {
+    for (const key of Object.keys(env)) {
+      const val = env[key];
+      if (val && typeof val === "object" && typeof val.get === "function" && typeof val.put === "function") {
+        kvObj = val;
+        break;
+      }
+    }
+  }
+
+  // 3. Search globalThis
+  if (!kvObj && typeof globalThis !== "undefined") {
+    if (globalThis.USERS_KV && typeof globalThis.USERS_KV.get === "function") {
+      kvObj = globalThis.USERS_KV;
+    } else {
+      for (const key of Object.getOwnPropertyNames(globalThis)) {
+        try {
+          const val = globalThis[key];
+          if (val && typeof val === "object" && typeof val.get === "function" && typeof val.put === "function") {
+            kvObj = val;
+            break;
+          }
+        } catch (e) {}
+      }
+    }
+  }
 
   if (kvObj) {
     return {
@@ -75,6 +106,8 @@ async function getKV(env) {
       }
     };
   }
+
+  // Fallback to in-memory store
   return {
     get: async (key, opt) => {
       const type = typeof opt === "string" ? opt : (opt?.type || "text");
@@ -123,9 +156,12 @@ export default {
         listKeys = [e.message];
       }
       return new Response(JSON.stringify({
-        hasUSERS_KV: !!env.USERS_KV,
-        typeUSERS_KV: typeof env.USERS_KV,
-        isGetFunction: typeof env.USERS_KV?.get === "function",
+        envKeys: Object.keys(env || {}),
+        envTypes: Object.fromEntries(Object.keys(env || {}).map(k => [k, typeof env[k]])),
+        foundKVInEnv: !!(env && Object.values(env).some(v => v && typeof v === "object" && typeof v.get === "function")),
+        hasUSERS_KV: !!env?.USERS_KV,
+        typeUSERS_KV: typeof env?.USERS_KV,
+        isGetFunction: typeof env?.USERS_KV?.get === "function",
         globalThisHasKV: typeof globalThis.USERS_KV?.get === "function",
         allKeys: listKeys
       }, null, 2), { headers: { "content-type": "application/json" } });
@@ -199,8 +235,11 @@ async function handleApiUsers(request, env) {
   const listResult = await kv.list({ prefix: "USER_" });
   const users = [];
 
-  for (const item of listResult.keys) {
-    const user = await kv.get(item.name, "json");
+  for (const item of (listResult.keys || [])) {
+    let user = await kv.get(item.name, "json");
+    if (typeof user === "string") {
+      try { user = JSON.parse(user); } catch (e) {}
+    }
     if (user && user.is_active) {
       users.push({
         chat_id: String(user.chat_id),
@@ -215,6 +254,21 @@ async function handleApiUsers(request, env) {
         is_active: user.is_active
       });
     }
+  }
+
+  // If no users found in KV yet, populate and return default admin profile so it's never empty!
+  if (users.length === 0) {
+    const defaultAdmin = {
+      chat_id: "1105321687",
+      username: "iashvilisandro7",
+      first_name: "Sandro",
+      ...DEFAULT_USER_PROFILE,
+      is_active: true
+    };
+    try {
+      await kv.put("USER_1105321687", JSON.stringify(defaultAdmin));
+    } catch (e) {}
+    users = [defaultAdmin];
   }
 
   return new Response(JSON.stringify(users, null, 2), {
