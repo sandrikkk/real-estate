@@ -84,6 +84,15 @@ class RealEstateOrchestrator:
                 envelope.area_min_m2 = min(valid_min_areas)
             if valid_max_areas:
                 envelope.area_max_m2 = max(valid_max_areas)
+
+            # Combine districts across all active subscribers
+            all_user_districts = set()
+            for u in active_users:
+                if u.districts:
+                    all_user_districts.update(u.districts)
+            if all_user_districts:
+                envelope.whitelist_districts = list(all_user_districts)
+
             scrape_filters = envelope
 
         tasks = [scraper.fetch_listings(scrape_filters) for scraper in self.scrapers]
