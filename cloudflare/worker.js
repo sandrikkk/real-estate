@@ -57,7 +57,11 @@ async function getKV(env) {
     return {
       get: async (key, opt) => {
         const type = typeof opt === "string" ? opt : (opt?.type || "text");
-        return await env.USERS_KV.get(key, { type: type });
+        const val = await env.USERS_KV.get(key, { type: type });
+        if (type === "json" && typeof val === "string") {
+          try { return JSON.parse(val); } catch (e) { return val; }
+        }
+        return val;
       },
       put: async (key, val) => {
         return await env.USERS_KV.put(key, typeof val === "string" ? val : JSON.stringify(val));
@@ -72,7 +76,10 @@ async function getKV(env) {
       const type = typeof opt === "string" ? opt : (opt?.type || "text");
       const val = memoryStore.get(key);
       if (!val) return null;
-      return type === "json" ? JSON.parse(val) : val;
+      if (type === "json") {
+        return typeof val === "string" ? JSON.parse(val) : val;
+      }
+      return val;
     },
     put: async (key, val) => {
       memoryStore.set(key, typeof val === "string" ? val : JSON.stringify(val));
@@ -324,6 +331,50 @@ async function handleMessage(msg, token, kv) {
         chat_id: chatId,
         text: `⚠️ <b>არასწორი ფორმატი!</b>\nგთხოვთ შეიყვანოთ 2 რიცხვი (მინიმალური და მაქსიმალური კვადრატულობა).\nმაგალითად: <code>45 65</code>`,
         parse_mode: "HTML"
+      });
+      return;
+    }
+  }
+
+  // Direct price command: /price 10000 100000 or /ფასი 10000 100000
+  if (text.startsWith("/price") || text.startsWith("/ფასი")) {
+    const nums = text.match(/\d+/g);
+    if (nums && nums.length >= 2) {
+      const minP = Math.min(parseInt(nums[0]), parseInt(nums[1]));
+      const maxP = Math.max(parseInt(nums[0]), parseInt(nums[1]));
+      user.price_min_usd = minP;
+      user.price_max_usd = maxP;
+      user.state = null;
+      user.updated_at = new Date().toISOString();
+      await kv.put(userKey, JSON.stringify(user));
+
+      await sendTelegram(token, "sendMessage", {
+        chat_id: chatId,
+        text: `✅ <b>ფასის დიაპაზონი განახლდა:</b>\n💰 <b>$${minP.toLocaleString()} – $${maxP.toLocaleString()}</b>`,
+        parse_mode: "HTML",
+        reply_markup: getMainKeyboard(user)
+      });
+      return;
+    }
+  }
+
+  // Direct area command: /area 10 100 or /ფართობი 10 100
+  if (text.startsWith("/area") || text.startsWith("/ფართობი")) {
+    const nums = text.match(/\d+/g);
+    if (nums && nums.length >= 2) {
+      const minA = Math.min(parseInt(nums[0]), parseInt(nums[1]));
+      const maxA = Math.max(parseInt(nums[0]), parseInt(nums[1]));
+      user.area_min_m2 = minA;
+      user.area_max_m2 = maxA;
+      user.state = null;
+      user.updated_at = new Date().toISOString();
+      await kv.put(userKey, JSON.stringify(user));
+
+      await sendTelegram(token, "sendMessage", {
+        chat_id: chatId,
+        text: `✅ <b>ფართობის დიაპაზონი განახლდა:</b>\n📐 <b>${minA} მ² – ${maxA} მ²</b>`,
+        parse_mode: "HTML",
+        reply_markup: getMainKeyboard(user)
       });
       return;
     }
