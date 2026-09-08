@@ -2,7 +2,7 @@ import json
 import re
 from pathlib import Path
 from typing import List, Optional
-from core.models import PropertyListing, SearchFilters
+from core.models import PropertyListing, SearchFilters, UserSubscription
 
 
 class ListingFilter:
@@ -28,19 +28,97 @@ class ListingFilter:
             print(f"[Warning]: Failed to load {file_path}, using defaults: {e}")
             return cls(SearchFilters())
 
-    def matches(self, listing: PropertyListing) -> bool:
+    def matches_hygiene(self, listing: PropertyListing) -> bool:
         """
-        Executes strict client-side validation against business rules:
-        1. Price & Area ranges
-        2. Status & Condition (excludes under construction & black frame; checks white frame price limit)
-        3. Stop-words in title/description
-        4. Minimum 2 rooms (excludes 1-room studios)
-        5. Strict location blacklist and metro/district whitelist
-        6. Flags HOT DEAL if price_per_sqm <= 1350 and renovated
+        Executes baseline quality and fraud/junk filtering on a listing:
+        - Excludes 'under construction' (მშენებარე)
+        - Excludes black frame (შავი კარკასი)
+        - Excludes stop words (e.g. 'იპოთეკური', 'გირავდება', etc.)
+        - Excludes deep outskirts / blacklisted areas
+        - Tags hot deals, frames, and owner/agency
         """
         # Ensure price_per_m2 is computed
         if listing.area_m2 > 0 and listing.price_usd > 0:
             listing.price_per_m2 = round(listing.price_usd / listing.area_m2, 2)
+
+        if self.filters.require_images and not listing.images:
+            return False
+
+        text_corpus = f"{listing.title} {listing.description or ''}"
+
+        # Building Status: Exclude Under Construction
+        if listing.status_id == 3 or "მშენებარე" in text_corpus:
+            return False
+
+        # Condition Check: Exclude Black Frame
+        if listing.condition_id == 6 or "შავი კარკასი" in text_corpus:
+            return False
+
+        # Green / White Frame condition
+        is_frame = (
+            listing.condition_id in [5, 7, 8]
+            or (listing.condition_name and any(c in listing.condition_name for c in ["თეთრი კარკასი", "მწვანე კარკასი", "თეთრი პლიუსი"]))
+            or any(c in text_corpus for c in ["თეთრი კარკასი", "მწვანე კარკასი", "თეთრი პლიუსი"])
+        )
+        if is_frame and listing.price_usd > self.filters.white_frame_max_price:
+            return False
+
+        # Stop-words in Title / Description
+        for pattern in self._compiled_stop_words:
+            if pattern.search(text_corpus):
+                return False
+
+        # Location Filtering: Strict Blacklist
+        location_corpus = f"{listing.district or ''} {listing.subdistrict or ''} {listing.street or ''} {text_corpus}"
+        for pattern in self._compiled_blacklist:
+            if pattern.search(location_corpus):
+                return False
+
+        # Gldani: Allow Micro-districts 1-2 only
+        loc_lower = location_corpus.lower()
+        if "გლდანი" in loc_lower or (listing.district and "გლდანი" in listing.district.lower()):
+            gldani_deep_mr = [
+                "3 მ/რ", "3-ე მ/რ", "მე-3 მ/რ", "3 მ/რაიონი", "iii მ/რ", "iii მ/რაიონი",
+                "4 მ/რ", "4-ე მ/რ", "მე-4 მ/რ", "4 მ/რაიონი", "iv მ/რ", "iv მ/რაიონი",
+                "5 მ/რ", "5-ე მ/რ", "მე-5 მ/რ", "5 მ/რაიონი", "v მ/რ", "v მ/რაიონი",
+                "6 მ/რ", "6-ე მ/რ", "მე-6 მ/რ", "6 მ/რაიონი", "vi მ/რ", "vi მ/რაიონი",
+                "7 მ/რ", "7-ე მ/რ", "მე-7 მ/რ", "7 მ/რაიონი", "vii მ/რ", "vii მ/რაიონი",
+                "8 მ/რ", "8-ე მ/რ", "მე-8 მ/რ", "8 მ/რაიონი", "viii მ/რ", "viii მ/რაიონი"
+            ]
+            if any(mr in loc_lower for mr in gldani_deep_mr):
+                return False
+
+        # Deal Tagging
+        if is_frame:
+            if listing.price_per_m2 <= self.filters.value_frame_price_per_sqm:
+                listing.is_hot_deal = True
+                listing.deal_tag = "🔥 VALUE FRAME (<$54k)"
+                listing.is_bargain = True
+        else:
+            is_renovated = (
+                listing.condition_id in [1, 2, 3]
+                or (listing.condition_name and ("გარემონტებული" in listing.condition_name or "ახალი გარემონტებული" in listing.condition_name))
+                or ("ახალი გარემონტებული" in text_corpus or "გარემონტებული" in text_corpus)
+            )
+            if is_renovated and listing.price_per_m2 <= self.filters.hot_deal_price_per_sqm:
+                listing.is_hot_deal = True
+                listing.deal_tag = "🚨 HOT DEAL (RENOVATED)"
+                listing.is_bargain = True
+
+        # Owner vs Agent Tagging
+        if listing.user_type == "physical" or listing.is_owner is True:
+            listing.is_owner = True
+        elif listing.user_type in ["agency", "developer"]:
+            listing.is_owner = False
+
+        return True
+
+    def matches(self, listing: PropertyListing) -> bool:
+        """
+        Executes strict client-side validation against baseline business rules and static filters.
+        """
+        if not self.matches_hygiene(listing):
+            return False
 
         # 1. Price Range Check
         if self.filters.price_min_usd is not None and listing.price_usd < self.filters.price_min_usd:
@@ -58,73 +136,18 @@ class ListingFilter:
         if self.filters.price_per_m2_max_usd is not None and listing.price_per_m2 > self.filters.price_per_m2_max_usd:
             return False
 
-        # 4. Images Check
-        if self.filters.require_images and not listing.images:
-            return False
-
-        # Text corpus for keyword and stop-word analysis
-        text_corpus = f"{listing.title} {listing.description or ''}"
-
-        # 5. Building Status Check: Exclude "Under Construction" (მშენებარე)
-        # status_id 3 is "მშენებარე"
-        if listing.status_id == 3:
-            return False
-        if "მშენებარე" in text_corpus:
-            return False
-
-        # 6. Condition Check
-        # condition_id 6 is "შავი კარკასი" (Black Frame)
-        if listing.condition_id == 6 or "შავი კარკასი" in text_corpus:
-            return False
-
-        # Green / White Frame condition: condition_id 5 (თეთრი), 7 (მწვანე), 8 (თეთრი პლიუსი)
-        is_frame = (
-            listing.condition_id in [5, 7, 8]
-            or (listing.condition_name and any(c in listing.condition_name for c in ["თეთრი კარკასი", "მწვანე კარკასი", "თეთრი პლიუსი"]))
-            or any(c in text_corpus for c in ["თეთრი კარკასი", "მწვანე კარკასი", "თეთრი პლიუსი"])
-        )
-        if is_frame and listing.price_usd > self.filters.white_frame_max_price:
-            # Green/White Frame allowed ONLY if price <= $54,000
-            return False
-
-        # 7. Stop-words in Title / Description
-        for pattern in self._compiled_stop_words:
-            if pattern.search(text_corpus):
-                return False
-
-        # 8. Minimum Rooms Check (Min 2 rooms: 1 bedroom + living room/studio; exclude single-room studio layouts)
+        # 4. Minimum Rooms Check
         if listing.rooms is not None and listing.rooms < self.filters.rooms_min:
             return False
         if listing.bedrooms is not None and listing.bedrooms < 1:
             if listing.rooms is not None and listing.rooms < 2:
                 return False
 
-        # 9. Location Filtering: Strict Blacklist
-        location_corpus = f"{listing.district or ''} {listing.subdistrict or ''} {listing.street or ''} {text_corpus}"
-        for pattern in self._compiled_blacklist:
-            if pattern.search(location_corpus):
-                return False
-
-        # Gldani: Allow Micro-districts 1-2 only (drop micro-districts 3 to 9)
-        loc_lower = location_corpus.lower()
-        if "გლდანი" in loc_lower or (listing.district and "გლდანი" in listing.district.lower()):
-            gldani_deep_mr = [
-                "3 მ/რ", "3-ე მ/რ", "მე-3 მ/რ", "3 მ/რაიონი", "iii მ/რ", "iii მ/რაიონი",
-                "4 მ/რ", "4-ე მ/რ", "მე-4 მ/რ", "4 მ/რაიონი", "iv მ/რ", "iv მ/რაიონი",
-                "5 მ/რ", "5-ე მ/რ", "მე-5 მ/რ", "5 მ/რაიონი", "v მ/რ", "v მ/რაიონი",
-                "6 მ/რ", "6-ე მ/რ", "მე-6 მ/რ", "6 მ/რაიონი", "vi მ/რ", "vi მ/რაიონი",
-                "7 მ/რ", "7-ე მ/რ", "მე-7 მ/რ", "7 მ/რაიონი", "vii მ/რ", "vii მ/რაიონი",
-                "8 მ/რ", "8-ე მ/რ", "მე-8 მ/რ", "8 მ/რაიონი", "viii მ/რ", "viii მ/რაიონი"
-            ]
-            if any(mr in loc_lower for mr in gldani_deep_mr):
-                return False
-
-        # 10. Location Priority: Target Metro Stations or Whitelist Districts / Target Districts
+        # 5. Location Priority: Target Metro Stations or Whitelist Districts / Target Districts
         if listing.metro_station_id is not None and listing.metro_station_id > 0:
             if self.filters.target_metro_ids and listing.metro_station_id not in self.filters.target_metro_ids:
                 return False
         else:
-            # Fallback to target_districts or whitelist_districts if metro_station_id is not available
             allowed_districts = self.filters.target_districts or self.filters.whitelist_districts
             if allowed_districts:
                 primary_loc = (listing.district or "").lower()
@@ -140,29 +163,49 @@ class ListingFilter:
                 if not matched_district:
                     return False
 
-        # 11. Deal Tagging:
-        # - Green/White Frame: price_per_sqm <= 1050 -> "🔥 VALUE FRAME (<$54k)"
-        # - Renovated: price_per_sqm <= 1350 -> "🚨 HOT DEAL (RENOVATED)"
-        if is_frame:
-            if listing.price_per_m2 <= self.filters.value_frame_price_per_sqm:
-                listing.is_hot_deal = True
-                listing.deal_tag = "🔥 VALUE FRAME (<$54k)"
-                listing.is_bargain = True
-        else:
-            is_renovated = (
-                listing.condition_id in [1, 2, 3]
-                or (listing.condition_name and ("გარემონტებული" in listing.condition_name or "ახალი გარემონტებული" in listing.condition_name))
-                or ("ახალი გარემონტებული" in text_corpus or "გარემონტებული" in text_corpus)
-            )
-            if is_renovated and listing.price_per_m2 <= self.filters.hot_deal_price_per_sqm:
-                listing.is_hot_deal = True
-                listing.deal_tag = "🚨 HOT DEAL (RENOVATED)"
-                listing.is_bargain = True
+        return True
 
-        # 12. Owner vs Agent Tagging
-        if listing.user_type == "physical" or listing.is_owner is True:
-            listing.is_owner = True
-        elif listing.user_type in ["agency", "developer"]:
-            listing.is_owner = False
+    def matches_user(self, user: UserSubscription, listing: PropertyListing) -> bool:
+        """
+        Validates whether a listing matches an active user's personalized subscription criteria:
+        - Price range
+        - Area range
+        - Minimum rooms
+        - District preferences
+        """
+        if not user.is_active:
+            return False
+
+        # 1. Price
+        if user.price_min_usd is not None and listing.price_usd < user.price_min_usd:
+            return False
+        if user.price_max_usd is not None and listing.price_usd > user.price_max_usd:
+            return False
+
+        # 2. Area
+        if user.area_min_m2 is not None and listing.area_m2 < user.area_min_m2:
+            return False
+        if user.area_max_m2 is not None and listing.area_m2 > user.area_max_m2:
+            return False
+
+        # 3. Minimum Rooms
+        if user.rooms_min:
+            if listing.rooms is not None and listing.rooms < user.rooms_min:
+                return False
+            if user.rooms_min >= 2 and listing.bedrooms is not None and listing.bedrooms < 1:
+                if listing.rooms is not None and listing.rooms < 2:
+                    return False
+
+        # 4. Districts
+        if user.districts and len(user.districts) > 0:
+            loc_corpus = f"{listing.district or ''} {listing.subdistrict or ''} {listing.street or ''}".lower()
+            matched_dist = False
+            for d in user.districts:
+                if d.lower() in loc_corpus:
+                    matched_dist = True
+                    break
+            if not matched_dist:
+                return False
 
         return True
+

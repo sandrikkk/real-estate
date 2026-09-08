@@ -1,10 +1,12 @@
 name: Real Estate Scraper 24/7
 
-# on:
-#   schedule:
-#     - cron: '15 * * * *'
 on:
-  workflow_dispatch: # საშუალებას გაძლევთ ნებისმიერ დროს ხელით ან API-ით გაუშვათ Actions ტაბიდან
+  schedule:
+    # დღის აქტიური საათები (თბილისის დროით 08:00 - 00:00 / UTC 04:00 - 20:00): ყოველ 10 წუთში
+    - cron: '*/10 4-19 * * *'
+    # ღამის საათები (თბილისის დროით 00:00, 02:00, 04:00, 06:00 / UTC 20:00, 22:00, 00:00, 02:00)
+    - cron: '0 20,22,0,2 * * *'
+  workflow_dispatch: # საშუალებას გაძლევთ ნებისმიერ დროს ხელითაც გაუშვათ Actions ტაბიდან
 
 permissions:
   contents: write # საჭიროა ნანახი ბინების ბაზის შესანახად
@@ -34,6 +36,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CLOUDFLARE_PROXY_URL: ${{ secrets.CLOUDFLARE_PROXY_URL }}
+          CLOUDFLARE_SYNC_KEY: ${{ secrets.CLOUDFLARE_SYNC_KEY }}
         run: |
           python main.py --once
 
