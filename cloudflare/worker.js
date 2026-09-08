@@ -45,10 +45,6 @@ const DEFAULT_USER_PROFILE = {
   state: null
 };
 
-// Fallback credentials in case Cloudflare dashboard variables are not yet deployed
-const BOT_TOKEN_FALLBACK = "";
-const SYNC_KEY_FALLBACK = "";
-
 // In-memory fallback if KV namespace is not yet bound (for local testing/dry run)
 const memoryStore = new Map();
 
@@ -250,14 +246,15 @@ async function handleProxy(targetUrl, request) {
  */
 async function handleApiUsers(request, env) {
   try {
-    const syncKey = request.headers.get("X-Sync-Key") || new URL(request.url).searchParams.get("key");
-    const expectedKey = env.SYNC_KEY || SYNC_KEY_FALLBACK;
-
-    if (syncKey !== expectedKey) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { "content-type": "application/json" }
-      });
+    const expectedKey = (env.SYNC_KEY || "").trim();
+    if (expectedKey) {
+      const syncKey = (request.headers.get("X-Sync-Key") || new URL(request.url).searchParams.get("key") || "").trim();
+      if (syncKey !== expectedKey) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+          status: 401,
+          headers: { "content-type": "application/json" }
+        });
+      }
     }
 
     const kv = await getKV(env);
@@ -321,7 +318,7 @@ async function handleApiUsers(request, env) {
  * Handles incoming Telegram Webhook payloads
  */
 async function handleTelegramWebhook(request, env) {
-  const token = env.TELEGRAM_BOT_TOKEN || BOT_TOKEN_FALLBACK;
+  const token = env.TELEGRAM_BOT_TOKEN;
   if (!token) {
     return new Response(JSON.stringify({ error: "TELEGRAM_BOT_TOKEN not configured" }), { status: 500 });
   }
