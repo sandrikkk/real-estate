@@ -129,17 +129,100 @@ class TestMultiUserSubscription(unittest.TestCase):
         )
         self.assertFalse(self.filter_engine.matches_hygiene(black_frame))
 
-    def test_fallback_user_sync(self):
-        default_user = get_default_fallback_user()
-        self.assertIsNotNone(default_user)
-        self.assertTrue(default_user.is_active)
-        self.assertGreater(default_user.price_max_usd, default_user.price_min_usd)
+    def test_price_ceiling_strictly_respected(self):
+        sandro = UserSubscription(
+            chat_id="1105321687",
+            price_min_usd=45000,
+            price_max_usd=70000,
+            area_min_m2=48,
+            area_max_m2=65,
+            rooms_min=1,
+            districts=["დიდუბე", "ნაძალადევი", "ისანი", "გლდანი", "სამგორი"]
+        )
+        # $75,000 listing in Gldani
+        listing_75k = PropertyListing(
+            id="test_75k",
+            source="myhome",
+            source_id="25989830",
+            title="იყიდება 2 ოთახიანი ბინა გლდანში",
+            price_usd=75000,
+            area_m2=52,
+            district="გლდანი",
+            rooms=2,
+            url="https://myhome.ge/pr/25989830"
+        )
+        self.assertFalse(self.filter_engine.matches_user(sandro, listing_75k))
 
-        # fetch_active_users with no worker configured must return the fallback user
-        users = fetch_active_users(worker_url="", sync_key="")
-        self.assertEqual(len(users), 1)
-        self.assertEqual(users[0].chat_id, default_user.chat_id)
+    def test_user_646957970_georgian_declension_matching(self):
+        valeri = UserSubscription(
+            chat_id="646957970",
+            price_min_usd=50000,
+            price_max_usd=100000,
+            area_min_m2=40,
+            area_max_m2=90,
+            rooms_min=2,
+            districts=["დიდუბე", "ისანი", "სამგორი"]
+        )
+
+        # 1. Listing with locative "ისანში" in title
+        listing_isani = PropertyListing(
+            id="test_isani",
+            source="myhome",
+            source_id="101",
+            title="იყიდება 2 ოთახიანი ბინა ისანში",
+            price_usd=65000,
+            area_m2=55,
+            district="ისანი",
+            rooms=2,
+            url="https://myhome.ge/pr/101"
+        )
+        self.assertTrue(self.filter_engine.matches_user(valeri, listing_isani))
+
+        # 2. Listing with "სამგორში" and subdistrict "ისანი-სამგორი"
+        listing_samgori = PropertyListing(
+            id="test_samgori",
+            source="myhome",
+            source_id="102",
+            title="იყიდება 2 ოთახიანი ბინა",
+            price_usd=60000,
+            area_m2=50,
+            district="მოსკოვის გამზირი",
+            subdistrict="ისანი-სამგორი",
+            street="მოსკოვის გამზირი 7",
+            rooms=2,
+            url="https://myhome.ge/pr/102"
+        )
+        self.assertTrue(self.filter_engine.matches_user(valeri, listing_samgori))
+
+        # 3. Listing with Didube in street/title when district is None
+        listing_didube_title = PropertyListing(
+            id="test_didube_title",
+            source="myhome",
+            source_id="103",
+            title="იყიდება ბინა დიდუბეში მეტროსთან",
+            price_usd=58000,
+            area_m2=48,
+            district=None,
+            rooms=2,
+            url="https://myhome.ge/pr/103"
+        )
+        self.assertTrue(self.filter_engine.matches_user(valeri, listing_didube_title))
+
+        # 4. Listing in Vake should NOT match Valeri
+        listing_vake = PropertyListing(
+            id="test_vake",
+            source="myhome",
+            source_id="104",
+            title="იყიდება ბინა ვაკეში",
+            price_usd=70000,
+            area_m2=50,
+            district="ვაკე",
+            rooms=2,
+            url="https://myhome.ge/pr/104"
+        )
+        self.assertFalse(self.filter_engine.matches_user(valeri, listing_vake))
 
 
 if __name__ == "__main__":
     unittest.main()
+

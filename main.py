@@ -69,11 +69,12 @@ class RealEstateOrchestrator:
 
         # Calculate search criteria envelope across all active subscribers
         scrape_filters = self.filter_engine.filters
-        if len(active_users) > 1 or (active_users and active_users[0].chat_id != settings.TELEGRAM_CHAT_ID):
+        if active_users:
             valid_min_prices = [u.price_min_usd for u in active_users if u.price_min_usd is not None]
             valid_max_prices = [u.price_max_usd for u in active_users if u.price_max_usd is not None]
             valid_min_areas = [u.area_min_m2 for u in active_users if u.area_min_m2 is not None]
             valid_max_areas = [u.area_max_m2 for u in active_users if u.area_max_m2 is not None]
+            valid_min_rooms = [u.rooms_min for u in active_users if u.rooms_min is not None]
 
             envelope = self.filter_engine.filters.model_copy()
             if valid_min_prices:
@@ -84,6 +85,8 @@ class RealEstateOrchestrator:
                 envelope.area_min_m2 = min(valid_min_areas)
             if valid_max_areas:
                 envelope.area_max_m2 = max(valid_max_areas)
+            if valid_min_rooms:
+                envelope.rooms_min = min(valid_min_rooms)
 
             # Combine districts across all active subscribers
             all_user_districts = set()
@@ -110,6 +113,9 @@ class RealEstateOrchestrator:
         matched_count = 0
         notified_count = 0
         seen_in_batch = set()
+
+        user_sent_count = {}
+        MAX_ALERTS_PER_USER_CYCLE = 10
 
         for listing in all_listings:
             # In-memory batch deduplication
@@ -182,11 +188,14 @@ class RealEstateOrchestrator:
             sent_any = False
             if self.telegram_notifier:
                 for user in matching_users:
+                    if user_sent_count.get(user.chat_id, 0) >= MAX_ALERTS_PER_USER_CYCLE:
+                        continue
                     try:
                         sent = await self.telegram_notifier.send_notification(listing, target_chat_id=user.chat_id)
                         if sent:
                             sent_any = True
                             notified_count += 1
+                            user_sent_count[user.chat_id] = user_sent_count.get(user.chat_id, 0) + 1
                             self.db.mark_user_notified(user.chat_id, listing.id)
                     except Exception as e:
                         print(f"[Telegram Notification Error for {user.chat_id}]: {e}")

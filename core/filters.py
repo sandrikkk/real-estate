@@ -198,10 +198,15 @@ class ListingFilter:
 
         # 4. Districts
         if user.districts and len(user.districts) > 0:
-            loc_corpus = f"{listing.district or ''} {listing.subdistrict or ''} {listing.street or ''}".lower()
+            loc_corpus = f"{listing.district or ''} {listing.subdistrict or ''} {listing.street or ''} {listing.title or ''}".lower()
             matched_dist = False
             for d in user.districts:
-                if d.lower() in loc_corpus:
+                d_low = d.strip().lower()
+                if d_low in loc_corpus:
+                    matched_dist = True
+                    break
+                stem = d_low.rstrip("ი")
+                if len(stem) >= 3 and stem in loc_corpus:
                     matched_dist = True
                     break
             if not matched_dist:

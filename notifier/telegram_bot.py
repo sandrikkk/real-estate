@@ -32,7 +32,7 @@ class TelegramNotifier:
         self.enable_console = enable_console
         self.bot: Optional[Bot] = None
 
-        if TELEGRAM_AVAILABLE and self.bot_token and self.chat_id:
+        if TELEGRAM_AVAILABLE and self.bot_token:
             try:
                 self.bot = Bot(token=self.bot_token)
             except Exception as e:

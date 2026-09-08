@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     CHECK_INTERVAL_SECONDS: int = 180
     REQUEST_TIMEOUT_SECONDS: int = 15
     CONCURRENT_SCRAPERS: int = 3
-    RATE_LIMIT_DELAY_SECONDS: float = 0.5
+    RATE_LIMIT_DELAY_SECONDS: float = 1.0
 
     # Paths
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
