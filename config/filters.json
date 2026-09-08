@@ -1,10 +1,10 @@
 {
   "city": "თბილისი",
   "deal_type": "sale",
-  "price_min_usd": 48000,
-  "price_max_usd": 72000,
-  "area_min_m2": 48,
-  "area_max_m2": 62,
+  "price_min_usd": 10000,
+  "price_max_usd": 100000,
+  "area_min_m2": 10,
+  "area_max_m2": 100,
   "price_per_m2_max_usd": null,
   "rooms_min": 2,
   "owner_type": null,
@@ -20,6 +20,7 @@
     19,
     21,
     22,
+    23,
     24,
     25
   ],
@@ -28,7 +29,12 @@
     "ნაძალადევი",
     "ჩუღურეთი",
     "ისანი",
-    "გლდანი"
+    "გლდანი",
+    "ვაკე",
+    "სამგორი",
+    "მთაწმინდა",
+    "კრწანისი",
+    "დიღმის მასივი"
   ],
   "blacklist_keywords": [
     "დიდი დიღომი",
