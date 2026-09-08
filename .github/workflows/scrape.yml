@@ -44,14 +44,20 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin master
-          git pull --rebase origin master || true
-          if [ -f data/properties.db ]; then
-            git add -f data/properties.db
-            if ! git diff --staged --quiet; then
-              git commit -m "Auto-update seen properties database [skip ci]"
-              git push origin master
-            else
-              echo "No database changes to commit."
-            fi
+          git add -f data/properties.db data/seen_ids.txt || true
+          if ! git diff --staged --quiet; then
+            git commit -m "Auto-update seen properties database [skip ci]"
+            for i in 1 2 3; do
+              git fetch origin master
+              git rebase origin/master -X ours || (git rebase --abort 2>/dev/null || true; git merge origin/master -X ours -m "merge remote changes" || true)
+              if git push origin master; then
+                echo "Successfully committed and pushed updated seen database."
+                exit 0
+              fi
+              echo "Push rejected or conflict, retrying in 3 seconds..."
+              sleep 3
+            done
+            echo "Failed to push after retries, continuing..."
+          else
+            echo "No database changes to commit."
           fi

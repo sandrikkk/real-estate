@@ -45,7 +45,7 @@ Write-Host "[PASS]: All unit tests passed successfully." -ForegroundColor Green
 
 # 3. Stage changes
 Write-Host "`n[Step 2/5]: Staging project files..." -ForegroundColor Yellow
-git add config/ core/ main.py notifier/ scrapers/ tests/ requirements.txt .github/ .agents/ README.md .gitignore
+git add config/ core/ main.py notifier/ scrapers/ tests/ requirements.txt .github/ .agents/ README.md .gitignore cloudflare/ data/seen_ids.txt
 
 $stagedDiff = git diff --staged --name-only
 if (-not $stagedDiff) {

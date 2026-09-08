@@ -11,10 +11,34 @@ class DatabaseEngine:
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._ensure_db_dir()
+        self.seen_ids_path = Path(self.db_path).parent / "seen_ids.txt"
+        self._seen_ids = self._load_seen_ids()
         self.init_db()
 
     def _ensure_db_dir(self):
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    def _load_seen_ids(self) -> set:
+        seen = set()
+        if self.seen_ids_path.exists():
+            try:
+                with open(self.seen_ids_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            seen.add(line)
+            except Exception as e:
+                print(f"[Warning]: Failed to load seen_ids.txt: {e}")
+        return seen
+
+    def _append_seen_id(self, listing_id: str):
+        if listing_id and listing_id not in self._seen_ids:
+            self._seen_ids.add(listing_id)
+            try:
+                with open(self.seen_ids_path, "a", encoding="utf-8") as f:
+                    f.write(f"{listing_id}\n")
+            except Exception as e:
+                print(f"[Warning]: Failed to append to seen_ids.txt: {e}")
 
     @contextmanager
     def _connection(self):
@@ -73,15 +97,33 @@ class DatabaseEngine:
 
             conn.commit()
 
+            # Synchronize seen_ids cache with properties table
+            cursor.execute("SELECT id FROM properties")
+            for row in cursor.fetchall():
+                self._seen_ids.add(row["id"])
+
+        # Persist full set to seen_ids.txt
+        try:
+            with open(self.seen_ids_path, "w", encoding="utf-8") as f:
+                for sid in sorted(self._seen_ids):
+                    f.write(f"{sid}\n")
+        except Exception as e:
+            print(f"[Warning]: Failed to write seen_ids.txt: {e}")
+
     def is_seen(self, listing_id: str, listing: Optional[PropertyListing] = None) -> bool:
+        # 1. Fast in-memory / persistent set check
+        if listing_id in self._seen_ids:
+            return True
+
         with self._connection() as conn:
             cursor = conn.cursor()
-            # 1. Exact ID check
+            # 2. Exact ID check in DB
             cursor.execute("SELECT 1 FROM properties WHERE id = ?", (listing_id,))
             if cursor.fetchone() is not None:
+                self._append_seen_id(listing_id)
                 return True
 
-            # 2. Cross-portal / Reposted duplicate fingerprint check
+            # 3. Cross-portal / Reposted duplicate fingerprint check
             if listing and listing.district and listing.area_m2 and listing.price_usd:
                 cursor.execute("""
                     SELECT 1 FROM properties 
@@ -97,11 +139,13 @@ class DatabaseEngine:
                     listing.floor or ""
                 ))
                 if cursor.fetchone() is not None:
+                    self._append_seen_id(listing_id)
                     return True
 
         return False
 
     def save_listing(self, listing: PropertyListing) -> bool:
+        self._append_seen_id(listing.id)
         with self._connection() as conn:
             cursor = conn.cursor()
             try:
@@ -151,6 +195,7 @@ class DatabaseEngine:
                 return False
 
     def mark_as_notified(self, listing_id: str):
+        self._append_seen_id(listing_id)
         with self._connection() as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE properties SET is_notified = 1 WHERE id = ?", (listing_id,))
