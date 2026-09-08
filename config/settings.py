@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # Proxy / Cloudflare Worker / ScraperAPI (For Cloud Runners / GitHub Actions)
     CLOUDFLARE_PROXY_URL: str = ""
     CLOUDFLARE_SYNC_KEY: str = ""
-    ENABLE_MULTI_USER: bool = True
+    ENABLE_MULTI_USER: bool = False
     SCRAPER_API_KEY: str = ""
 
     # Polling & Performance
