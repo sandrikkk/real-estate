@@ -53,21 +53,25 @@ const SYNC_KEY_FALLBACK = "";
 const memoryStore = new Map();
 
 async function getKV(env) {
-  if (env.USERS_KV && typeof env.USERS_KV.get === "function") {
+  const kvObj = (env.USERS_KV && typeof env.USERS_KV.get === "function")
+    ? env.USERS_KV
+    : ((typeof globalThis.USERS_KV !== "undefined" && typeof globalThis.USERS_KV?.get === "function") ? globalThis.USERS_KV : null);
+
+  if (kvObj) {
     return {
       get: async (key, opt) => {
         const type = typeof opt === "string" ? opt : (opt?.type || "text");
-        const val = await env.USERS_KV.get(key, { type: type });
+        const val = await kvObj.get(key, { type: type });
         if (type === "json" && typeof val === "string") {
           try { return JSON.parse(val); } catch (e) { return val; }
         }
         return val;
       },
       put: async (key, val) => {
-        return await env.USERS_KV.put(key, typeof val === "string" ? val : JSON.stringify(val));
+        return await kvObj.put(key, typeof val === "string" ? val : JSON.stringify(val));
       },
       list: async (opt) => {
-        return await env.USERS_KV.list(opt);
+        return await kvObj.list(opt);
       }
     };
   }
@@ -122,6 +126,7 @@ export default {
         hasUSERS_KV: !!env.USERS_KV,
         typeUSERS_KV: typeof env.USERS_KV,
         isGetFunction: typeof env.USERS_KV?.get === "function",
+        globalThisHasKV: typeof globalThis.USERS_KV?.get === "function",
         allKeys: listKeys
       }, null, 2), { headers: { "content-type": "application/json" } });
     }
