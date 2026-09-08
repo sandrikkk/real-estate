@@ -269,14 +269,14 @@ async function handleApiUsers(request, env) {
         let user = await kv.get(item.name, "json");
         if (user && user.is_active) {
           users.push({
-            chat_id: String(user.chat_id || "1105321687"),
+            chat_id: String(user.chat_id || item.name.replace(/^USER_/, "")),
             username: user.username || null,
             first_name: user.first_name || null,
             price_min_usd: user.price_min_usd,
             price_max_usd: user.price_max_usd,
             area_min_m2: user.area_min_m2,
             area_max_m2: user.area_max_m2,
-            rooms_min: user.rooms_min || 2,
+            rooms_min: (user.rooms_min !== undefined && user.rooms_min !== null) ? user.rooms_min : 2,
             districts: user.districts || DEFAULT_USER_PROFILE.districts,
             is_active: user.is_active
           });
