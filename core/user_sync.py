@@ -18,10 +18,10 @@ def get_default_fallback_user() -> UserSubscription:
     """
     path = Path(settings.FILTERS_CONFIG_PATH)
     districts = []
-    price_min = 48000.0
-    price_max = 72000.0
-    area_min = 48.0
-    area_max = 62.0
+    price_min = 10000.0
+    price_max = 100000.0
+    area_min = 10.0
+    area_max = 100.0
     rooms_min = 2
 
     if path.exists():

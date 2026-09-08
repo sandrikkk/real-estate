@@ -24,12 +24,23 @@ const DEFAULT_DISTRICTS = [
 ];
 
 const DEFAULT_USER_PROFILE = {
-  price_min_usd: 48000,
-  price_max_usd: 72000,
-  area_min_m2: 48,
-  area_max_m2: 65,
+  price_min_usd: 10000,
+  price_max_usd: 100000,
+  area_min_m2: 10,
+  area_max_m2: 100,
   rooms_min: 2,
-  districts: ["დიდუბე", "ნაძალადევი", "ჩუღურეთი", "ისანი", "გლდანი"],
+  districts: [
+    "დიდუბე",
+    "ნაძალადევი",
+    "ჩუღურეთი",
+    "ისანი",
+    "გლდანი",
+    "ვაკე",
+    "სამგორი",
+    "მთაწმინდა",
+    "კრწანისი",
+    "დიღმის მასივი"
+  ],
   is_active: true,
   state: null
 };
@@ -195,7 +206,12 @@ async function handleApiUsers(request, env) {
   }
 
   return new Response(JSON.stringify(users, null, 2), {
-    headers: { "content-type": "application/json; charset=utf-8" }
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+      "pragma": "no-cache",
+      "expires": "0"
+    }
   });
 }
 
