@@ -147,7 +147,7 @@ class TelegramNotifier:
 
         return "\n".join(lines)
 
-    async def send_notification(self, listing: PropertyListing) -> bool:
+    async def send_notification(self, listing: PropertyListing, target_chat_id: Optional[str] = None) -> bool:
         message_html = self.format_message(listing)
 
         # Print to console if enabled or if bot is not configured
@@ -165,7 +165,8 @@ class TelegramNotifier:
             )
             _safe_print(alert_text)
 
-        if not self.bot or not self.chat_id:
+        recipient_id = target_chat_id or self.chat_id
+        if not self.bot or not recipient_id:
             return True
 
         try:
@@ -174,7 +175,7 @@ class TelegramNotifier:
                 first_image = listing.images[0]
                 try:
                     await self.bot.send_photo(
-                        chat_id=self.chat_id,
+                        chat_id=recipient_id,
                         photo=first_image,
                         caption=message_html,
                         parse_mode=ParseMode.HTML
@@ -186,7 +187,7 @@ class TelegramNotifier:
                     print(f"[Telegram Image Send Error]: {img_err}, falling back to text...")
 
             await self.bot.send_message(
-                chat_id=self.chat_id,
+                chat_id=recipient_id,
                 text=message_html,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=False
@@ -194,7 +195,7 @@ class TelegramNotifier:
             await asyncio.sleep(0.2)
             return True
         except Exception as e:
-            print(f"[Telegram Notification Error]: {e}")
+            print(f"[Telegram Notification Error for {recipient_id}]: {e}")
             return False
 
     async def send_market_report(self, report_text: str) -> bool:

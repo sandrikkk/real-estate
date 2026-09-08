@@ -117,3 +117,18 @@ class DistrictPriceStats(BaseModel):
     max_price_per_m2: float
     std_dev: Optional[float] = None
     room_medians: dict = Field(default_factory=dict)
+
+
+class UserSubscription(BaseModel):
+    chat_id: str
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    price_min_usd: Optional[float] = 48000
+    price_max_usd: Optional[float] = 72000
+    area_min_m2: Optional[float] = 48
+    area_max_m2: Optional[float] = 65
+    rooms_min: int = 2
+    districts: List[str] = Field(default_factory=list)
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+

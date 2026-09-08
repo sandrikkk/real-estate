@@ -27,6 +27,7 @@ from core.models import PropertyListing
 from core.database import DatabaseEngine
 from core.filters import ListingFilter
 from core.analytics import MarketAnalytics
+from core.user_sync import fetch_active_users
 from scrapers.myhome import MyHomeScraper
 from scrapers.ss_ge import SSGeScraper
 from scrapers.area_ge import AreaGeScraper
@@ -61,7 +62,31 @@ class RealEstateOrchestrator:
 
     async def run_cycle(self) -> dict:
         print(f"\n--- [Cycle Started at {asyncio.get_event_loop().time():.2f}] Scraping active portals... ---")
-        tasks = [scraper.fetch_listings(self.filter_engine.filters) for scraper in self.scrapers]
+        
+        # 0. Sync active user profiles (from Cloudflare KV or fallback)
+        active_users = fetch_active_users()
+        print(f"[Users]: Active subscribers: {len(active_users)}")
+
+        # Calculate search criteria envelope across all active subscribers
+        scrape_filters = self.filter_engine.filters
+        if len(active_users) > 1 or (active_users and active_users[0].chat_id != settings.TELEGRAM_CHAT_ID):
+            valid_min_prices = [u.price_min_usd for u in active_users if u.price_min_usd is not None]
+            valid_max_prices = [u.price_max_usd for u in active_users if u.price_max_usd is not None]
+            valid_min_areas = [u.area_min_m2 for u in active_users if u.area_min_m2 is not None]
+            valid_max_areas = [u.area_max_m2 for u in active_users if u.area_max_m2 is not None]
+
+            envelope = self.filter_engine.filters.model_copy()
+            if valid_min_prices:
+                envelope.price_min_usd = min(valid_min_prices)
+            if valid_max_prices:
+                envelope.price_max_usd = max(valid_max_prices)
+            if valid_min_areas:
+                envelope.area_min_m2 = min(valid_min_areas)
+            if valid_max_areas:
+                envelope.area_max_m2 = max(valid_max_areas)
+            scrape_filters = envelope
+
+        tasks = [scraper.fetch_listings(scrape_filters) for scraper in self.scrapers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_listings: List[PropertyListing] = []
@@ -89,8 +114,23 @@ class RealEstateOrchestrator:
 
             new_count += 1
 
-            # 2. Filter Criteria Check (Price, Area, Districts, Stop-words)
-            if not self.filter_engine.matches(listing):
+            # 2. Baseline Filter Hygiene (Under Construction, Black Frame, Stop-words, Location Blacklist)
+            if not self.filter_engine.matches_hygiene(listing):
+                self.db.save_listing(listing)
+                continue
+
+            # Check which active users match this listing
+            matching_users = [
+                u for u in active_users
+                if self.filter_engine.matches_user(u, listing)
+            ]
+
+            # Fallback for single-admin / legacy mode if no user matched via multi-user
+            if not matching_users and not getattr(settings, "ENABLE_MULTI_USER", True):
+                if self.filter_engine.matches(listing):
+                    matching_users = active_users
+
+            if not matching_users:
                 # Save as seen so we don't re-process in subsequent cycles
                 self.db.save_listing(listing)
                 continue
@@ -130,17 +170,21 @@ class RealEstateOrchestrator:
             # 4. Save to Database
             self.db.save_listing(listing)
 
-            # 5. Dispatch Alert via Telegram Bot
-            sent = False
+            # 5. Dispatch Alert to each matching user via Telegram Bot
+            sent_any = False
             if self.telegram_notifier:
-                sent = await self.telegram_notifier.send_notification(listing)
+                for user in matching_users:
+                    try:
+                        sent = await self.telegram_notifier.send_notification(listing, target_chat_id=user.chat_id)
+                        if sent:
+                            sent_any = True
+                            notified_count += 1
+                    except Exception as e:
+                        print(f"[Telegram Notification Error for {user.chat_id}]: {e}")
+                    await asyncio.sleep(settings.RATE_LIMIT_DELAY_SECONDS)
 
-            if sent:
+            if sent_any:
                 self.db.mark_as_notified(listing.id)
-                notified_count += 1
-
-            # Brief pause to respect notification rates
-            await asyncio.sleep(settings.RATE_LIMIT_DELAY_SECONDS)
 
         stats = {
             "total_fetched": len(all_listings),
