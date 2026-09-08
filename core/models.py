@@ -12,9 +12,11 @@ def utc_now() -> datetime:
 
 class SearchFilters(BaseModel):
     city: str = "თბილისი"
-    deal_type: Literal["sale", "rent"] = "sale"
+    deal_type: Literal["sale", "rent", "both"] = "sale"
     price_min_usd: Optional[float] = 48000
     price_max_usd: Optional[float] = 72000
+    rent_price_min_usd: Optional[float] = 300
+    rent_price_max_usd: Optional[float] = 1500
     area_min_m2: Optional[float] = 48
     area_max_m2: Optional[float] = 62
     price_per_m2_max_usd: Optional[float] = None
@@ -57,6 +59,7 @@ class PropertyListing(BaseModel):
     id: str
     source: PortalType
     source_id: str
+    deal_type: Literal["sale", "rent"] = "sale"
     title: str
     description: Optional[str] = None
     price_usd: float
@@ -123,8 +126,11 @@ class UserSubscription(BaseModel):
     chat_id: str
     username: Optional[str] = None
     first_name: Optional[str] = None
+    deal_type: Literal["sale", "rent", "both"] = "sale"
     price_min_usd: Optional[float] = 48000
     price_max_usd: Optional[float] = 72000
+    rent_price_min_usd: Optional[float] = 300
+    rent_price_max_usd: Optional[float] = 1500
     area_min_m2: Optional[float] = 48
     area_max_m2: Optional[float] = 65
     rooms_min: int = 2

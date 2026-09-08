@@ -67,38 +67,79 @@ class RealEstateOrchestrator:
         active_users = fetch_active_users()
         print(f"[Users]: Active subscribers: {len(active_users)}")
 
-        # Calculate search criteria envelope across all active subscribers
-        scrape_filters = self.filter_engine.filters
-        if active_users:
-            valid_min_prices = [u.price_min_usd for u in active_users if u.price_min_usd is not None]
-            valid_max_prices = [u.price_max_usd for u in active_users if u.price_max_usd is not None]
-            valid_min_areas = [u.area_min_m2 for u in active_users if u.area_min_m2 is not None]
-            valid_max_areas = [u.area_max_m2 for u in active_users if u.area_max_m2 is not None]
-            valid_min_rooms = [u.rooms_min for u in active_users if u.rooms_min is not None]
+        # Determine deal types required across all active subscribers and base configuration
+        active_deal_types = set()
+        cfg_dt = getattr(self.filter_engine.filters, "deal_type", "sale")
+        if cfg_dt == "both":
+            active_deal_types.add("sale")
+            active_deal_types.add("rent")
+        elif cfg_dt in ["sale", "rent"]:
+            active_deal_types.add(cfg_dt)
 
+        for u in active_users:
+            dt = getattr(u, "deal_type", "sale") or "sale"
+            if dt == "both":
+                active_deal_types.add("sale")
+                active_deal_types.add("rent")
+            elif dt in ["sale", "rent"]:
+                active_deal_types.add(dt)
+
+        print(f"[Run]: Active deal types: {', '.join(sorted(active_deal_types))}")
+
+        # Build scraping tasks for each active deal type
+        tasks = []
+        for dt in sorted(active_deal_types):
             envelope = self.filter_engine.filters.model_copy()
-            if valid_min_prices:
-                envelope.price_min_usd = min(valid_min_prices)
-            if valid_max_prices:
-                envelope.price_max_usd = max(valid_max_prices)
-            if valid_min_areas:
-                envelope.area_min_m2 = min(valid_min_areas)
-            if valid_max_areas:
-                envelope.area_max_m2 = max(valid_max_areas)
-            if valid_min_rooms:
-                envelope.rooms_min = min(valid_min_rooms)
+            envelope.deal_type = dt
 
-            # Combine districts across all active subscribers
-            all_user_districts = set()
-            for u in active_users:
-                if u.districts:
-                    all_user_districts.update(u.districts)
-            if all_user_districts:
-                envelope.whitelist_districts = list(all_user_districts)
+            if dt == "rent":
+                rent_mins = [
+                    getattr(u, "rent_price_min_usd", None) or (u.price_min_usd if getattr(u, "deal_type", "sale") == "rent" else None)
+                    for u in active_users
+                ]
+                rent_mins = [p for p in rent_mins if p is not None]
+                rent_maxs = [
+                    getattr(u, "rent_price_max_usd", None) or (u.price_max_usd if getattr(u, "deal_type", "sale") == "rent" else None)
+                    for u in active_users
+                ]
+                rent_maxs = [p for p in rent_maxs if p is not None]
 
-            scrape_filters = envelope
+                envelope.price_min_usd = min(rent_mins) if rent_mins else (self.filter_engine.filters.rent_price_min_usd or 300)
+                envelope.price_max_usd = max(rent_maxs) if rent_maxs else (self.filter_engine.filters.rent_price_max_usd or 1500)
+            else:
+                sale_mins = [
+                    u.price_min_usd for u in active_users
+                    if getattr(u, "deal_type", "sale") in ["sale", "both"] and u.price_min_usd is not None
+                ]
+                sale_maxs = [
+                    u.price_max_usd for u in active_users
+                    if getattr(u, "deal_type", "sale") in ["sale", "both"] and u.price_max_usd is not None
+                ]
+                if sale_mins:
+                    envelope.price_min_usd = min(sale_mins)
+                if sale_maxs:
+                    envelope.price_max_usd = max(sale_maxs)
 
-        tasks = [scraper.fetch_listings(scrape_filters) for scraper in self.scrapers]
+            if active_users:
+                valid_min_areas = [u.area_min_m2 for u in active_users if u.area_min_m2 is not None]
+                valid_max_areas = [u.area_max_m2 for u in active_users if u.area_max_m2 is not None]
+                valid_min_rooms = [u.rooms_min for u in active_users if u.rooms_min is not None]
+                if valid_min_areas:
+                    envelope.area_min_m2 = min(valid_min_areas)
+                if valid_max_areas:
+                    envelope.area_max_m2 = max(valid_max_areas)
+                if valid_min_rooms:
+                    envelope.rooms_min = min(valid_min_rooms)
+
+                all_user_districts = set()
+                for u in active_users:
+                    if u.districts:
+                        all_user_districts.update(u.districts)
+                if all_user_districts:
+                    envelope.whitelist_districts = list(all_user_districts)
+
+            for scraper in self.scrapers:
+                tasks.append(scraper.fetch_listings(envelope))
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_listings: List[PropertyListing] = []
