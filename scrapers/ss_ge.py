@@ -25,10 +25,12 @@ class SSGeScraper(BaseScraper):
         url = f"https://home.ss.ge/ka/udzravi-qoneba/l/bina/{deal_path}?city=1&priceType=1&page={page}"
 
         params = []
-        if filters.price_min_usd is not None:
-            params.append(f"priceFrom={int(filters.price_min_usd)}")
-        if filters.price_max_usd is not None:
-            params.append(f"priceTo={int(filters.price_max_usd)}")
+        min_p = (filters.rent_price_min_usd if filters.deal_type == "rent" and filters.rent_price_min_usd is not None else filters.price_min_usd)
+        max_p = (filters.rent_price_max_usd if filters.deal_type == "rent" and filters.rent_price_max_usd is not None else filters.price_max_usd)
+        if min_p is not None:
+            params.append(f"priceFrom={int(min_p)}")
+        if max_p is not None:
+            params.append(f"priceTo={int(max_p)}")
         if filters.area_min_m2 is not None:
             params.append(f"totalAreaFrom={int(filters.area_min_m2)}")
         if filters.area_max_m2 is not None:
@@ -59,7 +61,7 @@ class SSGeScraper(BaseScraper):
 
         return []
 
-    def _normalize_item(self, item: dict) -> Optional[PropertyListing]:
+    def _normalize_item(self, item: dict, filters: Optional[SearchFilters] = None) -> Optional[PropertyListing]:
         try:
             source_id = str(item.get("applicationId") or item.get("id") or "")
             if not source_id:
@@ -100,6 +102,13 @@ class SSGeScraper(BaseScraper):
                         images.append(img)
 
             detail_url = item.get("detailUrl")
+            deal_type = "rent" if "qiravdeba" in (str(detail_url) + " " + title).lower() else "sale"
+            if filters:
+                if filters.deal_type == "sale" and deal_type != "sale":
+                    return None
+                if filters.deal_type == "rent" and deal_type != "rent":
+                    return None
+
             if detail_url:
                 url = f"https://home.ss.ge/ka/udzravi-qoneba/{detail_url}"
             else:
@@ -111,6 +120,7 @@ class SSGeScraper(BaseScraper):
                 id=f"ss_ge_{source_id}",
                 source="ss_ge",
                 source_id=source_id,
+                deal_type=deal_type,
                 title=title,
                 description=description,
                 price_usd=price_usd,
@@ -144,7 +154,7 @@ class SSGeScraper(BaseScraper):
                 break
 
             for raw in raw_items:
-                normalized = self._normalize_item(raw)
+                normalized = self._normalize_item(raw, filters=filters)
                 if normalized:
                     all_listings.append(normalized)
 

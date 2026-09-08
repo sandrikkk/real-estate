@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from pathlib import Path
 from typing import List, Optional
 import urllib.request
@@ -18,8 +19,11 @@ def get_default_fallback_user() -> UserSubscription:
     """
     path = Path(settings.FILTERS_CONFIG_PATH)
     districts = []
+    deal_type = "sale"
     price_min = 10000.0
     price_max = 100000.0
+    rent_price_min = 300.0
+    rent_price_max = 1500.0
     area_min = 10.0
     area_max = 100.0
     rooms_min = 2
@@ -28,8 +32,11 @@ def get_default_fallback_user() -> UserSubscription:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+                deal_type = data.get("deal_type", deal_type)
                 price_min = data.get("price_min_usd", price_min)
                 price_max = data.get("price_max_usd", price_max)
+                rent_price_min = data.get("rent_price_min_usd", rent_price_min)
+                rent_price_max = data.get("rent_price_max_usd", rent_price_max)
                 area_min = data.get("area_min_m2", area_min)
                 area_max = data.get("area_max_m2", area_max)
                 rooms_min = data.get("rooms_min", rooms_min)
@@ -41,8 +48,11 @@ def get_default_fallback_user() -> UserSubscription:
         chat_id=settings.TELEGRAM_CHAT_ID or "default_user",
         username="admin",
         first_name="Admin",
+        deal_type=deal_type,
         price_min_usd=price_min,
         price_max_usd=price_max,
+        rent_price_min_usd=rent_price_min,
+        rent_price_max_usd=rent_price_max,
         area_min_m2=area_min,
         area_max_m2=area_max,
         rooms_min=rooms_min,

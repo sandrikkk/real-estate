@@ -99,7 +99,11 @@ class DatabaseEngine:
                     published_at TEXT,
                     scraped_at TEXT NOT NULL,
                     is_bargain INTEGER DEFAULT 0,
-                    is_notified INTEGER DEFAULT 0
+                    is_notified INTEGER DEFAULT 0,
+                    metro_station_id INTEGER,
+                    condition_id INTEGER,
+                    deal_type TEXT DEFAULT 'sale',
+                    phone_number TEXT
                 )
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_properties_district ON properties(district)")
@@ -127,6 +131,9 @@ class DatabaseEngine:
                 cursor.execute("ALTER TABLE properties ADD COLUMN is_hot_deal INTEGER DEFAULT 0")
             if "phone_number" not in cols:
                 cursor.execute("ALTER TABLE properties ADD COLUMN phone_number TEXT")
+            if "deal_type" not in cols:
+                cursor.execute("ALTER TABLE properties ADD COLUMN deal_type TEXT DEFAULT 'sale'")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_properties_deal_type ON properties(deal_type)")
 
             conn.commit()
 
@@ -215,18 +222,19 @@ class DatabaseEngine:
             try:
                 cursor.execute("""
                     INSERT OR IGNORE INTO properties (
-                        id, source, source_id, title, description,
+                        id, source, source_id, deal_type, title, description,
                         price_usd, price_gel, area_m2, price_per_m2,
                         city, district, subdistrict, street,
                         floor, total_floors, rooms, bedrooms,
                         url, images_json, published_at, scraped_at,
                         is_bargain, is_notified,
                         metro_station_id, condition_id, is_hot_deal, phone_number
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     listing.id,
                     listing.source,
                     listing.source_id,
+                    getattr(listing, "deal_type", "sale"),
                     listing.title,
                     listing.description,
                     listing.price_usd,

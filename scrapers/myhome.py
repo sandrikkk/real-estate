@@ -110,13 +110,17 @@ class MyHomeScraper(BaseScraper):
             "currency_id=2",
             "cities=1",
             "statuses=1,2",           # Exclude status 3 (under construction) at API level
-            "conditions=1,2,3,5,8",     # Exclude condition 6 (black frame) and 4 at API level
             f"page={page}",
         ]
-        if filters.price_min_usd is not None:
-            params.append(f"price_from={int(filters.price_min_usd)}")
-        if filters.price_max_usd is not None:
-            params.append(f"price_to={int(filters.price_max_usd)}")
+        if filters.deal_type != "rent":
+            params.append("conditions=1,2,3,5,8")     # Exclude condition 6 (black frame) and 4 at API level
+
+        min_p = (filters.rent_price_min_usd if filters.deal_type == "rent" and filters.rent_price_min_usd is not None else filters.price_min_usd)
+        max_p = (filters.rent_price_max_usd if filters.deal_type == "rent" and filters.rent_price_max_usd is not None else filters.price_max_usd)
+        if min_p is not None:
+            params.append(f"price_from={int(min_p)}")
+        if max_p is not None:
+            params.append(f"price_to={int(max_p)}")
         if filters.area_min_m2 is not None:
             params.append(f"area_from={int(filters.area_min_m2)}")
         if filters.area_max_m2 is not None:
@@ -143,13 +147,17 @@ class MyHomeScraper(BaseScraper):
             "area_types=1",
             "cities=1",
             "statuses=1,2",
-            "conditions=1,2,3,5,8",
             f"page={page}",
         ]
-        if filters.price_min_usd is not None:
-            params.append(f"price_from={int(filters.price_min_usd)}")
-        if filters.price_max_usd is not None:
-            params.append(f"price_to={int(filters.price_max_usd)}")
+        if filters.deal_type != "rent":
+            params.append("conditions=1,2,3,5,8")
+
+        min_p = (filters.rent_price_min_usd if filters.deal_type == "rent" and filters.rent_price_min_usd is not None else filters.price_min_usd)
+        max_p = (filters.rent_price_max_usd if filters.deal_type == "rent" and filters.rent_price_max_usd is not None else filters.price_max_usd)
+        if min_p is not None:
+            params.append(f"price_from={int(min_p)}")
+        if max_p is not None:
+            params.append(f"price_to={int(max_p)}")
         if filters.area_min_m2 is not None:
             params.append(f"area_from={int(filters.area_min_m2)}")
         if filters.area_max_m2 is not None:
@@ -225,8 +233,12 @@ class MyHomeScraper(BaseScraper):
 
             # Deal type validation
             deal_type_id = item.get("deal_type_id")
-            if filters and filters.deal_type == "sale" and deal_type_id and str(deal_type_id) not in ["1", "3"]:
-                return None
+            deal_type = "rent" if str(deal_type_id) in ["3", "4"] else "sale"
+            if filters:
+                if filters.deal_type == "sale" and deal_type != "sale":
+                    return None
+                if filters.deal_type == "rent" and deal_type != "rent":
+                    return None
 
             # Price extraction (USD is currency 2, GEL is currency 1)
             price_usd = 0.0
@@ -331,6 +343,7 @@ class MyHomeScraper(BaseScraper):
                 id=f"myhome_{source_id}",
                 source="myhome",
                 source_id=source_id,
+                deal_type=deal_type,
                 title=title,
                 description=description,
                 price_usd=price_usd,

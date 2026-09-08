@@ -13,10 +13,12 @@ class AreaGeScraper(BaseScraper):
         offer_type = "1" if filters.deal_type == "sale" else "2"
         url = f"https://area.ge/ka/search?offer_types={offer_type}&property_types=1"
         params = []
-        if filters.price_min_usd is not None:
-            params.append(f"price_from={int(filters.price_min_usd)}")
-        if filters.price_max_usd is not None:
-            params.append(f"price_to={int(filters.price_max_usd)}")
+        min_p = (filters.rent_price_min_usd if filters.deal_type == "rent" and filters.rent_price_min_usd is not None else filters.price_min_usd)
+        max_p = (filters.rent_price_max_usd if filters.deal_type == "rent" and filters.rent_price_max_usd is not None else filters.price_max_usd)
+        if min_p is not None:
+            params.append(f"price_from={int(min_p)}")
+        if max_p is not None:
+            params.append(f"price_to={int(max_p)}")
         if params:
             url += "&" + "&".join(params)
         return url
@@ -68,10 +70,13 @@ class AreaGeScraper(BaseScraper):
                     elif isinstance(img, str):
                         images.append(img)
 
+            deal_type = "rent" if str(item.get("offer_type") or item.get("offer_type_id")) == "2" else "sale"
+
             return PropertyListing(
                 id=f"area_ge_{source_id}",
                 source="area_ge",
                 source_id=source_id,
+                deal_type=deal_type,
                 title=title,
                 description=description,
                 price_usd=price_usd,

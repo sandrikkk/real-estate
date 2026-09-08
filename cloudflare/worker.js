@@ -24,8 +24,11 @@ const DEFAULT_DISTRICTS = [
 ];
 
 const DEFAULT_USER_PROFILE = {
+  deal_type: "sale",
   price_min_usd: 10000,
   price_max_usd: 100000,
+  rent_price_min_usd: 300,
+  rent_price_max_usd: 1500,
   area_min_m2: 10,
   area_max_m2: 100,
   rooms_min: 2,
@@ -269,8 +272,11 @@ async function handleApiUsers(request, env) {
             chat_id: String(user.chat_id || item.name.replace(/^USER_/, "")),
             username: user.username || null,
             first_name: user.first_name || null,
+            deal_type: user.deal_type || "sale",
             price_min_usd: user.price_min_usd,
             price_max_usd: user.price_max_usd,
+            rent_price_min_usd: user.rent_price_min_usd !== undefined ? user.rent_price_min_usd : 300,
+            rent_price_max_usd: user.rent_price_max_usd !== undefined ? user.rent_price_max_usd : 1500,
             area_min_m2: user.area_min_m2,
             area_max_m2: user.area_max_m2,
             rooms_min: (user.rooms_min !== undefined && user.rooms_min !== null) ? user.rooms_min : 2,
@@ -606,6 +612,41 @@ async function handleCallbackQuery(cb, token, kv) {
     return;
   }
 
+  if (data === "toggle_deal_type") {
+    if (!user.deal_type || user.deal_type === "sale") {
+      user.deal_type = "rent";
+      if (user.price_min_usd > 3000) {
+        user.price_min_usd = 300;
+        user.price_max_usd = 1200;
+      }
+    } else if (user.deal_type === "rent") {
+      user.deal_type = "both";
+      if (!user.rent_price_min_usd) user.rent_price_min_usd = 300;
+      if (!user.rent_price_max_usd) user.rent_price_max_usd = 1500;
+      if (user.price_max_usd < 5000) {
+        user.price_min_usd = 45000;
+        user.price_max_usd = 75000;
+      }
+    } else {
+      user.deal_type = "sale";
+      if (user.price_max_usd < 5000) {
+        user.price_min_usd = 45000;
+        user.price_max_usd = 75000;
+      }
+    }
+    user.updated_at = new Date().toISOString();
+    await kv.put(userKey, JSON.stringify(user));
+
+    await sendTelegram(token, "editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text: formatSettingsSummary(user),
+      parse_mode: "HTML",
+      reply_markup: getMainKeyboard(user)
+    });
+    return;
+  }
+
   if (data === "reset_defaults") {
     user = {
       ...DEFAULT_USER_PROFILE,
@@ -647,9 +688,22 @@ function formatSettingsSummary(user) {
     ? user.districts.join(", ")
     : "<i>ყველა უბანი</i>";
 
+  let dealTypeStr = "🏠 <b>იყიდება</b>";
+  let priceStr = `$${user.price_min_usd?.toLocaleString()} – $${user.price_max_usd?.toLocaleString()}`;
+  if (user.deal_type === "rent") {
+    dealTypeStr = "🔑 <b>ქირავდება</b>";
+    priceStr = `$${user.price_min_usd?.toLocaleString()} – $${user.price_max_usd?.toLocaleString()} / თვე`;
+  } else if (user.deal_type === "both") {
+    dealTypeStr = "🔄 <b>იყიდება + ქირავდება</b>";
+    const rMin = user.rent_price_min_usd || 300;
+    const rMax = user.rent_price_max_usd || 1500;
+    priceStr = `იყიდება: $${user.price_min_usd?.toLocaleString()}–$${user.price_max_usd?.toLocaleString()} | ქირა: $${rMin}–$${rMax}/თვე`;
+  }
+
   return (
     `⚙️ <b>თქვენი საძიებო პარამეტრები:</b>\n\n` +
-    `💰 <b>ფასი:</b> $${user.price_min_usd?.toLocaleString()} – $${user.price_max_usd?.toLocaleString()}\n` +
+    `🏷️ <b>ტიპი:</b> ${dealTypeStr}\n` +
+    `💰 <b>ფასი:</b> ${priceStr}\n` +
     `📐 <b>ფართობი:</b> ${user.area_min_m2} – ${user.area_max_m2} მ²\n` +
     `🚪 <b>ოთახები:</b> მინიმუმ ${user.rooms_min || 2} ოთახი\n` +
     `📍 <b>უბნები:</b> ${districtsStr}\n` +
@@ -664,9 +718,18 @@ function formatSettingsSummary(user) {
 function getMainKeyboard(user) {
   const activeLabel = user.is_active ? "⏸️ დაპაუზება" : "▶️ ჩართვა";
   const roomsLabel = user.rooms_min === 1 ? "🚪 ოთახები: 1+" : "🚪 ოთახები: 2+";
+  let dealTypeLabel = "🏷️ ტიპი: იყიდება 🏠";
+  if (user.deal_type === "rent") {
+    dealTypeLabel = "🏷️ ტიპი: ქირავდება 🔑";
+  } else if (user.deal_type === "both") {
+    dealTypeLabel = "🏷️ ტიპი: ორივე 🔄";
+  }
 
   return {
     inline_keyboard: [
+      [
+        { text: dealTypeLabel, callback_data: "toggle_deal_type" }
+      ],
       [
         { text: "💰 ფასის შეცვლა", callback_data: "menu_price" },
         { text: "📐 ფართობის შეცვლა", callback_data: "menu_area" }

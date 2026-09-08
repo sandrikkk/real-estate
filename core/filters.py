@@ -60,7 +60,7 @@ class ListingFilter:
             or (listing.condition_name and any(c in listing.condition_name for c in ["თეთრი კარკასი", "მწვანე კარკასი", "თეთრი პლიუსი"]))
             or any(c in text_corpus for c in ["თეთრი კარკასი", "მწვანე კარკასი", "თეთრი პლიუსი"])
         )
-        if is_frame and listing.price_usd > self.filters.white_frame_max_price:
+        if getattr(listing, "deal_type", "sale") != "rent" and is_frame and listing.price_usd > self.filters.white_frame_max_price:
             return False
 
         # Stop-words in Title / Description
@@ -120,10 +120,19 @@ class ListingFilter:
         if not self.matches_hygiene(listing):
             return False
 
+        # Deal Type Check
+        if self.filters.deal_type != "both":
+            if getattr(listing, "deal_type", "sale") != self.filters.deal_type:
+                return False
+
         # 1. Price Range Check
-        if self.filters.price_min_usd is not None and listing.price_usd < self.filters.price_min_usd:
+        is_rent = getattr(listing, "deal_type", "sale") == "rent"
+        min_p = self.filters.rent_price_min_usd if is_rent and self.filters.rent_price_min_usd is not None else self.filters.price_min_usd
+        max_p = self.filters.rent_price_max_usd if is_rent and self.filters.rent_price_max_usd is not None else self.filters.price_max_usd
+
+        if min_p is not None and listing.price_usd < min_p:
             return False
-        if self.filters.price_max_usd is not None and listing.price_usd > self.filters.price_max_usd:
+        if max_p is not None and listing.price_usd > max_p:
             return False
 
         # 2. Area Range Check
@@ -176,10 +185,35 @@ class ListingFilter:
         if not user.is_active:
             return False
 
-        # 1. Price
-        if user.price_min_usd is not None and listing.price_usd < user.price_min_usd:
+        # Deal Type Check
+        user_deal = getattr(user, "deal_type", "sale") or "sale"
+        listing_deal = getattr(listing, "deal_type", "sale") or "sale"
+        if user_deal != "both" and listing_deal != user_deal:
             return False
-        if user.price_max_usd is not None and listing.price_usd > user.price_max_usd:
+
+        # 1. Price
+        is_rent = listing_deal == "rent"
+        if is_rent and getattr(user, "rent_price_min_usd", None) is not None:
+            min_p = user.rent_price_min_usd
+        elif is_rent and user_deal == "rent":
+            min_p = user.price_min_usd
+        elif not is_rent:
+            min_p = user.price_min_usd
+        else:
+            min_p = getattr(self.filters, "rent_price_min_usd", 300)
+
+        if is_rent and getattr(user, "rent_price_max_usd", None) is not None:
+            max_p = user.rent_price_max_usd
+        elif is_rent and user_deal == "rent":
+            max_p = user.price_max_usd
+        elif not is_rent:
+            max_p = user.price_max_usd
+        else:
+            max_p = getattr(self.filters, "rent_price_max_usd", 1500)
+
+        if min_p is not None and listing.price_usd < min_p:
+            return False
+        if max_p is not None and listing.price_usd > max_p:
             return False
 
         # 2. Area

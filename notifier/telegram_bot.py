@@ -39,14 +39,23 @@ class TelegramNotifier:
                 print(f"[Telegram Notifier Warning]: Failed to initialize Telegram Bot: {e}")
 
     def format_message(self, listing: PropertyListing) -> str:
-        # Header: [Tag if applicable] [Price in USD] | [Area sq.m] | [$/sq.m]
-        price_info = f"${listing.price_usd:,.0f} | {listing.area_m2} მ² | ${listing.price_per_m2:,.0f}/მ²"
-        if listing.deal_tag:
-            header = f"<b>{html.escape(listing.deal_tag)}</b>\n💰 <b>{price_info}</b>"
-        elif listing.is_hot_deal:
-            header = f"🚨 <b>HOT DEAL</b>\n💰 <b>{price_info}</b>"
+        is_rent = getattr(listing, "deal_type", "sale") == "rent"
+        if is_rent:
+            price_info = f"${listing.price_usd:,.0f}/თვე | {listing.area_m2} მ²"
+            if listing.deal_tag:
+                header = f"🔑 <b>{html.escape(listing.deal_tag)}</b>\n💰 <b>{price_info}</b>"
+            elif listing.is_hot_deal:
+                header = f"🚨 <b>HOT RENT DEAL</b>\n💰 <b>{price_info}</b>"
+            else:
+                header = f"🔑 <b>ქირავდება: {price_info}</b>"
         else:
-            header = f"🏠 <b>{price_info}</b>"
+            price_info = f"${listing.price_usd:,.0f} | {listing.area_m2} მ² | ${listing.price_per_m2:,.0f}/მ²"
+            if listing.deal_tag:
+                header = f"<b>{html.escape(listing.deal_tag)}</b>\n💰 <b>{price_info}</b>"
+            elif listing.is_hot_deal:
+                header = f"🚨 <b>HOT DEAL</b>\n💰 <b>{price_info}</b>"
+            else:
+                header = f"🏠 <b>{price_info}</b>"
 
         # Condition: [ახალი გარემონტებული / მწვანე კარკასი / etc.]
         safe_condition = html.escape(listing.condition_name or 'მითითებული არ არის')

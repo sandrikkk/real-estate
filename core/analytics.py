@@ -132,6 +132,19 @@ class MarketAnalytics:
         listing.market_median_price_m2 = benchmark
 
         # Compute discount percentage relative to benchmark
+        # For rental listings, skip $/m² sale benchmarks
+        if getattr(listing, "deal_type", "sale") == "rent":
+            self.compute_valuation_scale(listing, myhome_price_label)
+            if myhome_price_label and listing.valuation_scale_label:
+                tier = listing.valuation_scale_tier or 3
+                if tier in [1, 2]:
+                    listing.is_bargain = True
+                    listing.price_status_label = f"🔥 {listing.valuation_scale_label} (MyHome)"
+                else:
+                    listing.is_bargain = False
+                    listing.price_status_label = f"🔑 {listing.valuation_scale_label} (MyHome)"
+            return listing
+
         # Positive = cheaper than benchmark (discount), Negative = more expensive
         discount_pct = round(((benchmark - listing.price_per_m2) / benchmark) * 100, 1)
         listing.discount_pct = discount_pct

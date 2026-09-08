@@ -3,6 +3,8 @@
   "deal_type": "sale",
   "price_min_usd": 10000,
   "price_max_usd": 100000,
+  "rent_price_min_usd": 300,
+  "rent_price_max_usd": 1500,
   "area_min_m2": 10,
   "area_max_m2": 100,
   "price_per_m2_max_usd": null,
