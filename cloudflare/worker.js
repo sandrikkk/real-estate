@@ -55,9 +55,18 @@ const memoryStore = new Map();
 async function getKV(env) {
   let kvObj = null;
 
-  // 1. Direct env.USERS_KV check
-  if (env && env.USERS_KV && typeof env.USERS_KV.get === "function") {
-    kvObj = env.USERS_KV;
+  // 1. Direct or trimmed env check
+  if (env) {
+    if (env.USERS_KV && typeof env.USERS_KV.get === "function") {
+      kvObj = env.USERS_KV;
+    } else {
+      for (const key of Object.keys(env)) {
+        if (key.trim() === "USERS_KV" && typeof env[key]?.get === "function") {
+          kvObj = env[key];
+          break;
+        }
+      }
+    }
   }
 
   // 2. Search all properties on env for ANY KV namespace binding
@@ -92,17 +101,35 @@ async function getKV(env) {
     return {
       get: async (key, opt) => {
         const type = typeof opt === "string" ? opt : (opt?.type || "text");
-        const val = await kvObj.get(key, { type: type });
-        if (type === "json" && typeof val === "string") {
-          try { return JSON.parse(val); } catch (e) { return val; }
+        try {
+          const raw = await kvObj.get(key, "text");
+          if (!raw) return null;
+          if (type === "json") {
+            try {
+              return JSON.parse(raw);
+            } catch (e) {
+              return null;
+            }
+          }
+          return raw;
+        } catch (err) {
+          return null;
         }
-        return val;
       },
       put: async (key, val) => {
-        return await kvObj.put(key, typeof val === "string" ? val : JSON.stringify(val));
+        try {
+          const strVal = typeof val === "string" ? val : JSON.stringify(val);
+          return await kvObj.put(key, strVal);
+        } catch (err) {
+          return null;
+        }
       },
       list: async (opt) => {
-        return await kvObj.list(opt);
+        try {
+          return await kvObj.list(opt);
+        } catch (err) {
+          return { keys: [] };
+        }
       }
     };
   }
@@ -149,9 +176,13 @@ export default {
     if (url.pathname === "/api/debug") {
       const kv = await getKV(env);
       let listKeys = [];
+      let rawSample = null;
       try {
         const l = await kv.list({ prefix: "" });
         listKeys = l.keys || [];
+        if (listKeys.length > 0) {
+          rawSample = await kv.get(listKeys[0].name, "text");
+        }
       } catch (e) {
         listKeys = [e.message];
       }
@@ -159,11 +190,8 @@ export default {
         envKeys: Object.keys(env || {}),
         envTypes: Object.fromEntries(Object.keys(env || {}).map(k => [k, typeof env[k]])),
         foundKVInEnv: !!(env && Object.values(env).some(v => v && typeof v === "object" && typeof v.get === "function")),
-        hasUSERS_KV: !!env?.USERS_KV,
-        typeUSERS_KV: typeof env?.USERS_KV,
-        isGetFunction: typeof env?.USERS_KV?.get === "function",
-        globalThisHasKV: typeof globalThis.USERS_KV?.get === "function",
-        allKeys: listKeys
+        allKeys: listKeys,
+        sampleData: rawSample
       }, null, 2), { headers: { "content-type": "application/json" } });
     }
 
@@ -221,64 +249,72 @@ async function handleProxy(targetUrl, request) {
  * Returns JSON list of active users to the Python Runner
  */
 async function handleApiUsers(request, env) {
-  const syncKey = request.headers.get("X-Sync-Key") || new URL(request.url).searchParams.get("key");
-  const expectedKey = env.SYNC_KEY || SYNC_KEY_FALLBACK;
+  try {
+    const syncKey = request.headers.get("X-Sync-Key") || new URL(request.url).searchParams.get("key");
+    const expectedKey = env.SYNC_KEY || SYNC_KEY_FALLBACK;
 
-  if (syncKey !== expectedKey) {
-    return new Response(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "content-type": "application/json" }
-    });
-  }
-
-  const kv = await getKV(env);
-  const listResult = await kv.list({ prefix: "USER_" });
-  const users = [];
-
-  for (const item of (listResult.keys || [])) {
-    let user = await kv.get(item.name, "json");
-    if (typeof user === "string") {
-      try { user = JSON.parse(user); } catch (e) {}
-    }
-    if (user && user.is_active) {
-      users.push({
-        chat_id: String(user.chat_id),
-        username: user.username || null,
-        first_name: user.first_name || null,
-        price_min_usd: user.price_min_usd,
-        price_max_usd: user.price_max_usd,
-        area_min_m2: user.area_min_m2,
-        area_max_m2: user.area_max_m2,
-        rooms_min: user.rooms_min || 2,
-        districts: user.districts || DEFAULT_USER_PROFILE.districts,
-        is_active: user.is_active
+    if (syncKey !== expectedKey) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "content-type": "application/json" }
       });
     }
-  }
 
-  // If no users found in KV yet, populate and return default admin profile so it's never empty!
-  if (users.length === 0) {
-    const defaultAdmin = {
-      chat_id: "1105321687",
-      username: "iashvilisandro7",
-      first_name: "Sandro",
-      ...DEFAULT_USER_PROFILE,
-      is_active: true
-    };
-    try {
-      await kv.put("USER_1105321687", JSON.stringify(defaultAdmin));
-    } catch (e) {}
-    users = [defaultAdmin];
-  }
+    const kv = await getKV(env);
+    const listResult = await kv.list({ prefix: "USER_" });
+    let users = [];
 
-  return new Response(JSON.stringify(users, null, 2), {
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-      "pragma": "no-cache",
-      "expires": "0"
+    for (const item of (listResult.keys || [])) {
+      try {
+        let user = await kv.get(item.name, "json");
+        if (user && user.is_active) {
+          users.push({
+            chat_id: String(user.chat_id || "1105321687"),
+            username: user.username || null,
+            first_name: user.first_name || null,
+            price_min_usd: user.price_min_usd,
+            price_max_usd: user.price_max_usd,
+            area_min_m2: user.area_min_m2,
+            area_max_m2: user.area_max_m2,
+            rooms_min: user.rooms_min || 2,
+            districts: user.districts || DEFAULT_USER_PROFILE.districts,
+            is_active: user.is_active
+          });
+        }
+      } catch (err) {
+        console.error("Error reading user item:", item.name, err);
+      }
     }
-  });
+
+    // If no users found in KV yet, populate and return default admin profile so it's never empty!
+    if (users.length === 0) {
+      const defaultAdmin = {
+        chat_id: "1105321687",
+        username: "iashvilisandro7",
+        first_name: "Sandro",
+        ...DEFAULT_USER_PROFILE,
+        is_active: true
+      };
+      try {
+        await kv.put("USER_1105321687", JSON.stringify(defaultAdmin));
+      } catch (e) {}
+      users = [defaultAdmin];
+    }
+
+    return new Response(JSON.stringify(users, null, 2), {
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        "pragma": "no-cache",
+        "expires": "0"
+      }
+    });
+  } catch (fatalErr) {
+    return new Response(JSON.stringify({ error: fatalErr.message, stack: fatalErr.stack }), {
+      status: 500,
+      headers: { "content-type": "application/json; charset=utf-8" }
+    });
+  }
 }
 
 /**
