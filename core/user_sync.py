@@ -51,20 +51,14 @@ def get_default_fallback_user() -> UserSubscription:
     )
 
 
-import time
-
-DEFAULT_WORKER_URL = ""
-DEFAULT_SYNC_KEY = ""
-
-
 def fetch_active_users(worker_url: Optional[str] = None, sync_key: Optional[str] = None) -> List[UserSubscription]:
     """
     Fetches the active user list from the Cloudflare Worker KV storage.
     If the worker is not configured or an error occurs, safely falls back
     to the single admin user defined in settings / filters.json.
     """
-    base_url = (worker_url if worker_url is not None else settings.CLOUDFLARE_PROXY_URL or DEFAULT_WORKER_URL).strip().rstrip("/")
-    key = (sync_key if sync_key is not None else settings.CLOUDFLARE_SYNC_KEY or DEFAULT_SYNC_KEY).strip()
+    base_url = (worker_url if worker_url is not None else settings.CLOUDFLARE_PROXY_URL or "").strip().rstrip("/")
+    key = (sync_key if sync_key is not None else settings.CLOUDFLARE_SYNC_KEY or "").strip()
 
     # If worker is not configured or multi-user is disabled, return fallback
     if not base_url or not getattr(settings, "ENABLE_MULTI_USER", True):
