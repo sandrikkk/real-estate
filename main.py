@@ -88,6 +88,7 @@ class RealEstateOrchestrator:
 
         # Build scraping tasks for each active deal type
         tasks = []
+        task_meta = []
         for dt in sorted(active_deal_types):
             envelope = self.filter_engine.filters.model_copy()
             envelope.deal_type = dt
@@ -140,14 +141,15 @@ class RealEstateOrchestrator:
 
             for scraper in self.scrapers:
                 tasks.append(scraper.fetch_listings(envelope))
+                task_meta.append((scraper, dt))
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_listings: List[PropertyListing] = []
-        for scraper, res in zip(self.scrapers, results):
+        for (scraper, dt), res in zip(task_meta, results):
             if isinstance(res, Exception):
-                print(f"[{scraper.name} Error]: Scraper failed with exception: {res}")
+                print(f"[{scraper.name} ({dt}) Error]: Scraper failed with exception: {res}")
             elif isinstance(res, list):
-                print(f"[{scraper.name}]: Fetched {len(res)} valid listings.")
+                print(f"[{scraper.name} ({dt})]: Fetched {len(res)} valid listings.")
                 all_listings.extend(res)
 
         new_count = 0
