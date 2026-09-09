@@ -135,6 +135,7 @@ class UserSubscription(BaseModel):
     area_max_m2: Optional[float] = 65
     rooms_min: int = 2
     districts: List[str] = Field(default_factory=list)
+    owner_type: Optional[str] = "all"
     is_active: bool = True
     created_at: Optional[datetime] = None
 

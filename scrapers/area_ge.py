@@ -72,6 +72,17 @@ class AreaGeScraper(BaseScraper):
 
             deal_type = "rent" if str(item.get("offer_type") or item.get("offer_type_id")) == "2" else "sale"
 
+            # Owner vs Agent extraction
+            is_owner = None
+            if item.get("is_owner") is not None:
+                is_owner = bool(item.get("is_owner"))
+            elif item.get("is_agency") is not None:
+                is_owner = not bool(item.get("is_agency"))
+            elif item.get("user_type") == "physical":
+                is_owner = True
+            elif item.get("user_type") in ["agency", "developer"]:
+                is_owner = False
+
             return PropertyListing(
                 id=f"area_ge_{source_id}",
                 source="area_ge",
@@ -85,6 +96,7 @@ class AreaGeScraper(BaseScraper):
                 street=street,
                 url=url,
                 images=images,
+                is_owner=is_owner,
             )
         except Exception as e:
             print(f"[Area.ge Normalization Error]: {e}")

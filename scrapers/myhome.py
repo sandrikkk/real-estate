@@ -125,6 +125,12 @@ class MyHomeScraper(BaseScraper):
             params.append(f"area_from={int(filters.area_min_m2)}")
         if filters.area_max_m2 is not None:
             params.append(f"area_to={int(filters.area_max_m2)}")
+        if filters.owner_type:
+            ot = str(filters.owner_type).lower().strip()
+            if ot in ["owner", "physical", "მესაკუთრე"]:
+                params.append("owner_type=physical")
+            elif ot in ["agent", "agency", "სააგენტო"]:
+                params.append("owner_type=agent")
 
         return f"{self.API_BASE}?{'&'.join(params)}"
 
@@ -162,6 +168,12 @@ class MyHomeScraper(BaseScraper):
             params.append(f"area_from={int(filters.area_min_m2)}")
         if filters.area_max_m2 is not None:
             params.append(f"area_to={int(filters.area_max_m2)}")
+        if filters.owner_type:
+            ot = str(filters.owner_type).lower().strip()
+            if ot in ["owner", "physical", "მესაკუთრე"]:
+                params.append("owner_type=physical")
+            elif ot in ["agent", "agency", "სააგენტო"]:
+                params.append("owner_type=agent")
 
         return url + "&".join(params)
 

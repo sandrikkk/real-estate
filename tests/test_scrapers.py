@@ -101,6 +101,34 @@ class TestScrapers(unittest.TestCase):
         results = asyncio.run(run_fetch())
         self.assertIsInstance(results, list)
 
+    def test_myhome_api_url_with_owner_filters(self):
+        scraper = MyHomeScraper()
+        f_owner = SearchFilters(owner_type="owner")
+        url_owner = scraper._build_api_url(f_owner, page=1)
+        self.assertIn("owner_type=physical", url_owner)
+
+        f_agent = SearchFilters(owner_type="agent")
+        url_agent = scraper._build_api_url(f_agent, page=1)
+        self.assertIn("owner_type=agent", url_agent)
+
+        f_all = SearchFilters(owner_type="all")
+        url_all = scraper._build_api_url(f_all, page=1)
+        self.assertNotIn("owner_type=", url_all)
+
+    def test_ss_ge_url_with_owner_filters(self):
+        scraper = SSGeScraper()
+        f_owner = SearchFilters(owner_type="owner")
+        url_owner = scraper._build_search_url(f_owner, page=1)
+        self.assertIn("individualType=1", url_owner)
+
+        f_agent = SearchFilters(owner_type="agent")
+        url_agent = scraper._build_search_url(f_agent, page=1)
+        self.assertIn("individualType=2", url_agent)
+
+        f_all = SearchFilters(owner_type="all")
+        url_all = scraper._build_search_url(f_all, page=1)
+        self.assertNotIn("individualType=", url_all)
+
 
 if __name__ == "__main__":
     unittest.main()

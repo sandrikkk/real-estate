@@ -27,6 +27,7 @@ def get_default_fallback_user() -> UserSubscription:
     area_min = 10.0
     area_max = 100.0
     rooms_min = 2
+    owner_type = "all"
 
     if path.exists():
         try:
@@ -40,6 +41,7 @@ def get_default_fallback_user() -> UserSubscription:
                 area_min = data.get("area_min_m2", area_min)
                 area_max = data.get("area_max_m2", area_max)
                 rooms_min = data.get("rooms_min", rooms_min)
+                owner_type = data.get("owner_type", owner_type) or "all"
                 districts = data.get("whitelist_districts") or data.get("target_districts") or []
         except Exception as e:
             logger.warning(f"Failed to read local fallback filters: {e}")
@@ -57,6 +59,7 @@ def get_default_fallback_user() -> UserSubscription:
         area_max_m2=area_max,
         rooms_min=rooms_min,
         districts=districts,
+        owner_type=owner_type,
         is_active=True
     )
 
