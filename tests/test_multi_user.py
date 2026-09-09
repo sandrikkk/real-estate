@@ -222,7 +222,147 @@ class TestMultiUserSubscription(unittest.TestCase):
         )
         self.assertFalse(self.filter_engine.matches_user(valeri, listing_vake))
 
+    def test_owner_only_filter(self):
+        user_owner_only = UserSubscription(
+            chat_id="owner_lover",
+            price_min_usd=40000,
+            price_max_usd=80000,
+            area_min_m2=40,
+            area_max_m2=70,
+            districts=["დიდუბე"],
+            owner_type="owner",
+            is_active=True
+        )
+
+        owner_listing = PropertyListing(
+            id="test_owner_1",
+            source="myhome",
+            source_id="201",
+            title="იყიდება ბინა დიდუბეში",
+            price_usd=55000,
+            area_m2=50,
+            district="დიდუბე",
+            rooms=2,
+            is_owner=True,
+            url="https://myhome.ge/pr/201"
+        )
+
+        agent_listing = PropertyListing(
+            id="test_agent_1",
+            source="myhome",
+            source_id="202",
+            title="იყიდება ბინა დიდუბეში",
+            price_usd=55000,
+            area_m2=50,
+            district="დიდუბე",
+            rooms=2,
+            is_owner=False,
+            url="https://myhome.ge/pr/202"
+        )
+
+        self.assertTrue(self.filter_engine.matches_user(user_owner_only, owner_listing))
+        self.assertFalse(self.filter_engine.matches_user(user_owner_only, agent_listing))
+
+    def test_agent_only_filter(self):
+        user_agent_only = UserSubscription(
+            chat_id="agent_lover",
+            price_min_usd=40000,
+            price_max_usd=80000,
+            area_min_m2=40,
+            area_max_m2=70,
+            districts=["დიდუბე"],
+            owner_type="agent",
+            is_active=True
+        )
+
+        owner_listing = PropertyListing(
+            id="test_owner_2",
+            source="myhome",
+            source_id="203",
+            title="იყიდება ბინა დიდუბეში",
+            price_usd=55000,
+            area_m2=50,
+            district="დიდუბე",
+            rooms=2,
+            is_owner=True,
+            url="https://myhome.ge/pr/203"
+        )
+
+        agent_listing = PropertyListing(
+            id="test_agent_2",
+            source="myhome",
+            source_id="204",
+            title="იყიდება ბინა დიდუბეში",
+            price_usd=55000,
+            area_m2=50,
+            district="დიდუბე",
+            rooms=2,
+            is_owner=False,
+            url="https://myhome.ge/pr/204"
+        )
+
+        self.assertFalse(self.filter_engine.matches_user(user_agent_only, owner_listing))
+        self.assertTrue(self.filter_engine.matches_user(user_agent_only, agent_listing))
+
+    def test_all_owner_types_filter(self):
+        user_all = UserSubscription(
+            chat_id="all_lover",
+            price_min_usd=40000,
+            price_max_usd=80000,
+            area_min_m2=40,
+            area_max_m2=70,
+            districts=["დიდუბე"],
+            owner_type="all",
+            is_active=True
+        )
+
+        owner_listing = PropertyListing(
+            id="test_owner_3",
+            source="myhome",
+            source_id="205",
+            title="იყიდება ბინა დიდუბეში",
+            price_usd=55000,
+            area_m2=50,
+            district="დიდუბე",
+            rooms=2,
+            is_owner=True,
+            url="https://myhome.ge/pr/205"
+        )
+
+        agent_listing = PropertyListing(
+            id="test_agent_3",
+            source="myhome",
+            source_id="206",
+            title="იყიდება ბინა დიდუბეში",
+            price_usd=55000,
+            area_m2=50,
+            district="დიდუბე",
+            rooms=2,
+            is_owner=False,
+            url="https://myhome.ge/pr/206"
+        )
+
+        self.assertTrue(self.filter_engine.matches_user(user_all, owner_listing))
+        self.assertTrue(self.filter_engine.matches_user(user_all, agent_listing))
+
+    def test_owner_tagging_from_description(self):
+        listing_desc = PropertyListing(
+            id="test_desc_owner",
+            source="ss_ge",
+            source_id="207",
+            title="იყიდება ბინა დიდუბეში",
+            description="ვარ მეპატრონე, სააგენტოები არ შემეხოთ",
+            price_usd=55000,
+            area_m2=50,
+            district="დიდუბე",
+            rooms=2,
+            url="https://home.ss.ge/pr/207"
+        )
+        self.filter_engine.matches_hygiene(listing_desc)
+        self.assertTrue(listing_desc.is_owner)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

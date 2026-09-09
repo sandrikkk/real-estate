@@ -35,6 +35,12 @@ class SSGeScraper(BaseScraper):
             params.append(f"totalAreaFrom={int(filters.area_min_m2)}")
         if filters.area_max_m2 is not None:
             params.append(f"totalAreaTo={int(filters.area_max_m2)}")
+        if filters.owner_type:
+            ot = str(filters.owner_type).lower().strip()
+            if ot in ["owner", "physical", "მესაკუთრე"]:
+                params.append("individualType=1")
+            elif ot in ["agent", "agency", "სააგენტო"]:
+                params.append("individualType=2")
 
         if params:
             url += "&" + "&".join(params)
@@ -116,6 +122,21 @@ class SSGeScraper(BaseScraper):
 
             published_at = item.get("orderDate") or item.get("createDate")
 
+            # Owner vs Agent extraction
+            is_owner = None
+            if item.get("isOwner") is not None:
+                is_owner = bool(item.get("isOwner"))
+            elif item.get("isAgency") is not None:
+                is_owner = not bool(item.get("isAgency"))
+            elif item.get("userType"):
+                ut = str(item.get("userType")).lower()
+                if "physic" in ut or "owner" in ut:
+                    is_owner = True
+                elif "agent" in ut or "agency" in ut or "company" in ut:
+                    is_owner = False
+            elif item.get("agency") or item.get("agent") or item.get("agencyId") or item.get("companyName"):
+                is_owner = False
+
             return PropertyListing(
                 id=f"ss_ge_{source_id}",
                 source="ss_ge",
@@ -135,6 +156,7 @@ class SSGeScraper(BaseScraper):
                 bedrooms=bedrooms,
                 url=url,
                 images=images,
+                is_owner=is_owner,
                 published_at=str(published_at) if published_at else None,
             )
         except Exception as e:

@@ -44,6 +44,7 @@ const DEFAULT_USER_PROFILE = {
     "კრწანისი",
     "დიღმის მასივი"
   ],
+  owner_type: "all",
   is_active: true,
   state: null
 };
@@ -281,6 +282,7 @@ async function handleApiUsers(request, env) {
             area_max_m2: user.area_max_m2,
             rooms_min: (user.rooms_min !== undefined && user.rooms_min !== null) ? user.rooms_min : 2,
             districts: user.districts || DEFAULT_USER_PROFILE.districts,
+            owner_type: user.owner_type || "all",
             is_active: user.is_active
           });
         }
@@ -508,6 +510,40 @@ async function handleMessage(msg, token, kv) {
     return;
   }
 
+  // Owner filter command: /owner [owner|agent|all] or /მესაკუთრე
+  if (text.startsWith("/owner") || text.startsWith("/მესაკუთრე")) {
+    const parts = text.split(/\s+/);
+    if (parts.length > 1) {
+      const arg = parts[1].toLowerCase();
+      if (arg === "owner" || arg === "მესაკუთრე") {
+        user.owner_type = "owner";
+      } else if (arg === "agent" || arg === "agency" || arg === "სააგენტო") {
+        user.owner_type = "agent";
+      } else if (arg === "all" || arg === "both" || arg === "ყველა" || arg === "ორივე") {
+        user.owner_type = "all";
+      }
+    } else {
+      if (!user.owner_type || user.owner_type === "all") {
+        user.owner_type = "owner";
+      } else if (user.owner_type === "owner") {
+        user.owner_type = "agent";
+      } else {
+        user.owner_type = "all";
+      }
+    }
+    user.state = null;
+    user.updated_at = new Date().toISOString();
+    await kv.put(userKey, JSON.stringify(user));
+
+    await sendTelegram(token, "sendMessage", {
+      chat_id: chatId,
+      text: formatSettingsSummary(user),
+      parse_mode: "HTML",
+      reply_markup: getMainKeyboard(user)
+    });
+    return;
+  }
+
   // Fallback for unrecognized text
   await sendTelegram(token, "sendMessage", {
     chat_id: chatId,
@@ -647,6 +683,27 @@ async function handleCallbackQuery(cb, token, kv) {
     return;
   }
 
+  if (data === "toggle_owner_type") {
+    if (!user.owner_type || user.owner_type === "all") {
+      user.owner_type = "owner";
+    } else if (user.owner_type === "owner") {
+      user.owner_type = "agent";
+    } else {
+      user.owner_type = "all";
+    }
+    user.updated_at = new Date().toISOString();
+    await kv.put(userKey, JSON.stringify(user));
+
+    await sendTelegram(token, "editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text: formatSettingsSummary(user),
+      parse_mode: "HTML",
+      reply_markup: getMainKeyboard(user)
+    });
+    return;
+  }
+
   if (data === "reset_defaults") {
     user = {
       ...DEFAULT_USER_PROFILE,
@@ -700,9 +757,17 @@ function formatSettingsSummary(user) {
     priceStr = `იყიდება: $${user.price_min_usd?.toLocaleString()}–$${user.price_max_usd?.toLocaleString()} | ქირა: $${rMin}–$${rMax}/თვე`;
   }
 
+  let ownerTypeStr = "👥 <b>ყველა (მესაკუთრე + სააგენტო)</b>";
+  if (user.owner_type === "owner") {
+    ownerTypeStr = "🔑 <b>მხოლოდ მესაკუთრე (Owner)</b>";
+  } else if (user.owner_type === "agent") {
+    ownerTypeStr = "🏢 <b>მხოლოდ სააგენტო (Agent)</b>";
+  }
+
   return (
     `⚙️ <b>თქვენი საძიებო პარამეტრები:</b>\n\n` +
     `🏷️ <b>ტიპი:</b> ${dealTypeStr}\n` +
+    `👤 <b>განმცხადებელი:</b> ${ownerTypeStr}\n` +
     `💰 <b>ფასი:</b> ${priceStr}\n` +
     `📐 <b>ფართობი:</b> ${user.area_min_m2} – ${user.area_max_m2} მ²\n` +
     `🚪 <b>ოთახები:</b> მინიმუმ ${user.rooms_min || 2} ოთახი\n` +
@@ -725,10 +790,20 @@ function getMainKeyboard(user) {
     dealTypeLabel = "🏷️ ტიპი: ორივე 🔄";
   }
 
+  let ownerTypeLabel = "👤 განმცხადებელი: ყველა (ორივე) 👥";
+  if (user.owner_type === "owner") {
+    ownerTypeLabel = "👤 განმცხადებელი: მხოლოდ მესაკუთრე 🔑";
+  } else if (user.owner_type === "agent") {
+    ownerTypeLabel = "👤 განმცხადებელი: მხოლოდ სააგენტო 🏢";
+  }
+
   return {
     inline_keyboard: [
       [
         { text: dealTypeLabel, callback_data: "toggle_deal_type" }
+      ],
+      [
+        { text: ownerTypeLabel, callback_data: "toggle_owner_type" }
       ],
       [
         { text: "💰 ფასის შეცვლა", callback_data: "menu_price" },

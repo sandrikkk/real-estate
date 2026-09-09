@@ -108,8 +108,11 @@ class ListingFilter:
         # Owner vs Agent Tagging
         if listing.user_type == "physical" or listing.is_owner is True:
             listing.is_owner = True
-        elif listing.user_type in ["agency", "developer"]:
+        elif listing.user_type in ["agency", "developer"] or listing.is_owner is False:
             listing.is_owner = False
+        elif listing.is_owner is None:
+            if re.search(r'(?:ვარ\s+(?:მეპატრონე|მესაკუთრე)|სააგენტოებთან არ ვთანამშრომლობ)', text_corpus, re.IGNORECASE):
+                listing.is_owner = True
 
         return True
 
@@ -246,5 +249,15 @@ class ListingFilter:
             if not matched_dist:
                 return False
 
+        # 5. Owner / Agent Preference Check
+        user_owner_type = (getattr(user, "owner_type", "all") or "all").lower().strip()
+        if user_owner_type in ["owner", "მესაკუთრე"]:
+            if listing.is_owner is not True:
+                return False
+        elif user_owner_type in ["agent", "agency", "სააგენტო"]:
+            if listing.is_owner is not False:
+                return False
+
         return True
+
 

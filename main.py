@@ -139,6 +139,17 @@ class RealEstateOrchestrator:
                 if all_user_districts:
                     envelope.whitelist_districts = list(all_user_districts)
 
+                active_owner_types = {
+                    (getattr(u, "owner_type", "all") or "all").lower().strip()
+                    for u in active_users
+                }
+                if len(active_owner_types) == 1:
+                    ot = list(active_owner_types)[0]
+                    if ot in ["owner", "agent"]:
+                        envelope.owner_type = ot
+                else:
+                    envelope.owner_type = None
+
             for scraper in self.scrapers:
                 tasks.append(scraper.fetch_listings(envelope))
                 task_meta.append((scraper, dt))
