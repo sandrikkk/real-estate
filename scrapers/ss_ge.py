@@ -1,6 +1,7 @@
 import json
 import re
 from typing import List, Optional
+from curl_cffi.requests import AsyncSession
 from core.models import PropertyListing, SearchFilters
 from scrapers.base import BaseScraper
 
@@ -66,6 +67,73 @@ class SSGeScraper(BaseScraper):
             print(f"[SS.ge JSON Parsing Error]: {e}")
 
         return []
+
+    async def fetch_statement_details(self, source_id_or_url: str) -> Optional[dict]:
+        """
+        Enriches an SS.ge listing with verified details from the Next.js dehydrated state:
+        is_owner, agency_id, agency_name, user_entity_type, phone_number.
+        """
+        if str(source_id_or_url).startswith("http"):
+            url = str(source_id_or_url)
+        else:
+            url = f"https://home.ss.ge/ka/udzravi-qoneba/{source_id_or_url}"
+
+        try:
+            async with AsyncSession(impersonate="chrome124") as session:
+                response = await session.get(url, timeout=self.timeout)
+                if response.status_code == 200:
+                    match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', response.text, re.DOTALL)
+                    if match:
+                        data = json.loads(match.group(1))
+                        props = data.get("props", {}).get("pageProps", {})
+                        app_data = props.get("applicationData") or {}
+                        agent_info = props.get("initialAgentInfoData") or {}
+
+                        agency_id = app_data.get("agencyId") or app_data.get("externalCompanyId") or agent_info.get("companyId")
+                        agency_name = app_data.get("agencyName") or app_data.get("companyName") or agent_info.get("companyName")
+                        user_entity_type = str(app_data.get("userEntityType") or "").lower()
+                        company_type = agent_info.get("companyType")
+                        app_count = app_data.get("userApplicationCount") or 0
+
+                        is_owner = None
+                        if (
+                            agency_id
+                            or agency_name
+                            or "broker" in user_entity_type
+                            or "agent" in user_entity_type
+                            or "agency" in user_entity_type
+                            or "company" in user_entity_type
+                            or company_type == 2
+                            or (isinstance(app_count, int) and app_count > 10)
+                        ):
+                            is_owner = False
+                        elif "individual" in user_entity_type and not agency_id and not agency_name:
+                            is_owner = True
+                        elif app_data.get("isOwner") is not None:
+                            is_owner = bool(app_data.get("isOwner"))
+                        elif app_data.get("isAgency") is not None:
+                            is_owner = not bool(app_data.get("isAgency"))
+
+                        # Phone extraction
+                        phones = app_data.get("applicationPhones") or []
+                        phone_number = None
+                        if phones and isinstance(phones, list) and len(phones) > 0:
+                            first_p = phones[0]
+                            if isinstance(first_p, dict) and first_p.get("phoneNumber"):
+                                phone_number = first_p.get("phoneNumber")
+                            elif isinstance(first_p, str):
+                                phone_number = first_p
+
+                        return {
+                            "is_owner": is_owner,
+                            "agency_id": agency_id,
+                            "agency_name": agency_name,
+                            "user_entity_type": user_entity_type,
+                            "phone_number": phone_number
+                        }
+        except Exception as e:
+            print(f"[SS.ge Statement Detail Error for {source_id_or_url}]: {e}")
+        return None
 
     def _normalize_item(self, item: dict, filters: Optional[SearchFilters] = None) -> Optional[PropertyListing]:
         try:
@@ -147,12 +215,6 @@ class SSGeScraper(BaseScraper):
                     is_owner = False
             elif item.get("agency") or item.get("agent") or item.get("agencyId") or item.get("companyName"):
                 is_owner = False
-            elif filters and filters.owner_type:
-                ot = str(filters.owner_type).lower().strip()
-                if ot in ["owner", "physical", "მესაკუთრე"]:
-                    is_owner = True
-                elif ot in ["agent", "agency", "სააგენტო"]:
-                    is_owner = False
 
             return PropertyListing(
                 id=f"ss_ge_{source_id}",

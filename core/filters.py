@@ -284,13 +284,14 @@ class ListingFilter:
 
         return False
 
-    def matches_user(self, user: UserSubscription, listing: PropertyListing) -> bool:
+    def matches_user(self, user: UserSubscription, listing: PropertyListing, tentative: bool = False) -> bool:
         """
         Validates whether a listing matches an active user's personalized subscription criteria:
         - Price range
         - Area range
         - Minimum rooms
         - District preferences
+        - Owner/Agent status (strict or tentative before detail enrichment)
         """
         if not user.is_active:
             return False
@@ -343,11 +344,19 @@ class ListingFilter:
         # 5. Owner / Agent Preference Check
         user_owner_type = (getattr(user, "owner_type", "all") or "all").lower().strip()
         if user_owner_type in ["owner", "მესაკუთრე"]:
-            if listing.is_owner is not True:
-                return False
+            if tentative:
+                if listing.is_owner is False:
+                    return False
+            else:
+                if listing.is_owner is not True:
+                    return False
         elif user_owner_type in ["agent", "agency", "სააგენტო"]:
-            if listing.is_owner is not False:
-                return False
+            if tentative:
+                if listing.is_owner is True:
+                    return False
+            else:
+                if listing.is_owner is not False:
+                    return False
 
         return True
 

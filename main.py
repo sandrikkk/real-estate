@@ -199,7 +199,7 @@ class RealEstateOrchestrator:
             matching_users = [
                 u for u in active_users
                 if not self.db.is_user_notified(u.chat_id, listing.id)
-                and self.filter_engine.matches_user(u, listing)
+                and self.filter_engine.matches_user(u, listing, tentative=True)
             ]
 
             # Fallback for single-admin / legacy mode if no user matched via multi-user
@@ -235,11 +235,23 @@ class RealEstateOrchestrator:
                             listing.phone_number = _extract_phone_number(details.get("user_phone_number"), details.get("comment") or listing.description)
                         if details.get("price_label"):
                             myhome_label = details.get("price_label")
+            elif listing.source == "ss_ge":
+                ss_scraper = next((s for s in self.scrapers if s.name == "SS.ge"), None)
+                if ss_scraper and hasattr(ss_scraper, "fetch_statement_details"):
+                    details = await ss_scraper.fetch_statement_details(listing.url or listing.source_id)
+                    if details:
+                        if "is_owner" in details and details["is_owner"] is not None:
+                            listing.is_owner = bool(details["is_owner"])
+                        elif details.get("agency_id") or details.get("agency_name"):
+                            listing.is_owner = False
+                        if not listing.phone_number and details.get("phone_number"):
+                            from scrapers.myhome import _extract_phone_number
+                            listing.phone_number = _extract_phone_number(details["phone_number"], listing.description)
 
             # Re-verify matching users after detail enrichment (ensures verified is_owner status matches preferences)
             matching_users = [
                 u for u in matching_users
-                if self.filter_engine.matches_user(u, listing)
+                if self.filter_engine.matches_user(u, listing, tentative=False)
             ]
             if not matching_users:
                 self.db.save_listing(listing)

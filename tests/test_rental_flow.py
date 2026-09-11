@@ -165,7 +165,8 @@ class TestRentalFlow(unittest.TestCase):
         url = scraper._build_search_url(f_owner, page=1)
         self.assertIn("individualType=1", url)
 
-        # Even if raw SS item does not have isOwner field, filters.owner_type="owner" sets is_owner=True
+        # Raw SS search items do not have isOwner in search results, so is_owner is unverified (None)
+        # to prevent leaking brokers before detail page enrichment
         raw_ss_item = {
             "applicationId": 888888,
             "title": "ქირავდება 2 ოთახიანი ბინა სამგორში",
@@ -177,7 +178,7 @@ class TestRentalFlow(unittest.TestCase):
         listing = scraper._normalize_item(raw_ss_item, filters=f_owner)
         self.assertIsNotNone(listing)
         self.assertEqual(listing.deal_type, "rent")
-        self.assertTrue(listing.is_owner)
+        self.assertIsNone(listing.is_owner)
 
     def test_valeri_profile_matches_rent_listing(self):
         valeri = UserSubscription(
