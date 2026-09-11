@@ -93,38 +93,47 @@ class RealEstateOrchestrator:
             envelope = self.filter_engine.filters.model_copy()
             envelope.deal_type = dt
 
+            dt_users = [
+                u for u in active_users
+                if getattr(u, "deal_type", "sale") in [dt, "both"]
+            ]
+
             if dt == "rent":
                 rent_mins = [
                     getattr(u, "rent_price_min_usd", None) or (u.price_min_usd if getattr(u, "deal_type", "sale") == "rent" else None)
-                    for u in active_users
+                    for u in dt_users
                 ]
                 rent_mins = [p for p in rent_mins if p is not None]
                 rent_maxs = [
                     getattr(u, "rent_price_max_usd", None) or (u.price_max_usd if getattr(u, "deal_type", "sale") == "rent" else None)
-                    for u in active_users
+                    for u in dt_users
                 ]
                 rent_maxs = [p for p in rent_maxs if p is not None]
 
-                envelope.price_min_usd = min(rent_mins) if rent_mins else (self.filter_engine.filters.rent_price_min_usd or 300)
-                envelope.price_max_usd = max(rent_maxs) if rent_maxs else (self.filter_engine.filters.rent_price_max_usd or 1500)
+                min_val = min(rent_mins) if rent_mins else (self.filter_engine.filters.rent_price_min_usd or 300)
+                max_val = max(rent_maxs) if rent_maxs else (self.filter_engine.filters.rent_price_max_usd or 1500)
+                envelope.price_min_usd = min_val
+                envelope.price_max_usd = max_val
+                envelope.rent_price_min_usd = min_val
+                envelope.rent_price_max_usd = max_val
             else:
                 sale_mins = [
-                    u.price_min_usd for u in active_users
-                    if getattr(u, "deal_type", "sale") in ["sale", "both"] and u.price_min_usd is not None
+                    u.price_min_usd for u in dt_users
+                    if u.price_min_usd is not None
                 ]
                 sale_maxs = [
-                    u.price_max_usd for u in active_users
-                    if getattr(u, "deal_type", "sale") in ["sale", "both"] and u.price_max_usd is not None
+                    u.price_max_usd for u in dt_users
+                    if u.price_max_usd is not None
                 ]
                 if sale_mins:
                     envelope.price_min_usd = min(sale_mins)
                 if sale_maxs:
                     envelope.price_max_usd = max(sale_maxs)
 
-            if active_users:
-                valid_min_areas = [u.area_min_m2 for u in active_users if u.area_min_m2 is not None]
-                valid_max_areas = [u.area_max_m2 for u in active_users if u.area_max_m2 is not None]
-                valid_min_rooms = [u.rooms_min for u in active_users if u.rooms_min is not None]
+            if dt_users:
+                valid_min_areas = [u.area_min_m2 for u in dt_users if u.area_min_m2 is not None]
+                valid_max_areas = [u.area_max_m2 for u in dt_users if u.area_max_m2 is not None]
+                valid_min_rooms = [u.rooms_min for u in dt_users if u.rooms_min is not None]
                 if valid_min_areas:
                     envelope.area_min_m2 = min(valid_min_areas)
                 if valid_max_areas:
@@ -133,7 +142,7 @@ class RealEstateOrchestrator:
                     envelope.rooms_min = min(valid_min_rooms)
 
                 all_user_districts = set()
-                for u in active_users:
+                for u in dt_users:
                     if u.districts:
                         all_user_districts.update(u.districts)
                 if all_user_districts:
@@ -141,7 +150,7 @@ class RealEstateOrchestrator:
 
                 active_owner_types = {
                     (getattr(u, "owner_type", "all") or "all").lower().strip()
-                    for u in active_users
+                    for u in dt_users
                 }
                 if len(active_owner_types) == 1:
                     ot = list(active_owner_types)[0]

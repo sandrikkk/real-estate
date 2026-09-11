@@ -10,7 +10,7 @@ class TestMyHomeScraper(unittest.TestCase):
 
     def test_build_api_url_parameters(self):
         url = self.scraper._build_api_url(self.filters, page=1)
-        self.assertIn("deal_type_id=1", url)
+        self.assertIn("deal_types=1", url)
         self.assertIn("real_estate_type_id=1", url)
         self.assertIn("currency_id=2", url)
         self.assertIn("price_from=48000", url)

@@ -136,6 +136,12 @@ class SSGeScraper(BaseScraper):
                     is_owner = False
             elif item.get("agency") or item.get("agent") or item.get("agencyId") or item.get("companyName"):
                 is_owner = False
+            elif filters and filters.owner_type:
+                ot = str(filters.owner_type).lower().strip()
+                if ot in ["owner", "physical", "მესაკუთრე"]:
+                    is_owner = True
+                elif ot in ["agent", "agency", "სააგენტო"]:
+                    is_owner = False
 
             return PropertyListing(
                 id=f"ss_ge_{source_id}",

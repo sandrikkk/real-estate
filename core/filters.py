@@ -108,10 +108,10 @@ class ListingFilter:
         # Owner vs Agent Tagging
         if listing.user_type == "physical" or listing.is_owner is True:
             listing.is_owner = True
-        elif listing.user_type in ["agency", "developer"] or listing.is_owner is False:
+        elif listing.user_type in ["agency", "developer", "agent", "broker"] or listing.is_owner is False:
             listing.is_owner = False
         elif listing.is_owner is None:
-            if re.search(r'(?:ვარ\s+(?:მეპატრონე|მესაკუთრე)|სააგენტოებთან არ ვთანამშრომლობ)', text_corpus, re.IGNORECASE):
+            if re.search(r'(?:ვარ\s+(?:მეპატრონე|მესაკუთრე)|მესაკუთრისგან|სააგენტოებთან არ ვთანამშრომლობ|სააგენტოები ნუ|მაკლერები ნუ)', text_corpus, re.IGNORECASE):
                 listing.is_owner = True
 
         return True
@@ -196,22 +196,17 @@ class ListingFilter:
 
         # 1. Price
         is_rent = listing_deal == "rent"
-        if is_rent and getattr(user, "rent_price_min_usd", None) is not None:
+        if is_rent and user_deal == "rent":
+            min_p = user.price_min_usd if user.price_min_usd is not None else getattr(user, "rent_price_min_usd", 300)
+            max_p = user.price_max_usd if user.price_max_usd is not None else getattr(user, "rent_price_max_usd", 1500)
+        elif is_rent and getattr(user, "rent_price_min_usd", None) is not None:
             min_p = user.rent_price_min_usd
-        elif is_rent and user_deal == "rent":
-            min_p = user.price_min_usd
+            max_p = getattr(user, "rent_price_max_usd", 1500)
         elif not is_rent:
             min_p = user.price_min_usd
+            max_p = user.price_max_usd
         else:
             min_p = getattr(self.filters, "rent_price_min_usd", 300)
-
-        if is_rent and getattr(user, "rent_price_max_usd", None) is not None:
-            max_p = user.rent_price_max_usd
-        elif is_rent and user_deal == "rent":
-            max_p = user.price_max_usd
-        elif not is_rent:
-            max_p = user.price_max_usd
-        else:
             max_p = getattr(self.filters, "rent_price_max_usd", 1500)
 
         if min_p is not None and listing.price_usd < min_p:

@@ -102,10 +102,10 @@ class MyHomeScraper(BaseScraper):
         self.max_pages = max_pages
 
     def _build_api_url(self, filters: SearchFilters, page: int = 1) -> str:
-        deal_type_val = "1" if filters.deal_type == "sale" else "3"
+        deal_type_val = "1" if filters.deal_type == "sale" else "2"
         params = [
             "locale=ka",
-            f"deal_type_id={deal_type_val}",
+            f"deal_types={deal_type_val}",
             "real_estate_type_id=1",
             "currency_id=2",
             "cities=1",
@@ -143,7 +143,7 @@ class MyHomeScraper(BaseScraper):
             return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
 
         deal_path = "iyideba" if filters.deal_type == "sale" else "qiravdeba"
-        deal_type_val = "1" if filters.deal_type == "sale" else "3"
+        deal_type_val = "1" if filters.deal_type == "sale" else "2"
         url = f"https://www.myhome.ge/ka/s/{deal_path}-bina-tbilisi/?"
         params = [
             f"deal_types={deal_type_val}",
@@ -245,7 +245,7 @@ class MyHomeScraper(BaseScraper):
 
             # Deal type validation
             deal_type_id = item.get("deal_type_id")
-            deal_type = "rent" if str(deal_type_id) in ["3", "4"] else "sale"
+            deal_type = "rent" if str(deal_type_id) in ["2", "4"] else "sale"
             if filters:
                 if filters.deal_type == "sale" and deal_type != "sale":
                     return None
@@ -345,7 +345,7 @@ class MyHomeScraper(BaseScraper):
                 is_owner = bool(item["is_owner"])
             elif user_type_str == "physical":
                 is_owner = True
-            elif user_type_str in ["agency", "developer"]:
+            elif user_type_str in ["agency", "developer", "agent", "broker"]:
                 is_owner = False
 
             # Phone Number
