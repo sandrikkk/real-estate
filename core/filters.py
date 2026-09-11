@@ -105,11 +105,15 @@ class ListingFilter:
                 listing.deal_tag = "🚨 HOT DEAL (RENOVATED)"
                 listing.is_bargain = True
 
-        # Owner vs Agent Tagging
-        if listing.user_type == "physical" or listing.is_owner is True:
-            listing.is_owner = True
-        elif listing.user_type in ["agency", "developer", "agent", "broker"] or listing.is_owner is False:
+        # Owner vs Agent Tagging: explicit is_owner False or agent keywords always take precedence
+        if listing.is_owner is False or listing.user_type in ["agency", "developer", "agent", "broker"]:
             listing.is_owner = False
+        elif re.search(r'(?:ვარ\s+(?:აგენტი|მაკლერი)|სააგენტოდან|ჩვენი\s+სააგენტო|დაგვიკავშირდით\s+სააგენტო)', text_corpus, re.IGNORECASE):
+            listing.is_owner = False
+        elif listing.is_owner is True:
+            listing.is_owner = True
+        elif listing.user_type == "physical":
+            listing.is_owner = True
         elif listing.is_owner is None:
             if re.search(r'(?:ვარ\s+(?:მეპატრონე|მესაკუთრე)|მესაკუთრისგან|სააგენტოებთან არ ვთანამშრომლობ|სააგენტოები ნუ|მაკლერები ნუ)', text_corpus, re.IGNORECASE):
                 listing.is_owner = True

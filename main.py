@@ -221,6 +221,11 @@ class RealEstateOrchestrator:
                 if myhome_scraper and hasattr(myhome_scraper, "fetch_statement_details"):
                     details = await myhome_scraper.fetch_statement_details(listing.source_id)
                     if details:
+                        if "is_owner" in details and details["is_owner"] is not None:
+                            listing.is_owner = bool(details["is_owner"])
+                        elif details.get("agency_name") or details.get("broker") or details.get("agency"):
+                            listing.is_owner = False
+
                         if not listing.condition_id and details.get("condition_id"):
                             listing.condition_id = details.get("condition_id")
                             cond_obj = details.get("condition")
@@ -230,6 +235,15 @@ class RealEstateOrchestrator:
                             listing.phone_number = _extract_phone_number(details.get("user_phone_number"), details.get("comment") or listing.description)
                         if details.get("price_label"):
                             myhome_label = details.get("price_label")
+
+            # Re-verify matching users after detail enrichment (ensures verified is_owner status matches preferences)
+            matching_users = [
+                u for u in matching_users
+                if self.filter_engine.matches_user(u, listing)
+            ]
+            if not matching_users:
+                self.db.save_listing(listing)
+                continue
 
             self.analytics.evaluate_listing(
                 listing,
