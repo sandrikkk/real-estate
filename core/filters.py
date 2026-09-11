@@ -1,8 +1,25 @@
 import json
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 from core.models import PropertyListing, SearchFilters, UserSubscription
+
+
+DISTRICT_SYNONYMS: Dict[str, List[str]] = {
+    "დიდუბე": ["დიდუბე", "წერეთელი", "წერეთლის გამზ."],
+    "დიღმის მასივი": ["დიღმის მასივი", "დიღმის მას."],
+    "ჩუღურეთი": ["ჩუღურეთი", "კუკია", "სვანეთის უბანი", "მარჯანიშვილი", "ვორონცოვი"],
+    "ნაძალადევი": ["ნაძალადევი", "სანზონა", "სან. ზონა", "სან.ზონა", "თემქა", "ლოტკინი", "ნაძალადევის"],
+    "გლდანი": ["გლდანი", "მუხიანი", "ავჭალა", "კონიაკის დას.", "კონიაკი"],
+    "ვაკე": ["ვაკე", "ბაგები", "ვერა", "წყნეთი"],
+    "საბურთალო": ["საბურთალო", "ნუცუბიძის ფერდობი", "ნუცუბიძე", "ვაშლიჯვარი", "თხინვალი", "ლისი", "ვეძისი", "დელისი"],
+    "დიდი დიღომი": ["დიდი დიღომი", "დიღომი 1-9", "სოფ. დიღომი", "სოფელი დიღომი"],
+    "დიღომი": ["დიდი დიღომი", "დიღმის მასივი", "დიღომი 1-9", "სოფ. დიღომი", "სოფელი დიღომი"],
+    "ისანი": ["ისანი", "ავლაბარი", "ნავთლუღი", "მეტრომშენი", "300 არაგველი"],
+    "სამგორი": ["სამგორი", "ვარკეთილი", "ვაზისუბანი", "მესამე მასივი", "ორხევი", "აეროპორტის უბანი", "აეროპორტი", "მოსკოვის გამზირი", "მოსკოვის გამზ."],
+    "მთაწმინდა": ["მთაწმინდა", "სოლოლაკი", "რუსთაველი", "თავისუფლება"],
+    "კრწანისი": ["კრწანისი", "ორთაჭალა", "ფონიჭალა"],
+}
 
 
 class ListingFilter:
@@ -165,21 +182,70 @@ class ListingFilter:
                 return False
         else:
             allowed_districts = self.filters.target_districts or self.filters.whitelist_districts
-            if allowed_districts:
-                primary_loc = (listing.district or "").lower()
-                matched_district = False
-                for target in allowed_districts:
-                    target_low = target.lower()
-                    if target_low in primary_loc:
-                        matched_district = True
-                        break
-                    if listing.street and target_low in listing.street.lower():
-                        matched_district = True
-                        break
-                if not matched_district:
-                    return False
+            if allowed_districts and not self._matches_district_criteria(allowed_districts, listing):
+                return False
 
         return True
+
+    def _matches_district_criteria(self, allowed_districts: List[str], listing: PropertyListing) -> bool:
+        """
+        Validates whether a listing's location matches the allowed districts list.
+        Uses explicit district/urban matching with mapped sub-neighborhood synonyms,
+        preventing cross-district leakage from combined administrative names or random title mentions.
+        """
+        if not allowed_districts:
+            return True
+
+        listing_d_clean = (listing.district or "").strip().lower()
+        listing_s_clean = (listing.street or "").strip().lower()
+        listing_t_clean = (listing.title or "").strip().lower()
+
+        # 1. Primary check on listing.district if present
+        if listing_d_clean:
+            for user_d in allowed_districts:
+                ud_clean = user_d.strip().lower()
+                synonyms = DISTRICT_SYNONYMS.get(user_d, [])
+                allowed_targets = [ud_clean] + [syn.lower() for syn in synonyms]
+
+                for target in allowed_targets:
+                    if target == listing_d_clean or target in listing_d_clean or listing_d_clean in target:
+                        return True
+                    stem = target.rstrip("ი")
+                    if len(stem) >= 3 and stem in listing_d_clean:
+                        return True
+
+            # If district is a recognized primary district but did not match allowed targets, reject immediately
+            primary_districts = {
+                "დიდუბე", "ჩუღურეთი", "ნაძალადევი", "გლდანი", "საბურთალო", "ვაკე",
+                "დიდი დიღომი", "დიღმის მასივი", "ისანი", "სამგორი", "მთაწმინდა", "კრწანისი"
+            }
+            if listing_d_clean in primary_districts:
+                return False
+
+            # Otherwise, if district was custom/street name, check street as well
+            if listing_s_clean:
+                for user_d in allowed_districts:
+                    ud_clean = user_d.strip().lower()
+                    if ud_clean in listing_s_clean:
+                        return True
+
+            return False
+
+        # 2. Fallback when listing.district is None (search street, title, and subdistrict)
+        fallback_corpus = f"{listing_s_clean} {listing_t_clean} {(listing.subdistrict or '').lower()}".strip()
+        if fallback_corpus:
+            for user_d in allowed_districts:
+                ud_clean = user_d.strip().lower()
+                synonyms = DISTRICT_SYNONYMS.get(user_d, [])
+                allowed_targets = [ud_clean] + [syn.lower() for syn in synonyms]
+                for target in allowed_targets:
+                    if target in fallback_corpus:
+                        return True
+                    stem = target.rstrip("ი")
+                    if len(stem) >= 3 and stem in fallback_corpus:
+                        return True
+
+        return False
 
     def matches_user(self, user: UserSubscription, listing: PropertyListing) -> bool:
         """
@@ -234,18 +300,7 @@ class ListingFilter:
 
         # 4. Districts
         if user.districts and len(user.districts) > 0:
-            loc_corpus = f"{listing.district or ''} {listing.subdistrict or ''} {listing.street or ''} {listing.title or ''}".lower()
-            matched_dist = False
-            for d in user.districts:
-                d_low = d.strip().lower()
-                if d_low in loc_corpus:
-                    matched_dist = True
-                    break
-                stem = d_low.rstrip("ი")
-                if len(stem) >= 3 and stem in loc_corpus:
-                    matched_dist = True
-                    break
-            if not matched_dist:
+            if not self._matches_district_criteria(user.districts, listing):
                 return False
 
         # 5. Owner / Agent Preference Check

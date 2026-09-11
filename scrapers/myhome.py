@@ -314,8 +314,19 @@ class MyHomeScraper(BaseScraper):
             title = item.get("dynamic_title") or item.get("title") or item.get("user_title") or "ბინა MyHome-ზე"
             description = item.get("comment") or item.get("description") or ""
             city = item.get("city_name") or "თბილისი"
-            district = item.get("urban_name") or item.get("district_name")
-            subdistrict = item.get("district_name") if item.get("urban_name") != item.get("district_name") else None
+            urban_name = item.get("urban_name")
+            district_name = item.get("district_name")
+            district = urban_name or district_name
+
+            parent_dual_districts = {
+                "ვაკე-საბურთალო", "გლდანი-ნაძალადევი", "დიდუბე-ჩუღურეთი",
+                "ისანი-სამგორი", "ძველი თბილისი", "თბილისის შემოგარენი"
+            }
+            subdistrict = (
+                district_name
+                if urban_name and district_name and district_name != urban_name and district_name not in parent_dual_districts
+                else None
+            )
             street = item.get("address") or item.get("street_address")
             floor = str(item.get("floor")) if item.get("floor") is not None else None
             total_floors = _safe_int(item.get("total_floors"))

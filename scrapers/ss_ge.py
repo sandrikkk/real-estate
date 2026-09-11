@@ -83,8 +83,19 @@ class SSGeScraper(BaseScraper):
 
             addr_obj = item.get("address") or {}
             city = addr_obj.get("cityTitle") or "თბილისი"
-            district = addr_obj.get("subdistrictTitle") or addr_obj.get("districtTitle")
-            subdistrict = addr_obj.get("districtTitle") if addr_obj.get("subdistrictTitle") != addr_obj.get("districtTitle") else None
+            specific_loc = addr_obj.get("subdistrictTitle")
+            parent_loc = addr_obj.get("districtTitle")
+            district = specific_loc or parent_loc
+
+            parent_dual_districts = {
+                "ვაკე-საბურთალო", "გლდანი-ნაძალადევი", "დიდუბე-ჩუღურეთი",
+                "ისანი-სამგორი", "ძველი თბილისი", "თბილისის შემოგარენი"
+            }
+            subdistrict = (
+                parent_loc
+                if specific_loc and parent_loc != specific_loc and parent_loc not in parent_dual_districts
+                else None
+            )
             
             street_title = addr_obj.get("streetTitle") or ""
             street_num = addr_obj.get("streetNumber") or ""
