@@ -1,70 +1,37 @@
 import json
 import re
-import urllib.parse
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from curl_cffi.requests import AsyncSession
 from core.models import PropertyListing, SearchFilters
 from scrapers.base import BaseScraper
 from scrapers.myhome import (
     METRO_STATIONS,
     CONDITIONS,
-    BUILDING_STATUSES,
     _safe_int,
     _extract_phone_number,
 )
 
 
 class SSGeScraper(BaseScraper):
-    API_BASE = "https://api-statements.tnet.ge/v1/statements"
-    API_HEADERS = {
-        "locale": "ka",
-        "X-Website-Key": "ss",
-        "Accept": "application/json, text/plain, */*",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-    }
-
     def __init__(self, timeout: int = 15, max_pages: int = 3):
         super().__init__(name="SS.ge", timeout=timeout)
         self.max_pages = max_pages
-
-    def _build_api_url(self, filters: SearchFilters, page: int = 1) -> str:
-        deal_type_val = "1" if filters.deal_type == "sale" else "2"
-        params = [
-            "locale=ka",
-            f"deal_types={deal_type_val}",
-            "real_estate_type_id=1",
-            "currency_id=2",
-            "cities=1",
-            "statuses=1,2",           # Exclude status 3 (under construction) at API level
-            f"page={page}",
-        ]
-
-        min_p = (filters.rent_price_min_usd if filters.deal_type == "rent" and filters.rent_price_min_usd is not None else filters.price_min_usd)
-        max_p = (filters.rent_price_max_usd if filters.deal_type == "rent" and filters.rent_price_max_usd is not None else filters.price_max_usd)
-        if min_p is not None:
-            params.append(f"price_from={int(min_p)}")
-        if max_p is not None:
-            params.append(f"price_to={int(max_p)}")
-        if filters.area_min_m2 is not None:
-            params.append(f"area_from={int(filters.area_min_m2)}")
-        if filters.area_max_m2 is not None:
-            params.append(f"area_to={int(filters.area_max_m2)}")
-        if filters.owner_type:
-            ot = str(filters.owner_type).lower().strip()
-            if ot in ["owner", "physical", "მესაკუთრე"]:
-                params.append("owner_type=physical")
-            elif ot in ["agent", "agency", "სააგენტო"]:
-                params.append("owner_type=agent")
-
-        return f"{self.API_BASE}?{'&'.join(params)}"
 
     def _build_search_url(self, filters: SearchFilters, page: int = 1) -> str:
         deal_path = "iyideba" if filters.deal_type == "sale" else "qiravdeba"
         url = f"https://home.ss.ge/ka/udzravi-qoneba/l/bina/{deal_path}?city=1&priceType=1&page={page}"
 
         params = []
-        min_p = (filters.rent_price_min_usd if filters.deal_type == "rent" and filters.rent_price_min_usd is not None else filters.price_min_usd)
-        max_p = (filters.rent_price_max_usd if filters.deal_type == "rent" and filters.rent_price_max_usd is not None else filters.price_max_usd)
+        min_p = (
+            filters.rent_price_min_usd
+            if filters.deal_type == "rent" and filters.rent_price_min_usd is not None
+            else filters.price_min_usd
+        )
+        max_p = (
+            filters.rent_price_max_usd
+            if filters.deal_type == "rent" and filters.rent_price_max_usd is not None
+            else filters.price_max_usd
+        )
         if min_p is not None:
             params.append(f"priceFrom={int(min_p)}")
         if max_p is not None:
@@ -83,23 +50,6 @@ class SSGeScraper(BaseScraper):
         if params:
             url += "&" + "&".join(params)
         return url
-
-    async def _fetch_api_page(self, url: str) -> Optional[List[dict]]:
-        """Directly queries the TNET statements JSON API for SS.ge using impersonated TLS session."""
-        try:
-            async with AsyncSession(impersonate="chrome124") as session:
-                response = await session.get(url, headers=self.API_HEADERS, timeout=self.timeout)
-                if response.status_code == 200:
-                    payload = response.json()
-                    data = payload.get("data", {})
-                    items = data.get("data") if isinstance(data, dict) else None
-                    if isinstance(items, list):
-                        return items
-                else:
-                    print(f"[SS.ge API Warning]: Status {response.status_code} for API query")
-        except Exception as e:
-            print(f"[SS.ge API Error]: {e}")
-        return None
 
     def _extract_listings_from_html(self, html_text: str) -> List[dict]:
         match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html_text, re.DOTALL)
@@ -124,94 +74,44 @@ class SSGeScraper(BaseScraper):
 
     async def fetch_statement_details(self, source_id_or_url: str) -> Optional[dict]:
         """
-        Enriches an SS.ge listing with verified details from TNET statements API or Next.js dehydrated state:
-        is_owner, agency_id, agency_name, user_entity_type, phone_number, condition_id, condition, price_label.
+        Enriches an SS.ge listing with verified details from Next.js dehydrated state:
+        is_owner, agency_id, agency_name, user_entity_type, phone_number, condition_id, condition_name, price_label.
         """
-        # Extract numeric statement ID safely without query parameters or hash fragments
         clean_source = str(source_id_or_url).split("?")[0].split("#")[0].rstrip("/")
-        digits = re.findall(r"\d+", clean_source)
-        stmt_id = digits[-1] if digits else str(source_id_or_url)
-
-        # 1. Primary Strategy: TNET Statement Details JSON API
-        if stmt_id.isdigit():
-            api_url = f"{self.API_BASE}/{stmt_id}?locale=ka"
-            req_timeout = min(self.timeout, 8)
-            try:
-                async with AsyncSession(impersonate="chrome124") as session:
-                    response = await session.get(api_url, headers=self.API_HEADERS, timeout=req_timeout)
-                    if response.status_code == 200:
-                        payload = response.json()
-                        stmt_data = payload.get("data", {}).get("statement") or {}
-                        if stmt_data:
-                            user_type_data = stmt_data.get("user_type") or {}
-                            user_type_str = (
-                                user_type_data.get("type")
-                                if isinstance(user_type_data, dict)
-                                else str(user_type_data or "").lower()
-                            )
-                            agency_id = stmt_data.get("agency_id") or stmt_data.get("externalCompanyId")
-                            agency_name = stmt_data.get("agency_name") or stmt_data.get("companyName")
-                            app_count = stmt_data.get("user_statements_count") or 0
-
-                            is_owner = None
-                            if (
-                                agency_id
-                                or agency_name
-                                or user_type_str in ["agent", "agency", "broker", "developer", "company"]
-                                or (isinstance(app_count, int) and app_count > 10)
-                            ):
-                                is_owner = False
-                            elif user_type_str == "physical" and not agency_id and not agency_name:
-                                is_owner = True
-
-                            phone_raw = stmt_data.get("user_phone_number")
-                            comment = stmt_data.get("comment") or ""
-                            clean_phone = _extract_phone_number(phone_raw, comment)
-
-                            cond_obj = stmt_data.get("condition")
-                            cond_name = cond_obj.get("name") if isinstance(cond_obj, dict) else (cond_obj or None)
-
-                            res = dict(stmt_data)
-                            res.update({
-                                "is_owner": is_owner,
-                                "agency_id": agency_id,
-                                "agency_name": agency_name,
-                                "user_entity_type": user_type_str,
-                                "phone_number": clean_phone,
-                                "user_phone_number": clean_phone,
-                                "condition_id": stmt_data.get("condition_id"),
-                                "condition": stmt_data.get("condition"),
-                                "condition_name": cond_name,
-                                "status_id": stmt_data.get("status_id"),
-                                "price_label": stmt_data.get("price_label"),
-                                "metro_station_id": stmt_data.get("metro_station_id"),
-                                "comment": comment,
-                            })
-                            return res
-            except Exception as e:
-                print(f"[SS.ge API Statement Detail Error for {stmt_id}]: {e}")
-
-        # 2. Fallback Strategy: SSR HTML Scraping
-        if str(source_id_or_url).startswith("http"):
-            url = str(source_id_or_url)
+        if clean_source.startswith("http"):
+            url = clean_source
         else:
-            url = f"https://home.ss.ge/ka/udzravi-qoneba/{source_id_or_url}"
-
+            id_match = re.search(r"(\d{5,})", clean_source)
+            stmt_id = (
+                id_match.group(1)
+                if id_match
+                else (re.findall(r"\d+", clean_source) or [str(source_id_or_url)])[-1]
+            )
+            url = f"https://home.ss.ge/ka/udzravi-qoneba/{stmt_id}"
         try:
             async with AsyncSession(impersonate="chrome124") as session:
                 response = await session.get(url, timeout=self.timeout)
                 if response.status_code == 200:
-                    match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', response.text, re.DOTALL)
+                    match = re.search(
+                        r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', response.text, re.DOTALL
+                    )
                     if match:
                         data = json.loads(match.group(1))
                         props = data.get("props", {}).get("pageProps", {})
                         app_data = props.get("applicationData") or {}
                         agent_info = props.get("initialAgentInfoData") or {}
 
-                        agency_id = app_data.get("agencyId") or app_data.get("externalCompanyId") or agent_info.get("companyId")
-                        agency_name = app_data.get("agencyName") or app_data.get("companyName") or agent_info.get("companyName")
+                        agency_id = (
+                            app_data.get("agencyId")
+                            or app_data.get("externalCompanyId")
+                            or agent_info.get("companyId")
+                        )
+                        agency_name = (
+                            app_data.get("agencyName")
+                            or app_data.get("companyName")
+                            or agent_info.get("companyName")
+                        )
                         user_entity_type = str(app_data.get("userEntityType") or "").lower()
-                        company_type = agent_info.get("companyType")
                         app_count = app_data.get("userApplicationCount") or 0
 
                         is_owner = None
@@ -222,7 +122,8 @@ class SSGeScraper(BaseScraper):
                             or "agent" in user_entity_type
                             or "agency" in user_entity_type
                             or "company" in user_entity_type
-                            or company_type == 2
+                            or (agent_info.get("companyId") is not None)
+                            or (agent_info.get("infoType") == 2)
                             or (isinstance(app_count, int) and app_count > 10)
                         ):
                             is_owner = False
@@ -243,22 +144,57 @@ class SSGeScraper(BaseScraper):
                             elif isinstance(first_p, str):
                                 phone_number = first_p
 
+                        raw_desc = app_data.get("comment") or app_data.get("description") or ""
+                        if isinstance(raw_desc, dict):
+                            comment = raw_desc.get("ka") or raw_desc.get("text") or str(raw_desc)
+                        else:
+                            comment = str(raw_desc or "")
+                        clean_phone = _extract_phone_number(phone_number, comment)
+
+                        cond_name = app_data.get("state")
+                        status_id = app_data.get("realEstateStatusId")
+                        price_label = app_data.get("priceLevel")
+
+                        condition_id = None
+                        if cond_name:
+                            for cid, cname in CONDITIONS.items():
+                                if (
+                                    cname.lower() in cond_name.lower()
+                                    or cond_name.lower() in cname.lower()
+                                ):
+                                    condition_id = cid
+                                    break
+
                         return {
                             "is_owner": is_owner,
                             "agency_id": agency_id,
                             "agency_name": agency_name,
                             "user_entity_type": user_entity_type,
-                            "phone_number": phone_number,
-                            "user_phone_number": phone_number,
+                            "phone_number": clean_phone,
+                            "user_phone_number": clean_phone,
+                            "condition_id": condition_id,
+                            "condition_name": cond_name,
+                            "status_id": status_id,
+                            "price_label": price_label,
+                            "comment": comment,
                         }
         except Exception as e:
             print(f"[SS.ge Statement Detail Error for {source_id_or_url}]: {e}")
         return None
 
-    def _normalize_item(self, item: dict, filters: Optional[SearchFilters] = None) -> Optional[PropertyListing]:
+    def _normalize_item(
+        self, item: dict, filters: Optional[SearchFilters] = None
+    ) -> Optional[PropertyListing]:
         try:
-            source_id = str(item.get("id") or item.get("statement_id") or item.get("applicationId") or "")
+            source_id = str(
+                item.get("id") or item.get("statement_id") or item.get("applicationId") or ""
+            )
             if not source_id:
+                return None
+
+            # Real estate type validation (1 is apartment/flat)
+            ret_id = item.get("real_estate_type_id")
+            if ret_id is not None and str(ret_id) != "1":
                 return None
 
             # Deal type validation
@@ -268,7 +204,11 @@ class SSGeScraper(BaseScraper):
             else:
                 detail_url_check = str(item.get("dynamic_slug") or item.get("detailUrl") or "")
                 title_check = str(item.get("dynamic_title") or item.get("title") or "")
-                deal_type = "rent" if "qiravdeba" in (detail_url_check + " " + title_check).lower() else "sale"
+                deal_type = (
+                    "rent"
+                    if "qiravdeba" in (detail_url_check + " " + title_check).lower()
+                    else "sale"
+                )
 
             if filters:
                 if filters.deal_type == "sale" and deal_type != "sale":
@@ -327,7 +267,9 @@ class SSGeScraper(BaseScraper):
 
             # Area extraction
             try:
-                area_m2 = float(item.get("area") or item.get("totalArea") or item.get("area_size") or 0)
+                area_m2 = float(
+                    item.get("area") or item.get("totalArea") or item.get("area_size") or 0
+                )
             except (ValueError, TypeError):
                 area_m2 = 0.0
 
@@ -342,12 +284,18 @@ class SSGeScraper(BaseScraper):
             district = specific_loc or parent_loc
 
             parent_dual_districts = {
-                "ვაკე-საბურთალო", "გლდანი-ნაძალადევი", "დიდუბე-ჩუღურეთი",
-                "ისანი-სამგორი", "ძველი თბილისი", "თბილისის შემოგარენი"
+                "ვაკე-საბურთალო",
+                "გლდანი-ნაძალადევი",
+                "დიდუბე-ჩუღურეთი",
+                "ისანი-სამგორი",
+                "ძველი თბილისი",
+                "თბილისის შემოგარენი",
             }
             subdistrict = (
                 parent_loc
-                if specific_loc and parent_loc != specific_loc and parent_loc not in parent_dual_districts
+                if specific_loc
+                and parent_loc != specific_loc
+                and parent_loc not in parent_dual_districts
                 else None
             )
 
@@ -360,11 +308,27 @@ class SSGeScraper(BaseScraper):
             else:
                 street = item.get("street_address") or None
 
-            title = item.get("dynamic_title") or item.get("title") or item.get("shortTitle") or item.get("user_title") or "ბინა SS.ge-ზე"
-            description = item.get("comment") or item.get("description") or ""
+            title = (
+                item.get("dynamic_title")
+                or item.get("title")
+                or item.get("shortTitle")
+                or item.get("user_title")
+                or "ბინა SS.ge-ზე"
+            )
+            raw_desc = item.get("comment") or item.get("description") or ""
+            if isinstance(raw_desc, dict):
+                description = raw_desc.get("ka") or raw_desc.get("text") or str(raw_desc)
+            else:
+                description = str(raw_desc or "")
 
-            floor = str(item.get("floor")) if item.get("floor") is not None else (str(item.get("floorNumber")) if item.get("floorNumber") is not None else None)
-            total_floors = _safe_int(item.get("total_floors")) or _safe_int(item.get("totalAmountOfFloor"))
+            floor = (
+                str(item.get("floor"))
+                if item.get("floor") is not None
+                else (str(item.get("floorNumber")) if item.get("floorNumber") is not None else None)
+            )
+            total_floors = _safe_int(item.get("total_floors")) or _safe_int(
+                item.get("totalAmountOfFloor")
+            )
             rooms = _safe_int(item.get("room")) or _safe_int(item.get("numberOfRooms"))
             if not rooms and title:
                 room_match = re.search(r"(\d+)\s*(?:-|–)?\s*ოთახ", title)
@@ -378,9 +342,14 @@ class SSGeScraper(BaseScraper):
             if isinstance(raw_images, list):
                 for img in raw_images:
                     if isinstance(img, dict):
-                        url = img.get("large") or img.get("thumb") or img.get("fileName") or img.get("url")
-                        if url:
-                            images.append(url)
+                        img_url = (
+                            img.get("large")
+                            or img.get("thumb")
+                            or img.get("fileName")
+                            or img.get("url")
+                        )
+                        if img_url:
+                            images.append(img_url)
                     elif isinstance(img, str):
                         images.append(img)
 
@@ -390,14 +359,23 @@ class SSGeScraper(BaseScraper):
                 slug_str = str(slug).lstrip("/")
                 if slug_str.startswith("http"):
                     url = slug_str
-                elif str(source_id) in slug_str:
-                    url = f"https://home.ss.ge/ka/udzravi-qoneba/{slug_str}"
                 else:
-                    url = f"https://home.ss.ge/ka/udzravi-qoneba/{slug_str}-{source_id}"
+                    slug_clean = re.sub(
+                        r"^(?:(?:ka|en|ru)/)?(?:udzravi-qoneba/)?(?:l/)?", "", slug_str
+                    )
+                    if str(source_id) in slug_clean:
+                        url = f"https://home.ss.ge/ka/udzravi-qoneba/{slug_clean}"
+                    else:
+                        url = f"https://home.ss.ge/ka/udzravi-qoneba/{slug_clean}-{source_id}"
             else:
                 url = f"https://home.ss.ge/ka/udzravi-qoneba/{source_id}"
 
-            published_at = item.get("last_updated") or item.get("created_at") or item.get("orderDate") or item.get("createDate")
+            published_at = (
+                item.get("last_updated")
+                or item.get("created_at")
+                or item.get("orderDate")
+                or item.get("createDate")
+            )
 
             # Metro Station
             metro_id = _safe_int(item.get("metro_station_id"))
@@ -431,7 +409,12 @@ class SSGeScraper(BaseScraper):
                     is_owner = True
                 elif "agent" in ut or "agency" in ut or "company" in ut:
                     is_owner = False
-            elif item.get("agency") or item.get("agent") or item.get("agencyId") or item.get("companyName"):
+            elif (
+                item.get("agency")
+                or item.get("agent")
+                or item.get("agencyId")
+                or item.get("companyName")
+            ):
                 is_owner = False
 
             # Phone extraction
@@ -468,30 +451,30 @@ class SSGeScraper(BaseScraper):
                 phone_number=phone_number,
             )
         except Exception as e:
-            print(f"[SS.ge Normalization Error for item {item.get('id') or item.get('applicationId')}]: {e}")
+            print(
+                f"[SS.ge Normalization Error for item {item.get('id') or item.get('applicationId')}]: {e}"
+            )
             return None
 
     async def fetch_listings(self, filters: SearchFilters) -> List[PropertyListing]:
         all_listings: List[PropertyListing] = []
-        for page in range(1, self.max_pages + 1):
-            raw_items = None
-            # 1. Primary Strategy: Direct JSON API (TNET api-statements.tnet.ge)
-            api_url = self._build_api_url(filters, page=page)
-            raw_items = await self._fetch_api_page(api_url)
-
-            # 2. Fallback Strategy: SSR HTML Parsing
-            if not raw_items:
-                search_url = self._build_search_url(filters, page=page)
+        deal_types = ["sale", "rent"] if filters.deal_type == "both" else [filters.deal_type]
+        for dt in deal_types:
+            dt_filters = filters.model_copy()
+            dt_filters.deal_type = dt
+            for page in range(1, self.max_pages + 1):
+                search_url = self._build_search_url(dt_filters, page=page)
                 html = await self.fetch_html(search_url)
-                if html:
-                    raw_items = self._extract_listings_from_html(html)
+                if not html:
+                    break
 
-            if not raw_items:
-                break
+                raw_items = self._extract_listings_from_html(html)
+                if not raw_items:
+                    break
 
-            for raw in raw_items:
-                normalized = self._normalize_item(raw, filters=filters)
-                if normalized:
-                    all_listings.append(normalized)
+                for raw in raw_items:
+                    normalized = self._normalize_item(raw, filters=dt_filters)
+                    if normalized:
+                        all_listings.append(normalized)
 
         return all_listings

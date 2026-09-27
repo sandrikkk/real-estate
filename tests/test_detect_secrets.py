@@ -37,10 +37,18 @@ class TestDetectSecrets(unittest.TestCase):
         hits = check_content_line(line)
         self.assertTrue(any(h[0] == "Cloudflare Sync Key / API Token" for h in hits))
 
+        line_yaml = "CLOUDFLARE_SYNC_KEY: 'super_secret_cloudflare_sync_key_1234'"
+        hits_yaml = check_content_line(line_yaml)
+        self.assertTrue(any(h[0] == "Cloudflare Sync Key / API Token" for h in hits_yaml))
+
     def test_detect_scraper_api_key(self):
         line = 'SCRAPER_API_KEY = "abcdef0123456789abcdef0123456789"'
         hits = check_content_line(line)
         self.assertTrue(any(h[0] == "Scraper API Key" for h in hits))
+
+        line_yaml = 'SCRAPER_API_KEY: "abcdef0123456789abcdef0123456789"'
+        hits_yaml = check_content_line(line_yaml)
+        self.assertTrue(any(h[0] == "Scraper API Key" for h in hits_yaml))
 
     def test_detect_private_key(self):
         line = "-----BEGIN RSA PRIVATE KEY-----"

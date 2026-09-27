@@ -5,7 +5,6 @@ from typing import List, Optional, Dict, Any
 from curl_cffi.requests import AsyncSession
 from core.models import PropertyListing, SearchFilters
 from scrapers.base import BaseScraper
-from config import settings
 
 
 METRO_STATIONS: Dict[int, str] = {
@@ -69,7 +68,9 @@ def _extract_phone_number(raw_phone: Optional[str], comment: Optional[str]) -> O
     """
     if comment:
         # Match Georgian 9-digit numbers starting with 5, optionally with +995 or 0 prefix
-        matches = re.findall(r"(?:\+?995\s*|0)?(5\d{2}[\s.-]?\d{2}[\s.-]?\d{2}[\s.-]?\d{2}|5\d{8})", comment)
+        matches = re.findall(
+            r"(?:\+?995\s*|0)?(5\d{2}[\s.-]?\d{2}[\s.-]?\d{2}[\s.-]?\d{2}|5\d{8})", comment
+        )
         for m in matches:
             clean = re.sub(r"\D", "", m)
             if len(clean) == 9 and clean.startswith("5"):
@@ -102,21 +103,36 @@ class MyHomeScraper(BaseScraper):
         self.max_pages = max_pages
 
     def _build_api_url(self, filters: SearchFilters, page: int = 1) -> str:
-        deal_type_val = "1" if filters.deal_type == "sale" else "2"
+        if filters.deal_type == "both":
+            deal_type_val = "1,2"
+        elif filters.deal_type == "sale":
+            deal_type_val = "1"
+        else:
+            deal_type_val = "2"
         params = [
             "locale=ka",
             f"deal_types={deal_type_val}",
-            "real_estate_type_id=1",
+            "real_estate_types=1",
             "currency_id=2",
             "cities=1",
-            "statuses=1,2",           # Exclude status 3 (under construction) at API level
+            "statuses=1,2",  # Exclude status 3 (under construction) at API level
             f"page={page}",
         ]
         if filters.deal_type != "rent":
-            params.append("conditions=1,2,3,5,8")     # Exclude condition 6 (black frame) and 4 at API level
+            params.append(
+                "conditions=1,2,3,5,8"
+            )  # Exclude condition 6 (black frame) and 4 at API level
 
-        min_p = (filters.rent_price_min_usd if filters.deal_type == "rent" and filters.rent_price_min_usd is not None else filters.price_min_usd)
-        max_p = (filters.rent_price_max_usd if filters.deal_type == "rent" and filters.rent_price_max_usd is not None else filters.price_max_usd)
+        min_p = (
+            filters.rent_price_min_usd
+            if filters.deal_type == "rent" and filters.rent_price_min_usd is not None
+            else filters.price_min_usd
+        )
+        max_p = (
+            filters.rent_price_max_usd
+            if filters.deal_type == "rent" and filters.rent_price_max_usd is not None
+            else filters.price_max_usd
+        )
         if min_p is not None:
             params.append(f"price_from={int(min_p)}")
         if max_p is not None:
@@ -140,7 +156,9 @@ class MyHomeScraper(BaseScraper):
             query_params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
             query_params["page"] = [str(page)]
             new_query = urllib.parse.urlencode(query_params, doseq=True, safe=",")
-            return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
+            return urllib.parse.urlunsplit(
+                (parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment)
+            )
 
         deal_path = "iyideba" if filters.deal_type == "sale" else "qiravdeba"
         deal_type_val = "1" if filters.deal_type == "sale" else "2"
@@ -158,8 +176,16 @@ class MyHomeScraper(BaseScraper):
         if filters.deal_type != "rent":
             params.append("conditions=1,2,3,5,8")
 
-        min_p = (filters.rent_price_min_usd if filters.deal_type == "rent" and filters.rent_price_min_usd is not None else filters.price_min_usd)
-        max_p = (filters.rent_price_max_usd if filters.deal_type == "rent" and filters.rent_price_max_usd is not None else filters.price_max_usd)
+        min_p = (
+            filters.rent_price_min_usd
+            if filters.deal_type == "rent" and filters.rent_price_min_usd is not None
+            else filters.price_min_usd
+        )
+        max_p = (
+            filters.rent_price_max_usd
+            if filters.deal_type == "rent" and filters.rent_price_max_usd is not None
+            else filters.price_max_usd
+        )
         if min_p is not None:
             params.append(f"price_from={int(min_p)}")
         if max_p is not None:
@@ -205,7 +231,11 @@ class MyHomeScraper(BaseScraper):
             queries = page_props.get("dehydratedState", {}).get("queries", [])
             for q in queries:
                 key = q.get("queryKey", [])
-                if isinstance(key, list) and len(key) > 0 and str(key[0]) in ["statements", "search", "statementList", "listings"]:
+                if (
+                    isinstance(key, list)
+                    and len(key) > 0
+                    and str(key[0]) in ["statements", "search", "statementList", "listings"]
+                ):
                     st = q.get("state", {}).get("data", {})
                     if isinstance(st, dict):
                         inner = st.get("data", {})
@@ -237,10 +267,17 @@ class MyHomeScraper(BaseScraper):
             print(f"[MyHome.ge Statement Detail Error for {source_id}]: {e}")
         return None
 
-    def _normalize_item(self, item: dict, filters: Optional[SearchFilters] = None) -> Optional[PropertyListing]:
+    def _normalize_item(
+        self, item: dict, filters: Optional[SearchFilters] = None
+    ) -> Optional[PropertyListing]:
         try:
             source_id = str(item.get("id") or item.get("statement_id") or "")
             if not source_id:
+                return None
+
+            # Real estate type validation (1 is apartment/flat)
+            ret_id = item.get("real_estate_type_id")
+            if ret_id is not None and str(ret_id) != "1":
                 return None
 
             # Deal type validation
@@ -311,7 +348,12 @@ class MyHomeScraper(BaseScraper):
                         images.append(img)
 
             # Metadata
-            title = item.get("dynamic_title") or item.get("title") or item.get("user_title") or "ბინა MyHome-ზე"
+            title = (
+                item.get("dynamic_title")
+                or item.get("title")
+                or item.get("user_title")
+                or "ბინა MyHome-ზე"
+            )
             description = item.get("comment") or item.get("description") or ""
             city = item.get("city_name") or "თბილისი"
             urban_name = item.get("urban_name")
@@ -319,12 +361,19 @@ class MyHomeScraper(BaseScraper):
             district = urban_name or district_name
 
             parent_dual_districts = {
-                "ვაკე-საბურთალო", "გლდანი-ნაძალადევი", "დიდუბე-ჩუღურეთი",
-                "ისანი-სამგორი", "ძველი თბილისი", "თბილისის შემოგარენი"
+                "ვაკე-საბურთალო",
+                "გლდანი-ნაძალადევი",
+                "დიდუბე-ჩუღურეთი",
+                "ისანი-სამგორი",
+                "ძველი თბილისი",
+                "თბილისის შემოგარენი",
             }
             subdistrict = (
                 district_name
-                if urban_name and district_name and district_name != urban_name and district_name not in parent_dual_districts
+                if urban_name
+                and district_name
+                and district_name != urban_name
+                and district_name not in parent_dual_districts
                 else None
             )
             street = item.get("address") or item.get("street_address")

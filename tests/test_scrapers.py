@@ -9,10 +9,7 @@ from scrapers.area_ge import AreaGeScraper
 class TestScrapers(unittest.TestCase):
     def setUp(self):
         self.filters = SearchFilters(
-            price_min_usd=50000,
-            price_max_usd=100000,
-            area_min_m2=40,
-            area_max_m2=120
+            price_min_usd=50000, price_max_usd=100000, area_min_m2=40, area_max_m2=120
         )
 
     def test_myhome_scraper_parsing(self):
@@ -21,9 +18,7 @@ class TestScrapers(unittest.TestCase):
             "id": 8881234,
             "dynamic_title": "იყიდება 2 ოთახიანი ბინა საბურთალოზე",
             "comment": "კარგი რემონტით",
-            "price": {
-                "2": {"price_total": 75000}
-            },
+            "price": {"2": {"price_total": 75000}},
             "area": 55,
             "urban_name": "საბურთალო",
             "district_name": "ვაკე-საბურთალო",
@@ -33,9 +28,7 @@ class TestScrapers(unittest.TestCase):
             "total_floors": 12,
             "bedroom": "1",
             "room": "2",
-            "images": [
-                {"large": "https://example.com/img1.jpg"}
-            ]
+            "images": [{"large": "https://example.com/img1.jpg"}],
         }
         normalized = scraper._normalize_item(sample_raw)
         self.assertIsNotNone(normalized)
@@ -62,25 +55,20 @@ class TestScrapers(unittest.TestCase):
             "applicationId": 7779876,
             "title": "იყიდება 3 ოთახიანი ბინა ვაკეში",
             "description": "ახალი გარემონტებული",
-            "price": {
-                "priceUsd": 120000,
-                "priceGeo": 324000
-            },
+            "price": {"priceUsd": 120000, "priceGeo": 324000},
             "totalArea": 80,
             "address": {
                 "cityTitle": "თბილისი",
                 "districtTitle": "ვაკე-საბურთალო",
                 "subdistrictTitle": "ვაკე",
                 "streetTitle": "ჭავჭავაძის გამზ.",
-                "streetNumber": "50"
+                "streetNumber": "50",
             },
             "floorNumber": "6",
             "totalAmountOfFloor": 10,
             "numberOfBedrooms": 2,
-            "appImages": [
-                {"fileName": "https://example.com/ss_img.jpg"}
-            ],
-            "detailUrl": "iyideba-3-otaxiani-bina-vakeshi-7779876"
+            "appImages": [{"fileName": "https://example.com/ss_img.jpg"}],
+            "detailUrl": "iyideba-3-otaxiani-bina-vakeshi-7779876",
         }
         normalized = scraper._normalize_item(sample_raw)
         self.assertIsNotNone(normalized)
@@ -91,13 +79,18 @@ class TestScrapers(unittest.TestCase):
         self.assertEqual(normalized.price_per_m2, 1500.0)
         self.assertEqual(normalized.district, "ვაკე")
         self.assertEqual(normalized.street, "ჭავჭავაძის გამზ. 50")
-        self.assertEqual(normalized.url, "https://home.ss.ge/ka/udzravi-qoneba/iyideba-3-otaxiani-bina-vakeshi-7779876")
+        self.assertEqual(
+            normalized.url,
+            "https://home.ss.ge/ka/udzravi-qoneba/iyideba-3-otaxiani-bina-vakeshi-7779876",
+        )
 
     def test_area_ge_resilience(self):
         scraper = AreaGeScraper()
+
         # Area.ge fetch should gracefully return empty list without crashing
         async def run_fetch():
             return await scraper.fetch_listings(self.filters)
+
         results = asyncio.run(run_fetch())
         self.assertIsInstance(results, list)
 
@@ -129,22 +122,60 @@ class TestScrapers(unittest.TestCase):
         url_all = scraper._build_search_url(f_all, page=1)
         self.assertNotIn("individualType=", url_all)
 
-    def test_ss_ge_api_url_generation(self):
+    def test_ss_ge_search_url_generation(self):
         scraper = SSGeScraper()
-        f_owner = SearchFilters(deal_type="sale", price_min_usd=50000, price_max_usd=100000, owner_type="owner")
-        url_owner = scraper._build_api_url(f_owner, page=1)
-        self.assertIn("deal_types=1", url_owner)
-        self.assertIn("price_from=50000", url_owner)
-        self.assertIn("price_to=100000", url_owner)
-        self.assertIn("owner_type=physical", url_owner)
+        f_owner = SearchFilters(
+            deal_type="sale",
+            price_min_usd=50000,
+            price_max_usd=100000,
+            owner_type="owner",
+            area_min_m2=40,
+            area_max_m2=120,
+        )
+        url_owner = scraper._build_search_url(f_owner, page=1)
+        self.assertIn("/iyideba", url_owner)
+        self.assertIn("priceFrom=50000", url_owner)
+        self.assertIn("priceTo=100000", url_owner)
+        self.assertIn("totalAreaFrom=40", url_owner)
+        self.assertIn("totalAreaTo=120", url_owner)
+        self.assertIn("individualType=1", url_owner)
 
-        f_rent = SearchFilters(deal_type="rent", rent_price_min_usd=400, rent_price_max_usd=1200, owner_type="agent")
-        url_rent = scraper._build_api_url(f_rent, page=2)
-        self.assertIn("deal_types=2", url_rent)
-        self.assertIn("price_from=400", url_rent)
-        self.assertIn("price_to=1200", url_rent)
-        self.assertIn("owner_type=agent", url_rent)
+        f_rent = SearchFilters(
+            deal_type="rent", rent_price_min_usd=400, rent_price_max_usd=1200, owner_type="agent"
+        )
+        url_rent = scraper._build_search_url(f_rent, page=2)
+        self.assertIn("/qiravdeba", url_rent)
+        self.assertIn("priceFrom=400", url_rent)
+        self.assertIn("priceTo=1200", url_rent)
+        self.assertIn("individualType=2", url_rent)
         self.assertIn("page=2", url_rent)
+
+    def test_ss_ge_non_apartment_rejected(self):
+        scraper = SSGeScraper()
+        house_item = {
+            "id": 26168401,
+            "real_estate_type_id": 2,  # Private house
+            "dynamic_title": "იყიდება 2 ოთახიანი კერძო სახლი",
+            "price": {"2": {"price_total": 65000}},
+            "area": 62,
+        }
+        self.assertIsNone(scraper._normalize_item(house_item))
+
+    def test_ss_ge_url_duplicate_path_prevention(self):
+        scraper = SSGeScraper()
+        item_with_prefix = {
+            "id": 26173851,
+            "real_estate_type_id": 1,
+            "detailUrl": "ka/udzravi-qoneba/iyideba-1-otaxiani-bina-26173851",
+            "price": {"2": {"price_total": 67000}},
+            "area": 35,
+        }
+        listing = scraper._normalize_item(item_with_prefix)
+        self.assertIsNotNone(listing)
+        self.assertEqual(
+            listing.url, "https://home.ss.ge/ka/udzravi-qoneba/iyideba-1-otaxiani-bina-26173851"
+        )
+        self.assertNotIn("udzravi-qoneba/ka/udzravi-qoneba", listing.url)
 
     def test_ss_ge_api_response_normalization(self):
         scraper = SSGeScraper()
@@ -154,10 +185,7 @@ class TestScrapers(unittest.TestCase):
             "dynamic_slug": "iyideba-1-otaxiani-bina-did-dighomshi",
             "comment": "სასწრაფოდ იყიდება ბინა. 595 167976 ვარ მეპატრონე",
             "area": 31.5,
-            "price": {
-                "1": {"price_total": 174736},
-                "2": {"price_total": 67000}
-            },
+            "price": {"1": {"price_total": 174736}, "2": {"price_total": 67000}},
             "city_name": "თბილისი",
             "urban_name": "დიდი დიღომი",
             "district_name": "ვაკე-საბურთალო",
@@ -170,10 +198,8 @@ class TestScrapers(unittest.TestCase):
             "user_phone_number": "595167***",
             "condition_id": 1,
             "status_id": 2,
-            "images": [
-                {"large": "https://static-statements.tnet.ge/uploads/img1.webp"}
-            ],
-            "last_updated": "2026-09-27 10:02:27"
+            "images": [{"large": "https://static-statements.tnet.ge/uploads/img1.webp"}],
+            "last_updated": "2026-09-27 10:02:27",
         }
         listing = scraper._normalize_item(api_raw)
         self.assertIsNotNone(listing)
@@ -185,12 +211,47 @@ class TestScrapers(unittest.TestCase):
         self.assertEqual(listing.area_m2, 31.5)
         self.assertEqual(listing.district, "დიდი დიღომი")
         self.assertIsNone(listing.subdistrict)
-        self.assertEqual(listing.url, "https://home.ss.ge/ka/udzravi-qoneba/iyideba-1-otaxiani-bina-did-dighomshi-26173851")
+        self.assertEqual(
+            listing.url,
+            "https://home.ss.ge/ka/udzravi-qoneba/iyideba-1-otaxiani-bina-did-dighomshi-26173851",
+        )
         self.assertTrue(listing.is_owner)
         self.assertEqual(listing.phone_number, "+995 595 16 79 76")
         self.assertEqual(listing.condition_id, 1)
         self.assertEqual(listing.condition_name, "ახალი გარემონტებული")
         self.assertEqual(len(listing.images), 1)
+
+    def test_ss_ge_real_listing_url_and_id_fallback(self):
+        scraper = SSGeScraper()
+        # Item with standard SSR detailUrl
+        ssr_item = {
+            "applicationId": 36774387,
+            "title": "იყიდება 3 ოთახიანი ბინა დიდ დიღომში",
+            "price": {"priceUsd": 98000},
+            "totalArea": 70,
+            "detailUrl": "iyideba-3-otaxiani-bina-did-dighomshi-36774387",
+        }
+        listing = scraper._normalize_item(ssr_item)
+        self.assertIsNotNone(listing)
+        self.assertEqual(
+            listing.url,
+            "https://home.ss.ge/ka/udzravi-qoneba/iyideba-3-otaxiani-bina-did-dighomshi-36774387",
+        )
+        self.assertEqual(listing.id, "ss_ge_36774387")
+
+        # Item with numeric ID only (no detailUrl)
+        fallback_item = {
+            "applicationId": 36774387,
+            "title": "იყიდება 3 ოთახიანი ბინა დიდ დიღომში",
+            "price": {"priceUsd": 98000},
+            "totalArea": 70,
+        }
+        listing_fb = scraper._normalize_item(fallback_item)
+        self.assertIsNotNone(listing_fb)
+        self.assertEqual(
+            listing_fb.url,
+            "https://home.ss.ge/ka/udzravi-qoneba/36774387",
+        )
 
 
 if __name__ == "__main__":

@@ -1,9 +1,18 @@
 import asyncio
-import io
 import signal
 import sys
-import warnings
 from typing import List
+import warnings
+
+from config import settings
+from core.analytics import MarketAnalytics
+from core.database import DatabaseEngine
+from core.filters import ListingFilter
+from core.models import PropertyListing
+from core.user_sync import fetch_active_users
+from notifier.telegram_bot import TelegramNotifier
+from scrapers.myhome import MyHomeScraper
+from scrapers.ss_ge import SSGeScraper
 
 # Suppress minor policy deprecation warnings in newer Python versions
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -21,17 +30,6 @@ if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     except Exception:
         pass
-
-from config import settings
-from core.models import PropertyListing
-from core.database import DatabaseEngine
-from core.filters import ListingFilter
-from core.analytics import MarketAnalytics
-from core.user_sync import fetch_active_users
-from scrapers.myhome import MyHomeScraper
-from scrapers.ss_ge import SSGeScraper
-from scrapers.area_ge import AreaGeScraper
-from notifier.telegram_bot import TelegramNotifier
 
 
 class RealEstateOrchestrator:
@@ -51,18 +49,22 @@ class RealEstateOrchestrator:
             SSGeScraper(timeout=settings.REQUEST_TIMEOUT_SECONDS),
         ]
 
-        print(f"[Init]: Initializing Telegram Bot Notifier (Chat ID: {settings.TELEGRAM_CHAT_ID})...")
+        print(
+            f"[Init]: Initializing Telegram Bot Notifier (Chat ID: {settings.TELEGRAM_CHAT_ID})..."
+        )
         self.telegram_notifier = TelegramNotifier(
             bot_token=settings.TELEGRAM_BOT_TOKEN,
             chat_id=settings.TELEGRAM_CHAT_ID,
-            enable_console=settings.ENABLE_CONSOLE_NOTIFICATIONS
+            enable_console=settings.ENABLE_CONSOLE_NOTIFICATIONS,
         )
 
         self.running = True
 
     async def run_cycle(self) -> dict:
-        print(f"\n--- [Cycle Started at {asyncio.get_event_loop().time():.2f}] Scraping active portals... ---")
-        
+        print(
+            f"\n--- [Cycle Started at {asyncio.get_event_loop().time():.2f}] Scraping active portals... ---"
+        )
+
         # 0. Sync active user profiles (from Cloudflare KV or fallback)
         active_users = fetch_active_users()
         print(f"[Users]: Active subscribers: {len(active_users)}")
@@ -93,38 +95,39 @@ class RealEstateOrchestrator:
             envelope = self.filter_engine.filters.model_copy()
             envelope.deal_type = dt
 
-            dt_users = [
-                u for u in active_users
-                if getattr(u, "deal_type", "sale") in [dt, "both"]
-            ]
+            dt_users = [u for u in active_users if getattr(u, "deal_type", "sale") in [dt, "both"]]
 
             if dt == "rent":
                 rent_mins = [
-                    getattr(u, "rent_price_min_usd", None) or (u.price_min_usd if getattr(u, "deal_type", "sale") == "rent" else None)
+                    getattr(u, "rent_price_min_usd", None)
+                    or (u.price_min_usd if getattr(u, "deal_type", "sale") == "rent" else None)
                     for u in dt_users
                 ]
                 rent_mins = [p for p in rent_mins if p is not None]
                 rent_maxs = [
-                    getattr(u, "rent_price_max_usd", None) or (u.price_max_usd if getattr(u, "deal_type", "sale") == "rent" else None)
+                    getattr(u, "rent_price_max_usd", None)
+                    or (u.price_max_usd if getattr(u, "deal_type", "sale") == "rent" else None)
                     for u in dt_users
                 ]
                 rent_maxs = [p for p in rent_maxs if p is not None]
 
-                min_val = min(rent_mins) if rent_mins else (self.filter_engine.filters.rent_price_min_usd or 300)
-                max_val = max(rent_maxs) if rent_maxs else (self.filter_engine.filters.rent_price_max_usd or 1500)
+                min_val = (
+                    min(rent_mins)
+                    if rent_mins
+                    else (self.filter_engine.filters.rent_price_min_usd or 300)
+                )
+                max_val = (
+                    max(rent_maxs)
+                    if rent_maxs
+                    else (self.filter_engine.filters.rent_price_max_usd or 1500)
+                )
                 envelope.price_min_usd = min_val
                 envelope.price_max_usd = max_val
                 envelope.rent_price_min_usd = min_val
                 envelope.rent_price_max_usd = max_val
             else:
-                sale_mins = [
-                    u.price_min_usd for u in dt_users
-                    if u.price_min_usd is not None
-                ]
-                sale_maxs = [
-                    u.price_max_usd for u in dt_users
-                    if u.price_max_usd is not None
-                ]
+                sale_mins = [u.price_min_usd for u in dt_users if u.price_min_usd is not None]
+                sale_maxs = [u.price_max_usd for u in dt_users if u.price_max_usd is not None]
                 if sale_mins:
                     envelope.price_min_usd = min(sale_mins)
                 if sale_maxs:
@@ -149,8 +152,7 @@ class RealEstateOrchestrator:
                     envelope.whitelist_districts = list(all_user_districts)
 
                 active_owner_types = {
-                    (getattr(u, "owner_type", "all") or "all").lower().strip()
-                    for u in dt_users
+                    (getattr(u, "owner_type", "all") or "all").lower().strip() for u in dt_users
                 }
                 if len(active_owner_types) == 1:
                     ot = list(active_owner_types)[0]
@@ -197,15 +199,20 @@ class RealEstateOrchestrator:
 
             # 2. Identify active users who match this listing AND have not received it yet
             matching_users = [
-                u for u in active_users
+                u
+                for u in active_users
                 if not self.db.is_user_notified(u.chat_id, listing.id)
                 and self.filter_engine.matches_user(u, listing, tentative=True)
             ]
 
             # Fallback for single-admin / legacy mode if no user matched via multi-user
             if not matching_users and not getattr(settings, "ENABLE_MULTI_USER", True):
-                if not self.db.is_user_notified(settings.TELEGRAM_CHAT_ID, listing.id) and self.filter_engine.matches(listing):
-                    matching_users = [u for u in active_users if u.chat_id == settings.TELEGRAM_CHAT_ID]
+                if not self.db.is_user_notified(
+                    settings.TELEGRAM_CHAT_ID, listing.id
+                ) and self.filter_engine.matches(listing):
+                    matching_users = [
+                        u for u in active_users if u.chat_id == settings.TELEGRAM_CHAT_ID
+                    ]
 
             if not matching_users:
                 # Save to database so property details are archived
@@ -223,22 +230,34 @@ class RealEstateOrchestrator:
                     if details:
                         if "is_owner" in details and details["is_owner"] is not None:
                             listing.is_owner = bool(details["is_owner"])
-                        elif details.get("agency_name") or details.get("broker") or details.get("agency"):
+                        elif (
+                            details.get("agency_name")
+                            or details.get("broker")
+                            or details.get("agency")
+                        ):
                             listing.is_owner = False
 
                         if not listing.condition_id and details.get("condition_id"):
                             listing.condition_id = details.get("condition_id")
                             cond_obj = details.get("condition")
-                            listing.condition_name = cond_obj.get("name") if isinstance(cond_obj, dict) else (cond_obj or None)
+                            listing.condition_name = (
+                                cond_obj.get("name")
+                                if isinstance(cond_obj, dict)
+                                else (cond_obj or None)
+                            )
                         if not listing.phone_number:
                             from scrapers.myhome import _extract_phone_number
-                            listing.phone_number = _extract_phone_number(details.get("user_phone_number"), details.get("comment") or listing.description)
+
+                            listing.phone_number = _extract_phone_number(
+                                details.get("user_phone_number"),
+                                details.get("comment") or listing.description,
+                            )
                         if details.get("price_label"):
                             myhome_label = details.get("price_label")
             elif listing.source == "ss_ge":
                 ss_scraper = next((s for s in self.scrapers if s.name == "SS.ge"), None)
                 if ss_scraper and hasattr(ss_scraper, "fetch_statement_details"):
-                    details = await ss_scraper.fetch_statement_details(listing.url or listing.source_id)
+                    details = await ss_scraper.fetch_statement_details(listing.source_id)
                     if details:
                         if "is_owner" in details and details["is_owner"] is not None:
                             listing.is_owner = bool(details["is_owner"])
@@ -247,19 +266,30 @@ class RealEstateOrchestrator:
                         if not listing.condition_id and details.get("condition_id"):
                             listing.condition_id = details.get("condition_id")
                             cond_obj = details.get("condition")
-                            listing.condition_name = cond_obj.get("name") if isinstance(cond_obj, dict) else (cond_obj or None)
+                            listing.condition_name = (
+                                cond_obj.get("name")
+                                if isinstance(cond_obj, dict)
+                                else (cond_obj or None)
+                            )
                         if not listing.phone_number and details.get("phone_number"):
                             from scrapers.myhome import _extract_phone_number
-                            listing.phone_number = _extract_phone_number(details["phone_number"], listing.description)
+
+                            listing.phone_number = _extract_phone_number(
+                                details["phone_number"], listing.description
+                            )
                         elif not listing.phone_number and details.get("user_phone_number"):
                             from scrapers.myhome import _extract_phone_number
-                            listing.phone_number = _extract_phone_number(details["user_phone_number"], listing.description)
+
+                            listing.phone_number = _extract_phone_number(
+                                details["user_phone_number"], listing.description
+                            )
                         if details.get("price_label"):
                             myhome_label = details.get("price_label")
 
             # Re-verify matching users after detail enrichment (ensures verified is_owner status matches preferences)
             matching_users = [
-                u for u in matching_users
+                u
+                for u in matching_users
                 if self.filter_engine.matches_user(u, listing, tentative=False)
             ]
             if not matching_users:
@@ -270,12 +300,14 @@ class RealEstateOrchestrator:
                 listing,
                 db=self.db,
                 discount_threshold_pct=settings.BARGAIN_DISCOUNT_THRESHOLD_PCT,
-                myhome_price_label=myhome_label
+                myhome_price_label=myhome_label,
             )
 
             # Re-check is_hot_deal flag in case condition was just enriched
             if listing.price_per_m2 <= self.filter_engine.filters.hot_deal_price_per_sqm:
-                if listing.condition_id in [1, 2] or (listing.condition_name and "გარემონტებული" in listing.condition_name):
+                if listing.condition_id in [1, 2] or (
+                    listing.condition_name and "გარემონტებული" in listing.condition_name
+                ):
                     listing.is_hot_deal = True
                     listing.is_bargain = True
 
@@ -289,7 +321,9 @@ class RealEstateOrchestrator:
                     if user_sent_count.get(user.chat_id, 0) >= MAX_ALERTS_PER_USER_CYCLE:
                         continue
                     try:
-                        sent = await self.telegram_notifier.send_notification(listing, target_chat_id=user.chat_id)
+                        sent = await self.telegram_notifier.send_notification(
+                            listing, target_chat_id=user.chat_id
+                        )
                         if sent:
                             sent_any = True
                             notified_count += 1
@@ -306,9 +340,11 @@ class RealEstateOrchestrator:
             "total_fetched": len(all_listings),
             "new_listings": new_count,
             "matched_filters": matched_count,
-            "notifications_sent": notified_count
+            "notifications_sent": notified_count,
         }
-        print(f"--- [Cycle Summary]: Fetched: {stats['total_fetched']} | New: {stats['new_listings']} | Matched: {stats['matched_filters']} | Alerts: {stats['notifications_sent']} ---\n")
+        print(
+            f"--- [Cycle Summary]: Fetched: {stats['total_fetched']} | New: {stats['new_listings']} | Matched: {stats['matched_filters']} | Alerts: {stats['notifications_sent']} ---\n"
+        )
         return stats
 
     async def start(self):
@@ -328,7 +364,9 @@ class RealEstateOrchestrator:
             if not self.running:
                 break
 
-            print(f"[Sleeping]: Next check in {settings.CHECK_INTERVAL_SECONDS} seconds. Press Ctrl+C to stop.\n")
+            print(
+                f"[Sleeping]: Next check in {settings.CHECK_INTERVAL_SECONDS} seconds. Press Ctrl+C to stop.\n"
+            )
             try:
                 await asyncio.sleep(settings.CHECK_INTERVAL_SECONDS)
             except asyncio.CancelledError:
@@ -354,7 +392,9 @@ async def main():
     if "--once" in sys.argv:
         print("[Run-Once Mode]: Executing 1 full market scan & alert cycle...")
         stats = await orchestrator.run_cycle()
-        print(f"[Finished]: Fetched: {stats.get('total_fetched', 0)} | New: {stats.get('new_listings', 0)} | Matched: {stats.get('matched_filters', 0)} | Alerts: {stats.get('notifications_sent', 0)}")
+        print(
+            f"[Finished]: Fetched: {stats.get('total_fetched', 0)} | New: {stats.get('new_listings', 0)} | Matched: {stats.get('matched_filters', 0)} | Alerts: {stats.get('notifications_sent', 0)}"
+        )
         return
 
     # Graceful shutdown handler for signals

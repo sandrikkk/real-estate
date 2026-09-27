@@ -45,13 +45,13 @@ SECRET_RULES: List[Dict[str, Any]] = [
     {
         "name": "Cloudflare Sync Key / API Token",
         "pattern": re.compile(
-            r"(?:CLOUDFLARE_SYNC_KEY|CLOUDFLARE_API_TOKEN|CF_TOKEN)\s*=\s*['\"][a-zA-Z0-9_-]{16,}['\"]"
+            r"(?:CLOUDFLARE_SYNC_KEY|CLOUDFLARE_API_TOKEN|CF_TOKEN)\s*[:=]\s*['\"][a-zA-Z0-9_-]{16,}['\"]"
         ),
         "severity": "CRITICAL",
     },
     {
         "name": "Scraper API Key",
-        "pattern": re.compile(r"(?:SCRAPER_API_KEY)\s*=\s*['\"][a-zA-Z0-9]{16,}['\"]"),
+        "pattern": re.compile(r"(?:SCRAPER_API_KEY)\s*[:=]\s*['\"][a-zA-Z0-9]{16,}['\"]"),
         "severity": "CRITICAL",
     },
     {
