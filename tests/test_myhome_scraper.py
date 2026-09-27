@@ -11,7 +11,7 @@ class TestMyHomeScraper(unittest.TestCase):
     def test_build_api_url_parameters(self):
         url = self.scraper._build_api_url(self.filters, page=1)
         self.assertIn("deal_types=1", url)
-        self.assertIn("real_estate_type_id=1", url)
+        self.assertIn("real_estate_types=1", url)
         self.assertIn("currency_id=2", url)
         self.assertIn("price_from=48000", url)
         self.assertIn("price_to=72000", url)
@@ -46,7 +46,7 @@ class TestMyHomeScraper(unittest.TestCase):
             "status_id": 2,
             "price": {
                 "1": {"price_total": 177657, "price_square": 3483},
-                "2": {"price_total": 68000, "price_square": 1333}
+                "2": {"price_total": 68000, "price_square": 1333},
             },
             "images": [
                 {"large": "https://static-statements.tnet.ge/uploads/test.webp", "is_main": True}
@@ -61,7 +61,7 @@ class TestMyHomeScraper(unittest.TestCase):
             "district_name": "ისანი",
             "comment": "დარეკეთ 599180118",
             "user_type": {"type": "physical"},
-            "user_phone_number": "555112***"
+            "user_phone_number": "555112***",
         }
 
         listing = self.scraper._normalize_item(raw_item, filters=self.filters)

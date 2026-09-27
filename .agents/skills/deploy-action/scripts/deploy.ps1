@@ -45,7 +45,7 @@ Write-Host "[PASS]: All unit tests passed successfully." -ForegroundColor Green
 
 # 3. Stage changes
 Write-Host "`n[Step 2/5]: Staging project files..." -ForegroundColor Yellow
-git add config/ core/ main.py notifier/ scrapers/ tests/ requirements.txt .github/ .agents/ README.md .gitignore cloudflare/ data/seen_ids.txt scripts/ pyproject.toml .pre-commit-config.yaml .githooks/ GEMINI.md AGENTS.md CLAUDE.md skills-lock.json
+git add config/ core/ main.py notifier/ scrapers/ tests/ requirements.txt .github/ .agents/ README.md .gitignore cloudflare/ scripts/ pyproject.toml .pre-commit-config.yaml .githooks/ GEMINI.md AGENTS.md CLAUDE.md skills-lock.json test_ss_live.py
 
 $stagedDiff = git diff --staged --name-only
 if (-not $stagedDiff) {
@@ -67,13 +67,11 @@ if ($LASTEXITCODE -ne 0) {
 # 5. Safe remote synchronization (rebase onto origin/master)
 Write-Host "`n[Step 4/5]: Synchronizing with origin/master..." -ForegroundColor Yellow
 
-# Discard local uncommitted changes to tracked database (e.g. from local test runs)
-if (Test-Path "data/properties.db") {
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    git checkout HEAD -- data/properties.db 2>&1 | Out-Null
-    $ErrorActionPreference = $prevEAP
-}
+# Discard local uncommitted changes to tracked data files (e.g. from local test runs)
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+git checkout HEAD -- data/properties.db data/user_seen.json data/seen_ids.txt 2>&1 | Out-Null
+$ErrorActionPreference = $prevEAP
 
 $hasLocalDb = Test-Path "data/properties.db"
 $isDbTrackedLocally = git ls-files "data/properties.db"

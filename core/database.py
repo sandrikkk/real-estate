@@ -49,8 +49,10 @@ class DatabaseEngine:
     def _save_user_seen(self):
         try:
             serializable = {cid: sorted(list(ids)) for cid, ids in self._user_seen.items()}
-            with open(self.user_seen_path, "w", encoding="utf-8") as f:
+            tmp_path = self.user_seen_path.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(serializable, f, ensure_ascii=False, indent=2)
+            tmp_path.replace(self.user_seen_path)
         except Exception as e:
             print(f"[Warning]: Failed to save user_seen.json: {e}")
 
@@ -106,9 +108,15 @@ class DatabaseEngine:
                     phone_number TEXT
                 )
             """)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_properties_district ON properties(district)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_properties_scraped_at ON properties(scraped_at)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_properties_is_notified ON properties(is_notified)")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_properties_district ON properties(district)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_properties_scraped_at ON properties(scraped_at)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_properties_is_notified ON properties(is_notified)"
+            )
 
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS user_notifications (
@@ -118,7 +126,9 @@ class DatabaseEngine:
                     PRIMARY KEY (chat_id, listing_id)
                 )
             """)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_notif ON user_notifications(chat_id, listing_id)")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_notif ON user_notifications(chat_id, listing_id)"
+            )
 
             # Auto-migrate existing database schema with newly introduced columns
             cursor.execute("PRAGMA table_info(properties)")
@@ -133,7 +143,9 @@ class DatabaseEngine:
                 cursor.execute("ALTER TABLE properties ADD COLUMN phone_number TEXT")
             if "deal_type" not in cols:
                 cursor.execute("ALTER TABLE properties ADD COLUMN deal_type TEXT DEFAULT 'sale'")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_properties_deal_type ON properties(deal_type)")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_properties_deal_type ON properties(deal_type)"
+            )
 
             conn.commit()
 
@@ -173,10 +185,13 @@ class DatabaseEngine:
             with self._connection() as conn:
                 try:
                     cursor = conn.cursor()
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         INSERT OR IGNORE INTO user_notifications (chat_id, listing_id)
                         VALUES (?, ?)
-                    """, (cid, listing_id))
+                    """,
+                        (cid, listing_id),
+                    )
                     conn.commit()
                 except Exception as e:
                     print(f"[Warning]: Failed to insert into user_notifications: {e}")
@@ -196,19 +211,22 @@ class DatabaseEngine:
 
             # 3. Cross-portal / Reposted duplicate fingerprint check
             if listing and listing.district and listing.area_m2 and listing.price_usd:
-                cursor.execute("""
-                    SELECT 1 FROM properties 
-                    WHERE district = ? 
+                cursor.execute(
+                    """
+                    SELECT 1 FROM properties
+                    WHERE district = ?
                       AND abs(price_usd - ?) <= 200
                       AND abs(area_m2 - ?) <= 0.5
                       AND (floor = ? OR floor IS NULL OR ? = '')
-                """, (
-                    listing.district,
-                    listing.price_usd,
-                    listing.area_m2,
-                    listing.floor or "",
-                    listing.floor or ""
-                ))
+                """,
+                    (
+                        listing.district,
+                        listing.price_usd,
+                        listing.area_m2,
+                        listing.floor or "",
+                        listing.floor or "",
+                    ),
+                )
                 if cursor.fetchone() is not None:
                     self._append_seen_id(listing_id)
                     return True
@@ -220,7 +238,8 @@ class DatabaseEngine:
         with self._connection() as conn:
             cursor = conn.cursor()
             try:
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT OR IGNORE INTO properties (
                         id, source, source_id, deal_type, title, description,
                         price_usd, price_gel, area_m2, price_per_m2,
@@ -230,36 +249,38 @@ class DatabaseEngine:
                         is_bargain, is_notified,
                         metro_station_id, condition_id, is_hot_deal, phone_number
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    listing.id,
-                    listing.source,
-                    listing.source_id,
-                    getattr(listing, "deal_type", "sale"),
-                    listing.title,
-                    listing.description,
-                    listing.price_usd,
-                    listing.price_gel,
-                    listing.area_m2,
-                    listing.price_per_m2,
-                    listing.city,
-                    listing.district,
-                    listing.subdistrict,
-                    listing.street,
-                    listing.floor,
-                    listing.total_floors,
-                    listing.rooms,
-                    listing.bedrooms,
-                    listing.url,
-                    json.dumps(listing.images, ensure_ascii=False),
-                    listing.published_at,
-                    listing.scraped_at.isoformat(),
-                    1 if listing.is_bargain else 0,
-                    0,
-                    listing.metro_station_id,
-                    listing.condition_id,
-                    1 if listing.is_hot_deal else 0,
-                    listing.phone_number
-                ))
+                """,
+                    (
+                        listing.id,
+                        listing.source,
+                        listing.source_id,
+                        getattr(listing, "deal_type", "sale"),
+                        listing.title,
+                        listing.description,
+                        listing.price_usd,
+                        listing.price_gel,
+                        listing.area_m2,
+                        listing.price_per_m2,
+                        listing.city,
+                        listing.district,
+                        listing.subdistrict,
+                        listing.street,
+                        listing.floor,
+                        listing.total_floors,
+                        listing.rooms,
+                        listing.bedrooms,
+                        listing.url,
+                        json.dumps(listing.images, ensure_ascii=False),
+                        listing.published_at,
+                        listing.scraped_at.isoformat(),
+                        1 if listing.is_bargain else 0,
+                        0,
+                        listing.metro_station_id,
+                        listing.condition_id,
+                        1 if listing.is_hot_deal else 0,
+                        listing.phone_number,
+                    ),
+                )
                 conn.commit()
                 return cursor.rowcount > 0
             except Exception as e:
@@ -279,11 +300,14 @@ class DatabaseEngine:
         with self._connection() as conn:
             cursor = conn.cursor()
             # Clean filtering: only realistic $/m2 between 350 and 6000 USD
-            cursor.execute("""
-                SELECT price_per_m2, rooms, bedrooms FROM properties 
-                WHERE (district = ? OR subdistrict = ?) 
+            cursor.execute(
+                """
+                SELECT price_per_m2, rooms, bedrooms FROM properties
+                WHERE (district = ? OR subdistrict = ?)
                   AND price_per_m2 >= 350 AND price_per_m2 <= 6000
-            """, (district, district))
+            """,
+                (district, district),
+            )
             rows = cursor.fetchall()
             if not rows or len(rows) < 2:
                 return None
@@ -328,13 +352,15 @@ class DatabaseEngine:
                 min_price_per_m2=round(min(prices), 2),
                 max_price_per_m2=round(max(prices), 2),
                 std_dev=std_dev,
-                room_medians=room_medians
+                room_medians=room_medians,
             )
 
     def get_all_district_stats(self) -> Dict[str, DistrictPriceStats]:
         with self._connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT DISTINCT district FROM properties WHERE district IS NOT NULL AND district != ''")
+            cursor.execute(
+                "SELECT DISTINCT district FROM properties WHERE district IS NOT NULL AND district != ''"
+            )
             districts = [r["district"] for r in cursor.fetchall()]
         stats = {}
         for d in districts:
@@ -352,7 +378,7 @@ class DatabaseEngine:
             bargains_count = row["bargains"] if row and row["bargains"] else 0
 
             cursor.execute("""
-                SELECT price_per_m2 FROM properties 
+                SELECT price_per_m2 FROM properties
                 WHERE price_per_m2 >= 350 AND price_per_m2 <= 6000
             """)
             all_prices = [r["price_per_m2"] for r in cursor.fetchall()]
@@ -365,5 +391,5 @@ class DatabaseEngine:
             "total_bargains": bargains_count,
             "city_median_m2": city_median,
             "city_avg_m2": city_avg,
-            "district_stats": self.get_all_district_stats()
+            "district_stats": self.get_all_district_stats(),
         }

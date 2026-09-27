@@ -13,4 +13,4 @@ exclude = [
 
 [tool.codespell]
 skip = "data/*,.venv/*,skills-lock.json"
-ignore-words-list = "te,nd,ser"
+ignore-words-list = "te,nd,ser,didi,ot"
