@@ -200,17 +200,30 @@ class SSGeScraper(BaseScraper):
                 return None
 
             # Deal type validation
-            deal_type_id = item.get("deal_type_id")
-            if deal_type_id is not None:
-                deal_type = "rent" if str(deal_type_id) in ["2", "4"] else "sale"
-            else:
-                detail_url_check = str(item.get("dynamic_slug") or item.get("detailUrl") or "")
-                title_check = str(item.get("dynamic_title") or item.get("title") or "")
-                deal_type = (
-                    "rent"
-                    if "qiravdeba" in (detail_url_check + " " + title_check).lower()
-                    else "sale"
-                )
+            deal_type = None
+            raw_dt = item.get("dealType")
+            if raw_dt is not None:
+                # SS.ge dealType enum: 1=rent, 3=daily rent, 4=sale
+                if str(raw_dt) in ["1", "3"]:
+                    deal_type = "rent"
+                elif str(raw_dt) == "4":
+                    deal_type = "sale"
+
+            if not deal_type:
+                deal_type_id = item.get("deal_type_id")
+                if deal_type_id is not None:
+                    deal_type = "rent" if str(deal_type_id) in ["2", "4"] else "sale"
+
+            if not deal_type:
+                detail_url_check = str(
+                    item.get("dynamic_slug") or item.get("detailUrl") or ""
+                ).lower()
+                title_check = str(item.get("dynamic_title") or item.get("title") or "").lower()
+                combined = detail_url_check + " " + title_check
+                if "qiravdeba" in combined or "ქირავდება" in combined:
+                    deal_type = "rent"
+                else:
+                    deal_type = "sale"
 
             if filters:
                 if filters.deal_type == "sale" and deal_type != "sale":
