@@ -244,9 +244,18 @@ class RealEstateOrchestrator:
                             listing.is_owner = bool(details["is_owner"])
                         elif details.get("agency_id") or details.get("agency_name"):
                             listing.is_owner = False
+                        if not listing.condition_id and details.get("condition_id"):
+                            listing.condition_id = details.get("condition_id")
+                            cond_obj = details.get("condition")
+                            listing.condition_name = cond_obj.get("name") if isinstance(cond_obj, dict) else (cond_obj or None)
                         if not listing.phone_number and details.get("phone_number"):
                             from scrapers.myhome import _extract_phone_number
                             listing.phone_number = _extract_phone_number(details["phone_number"], listing.description)
+                        elif not listing.phone_number and details.get("user_phone_number"):
+                            from scrapers.myhome import _extract_phone_number
+                            listing.phone_number = _extract_phone_number(details["user_phone_number"], listing.description)
+                        if details.get("price_label"):
+                            myhome_label = details.get("price_label")
 
             # Re-verify matching users after detail enrichment (ensures verified is_owner status matches preferences)
             matching_users = [

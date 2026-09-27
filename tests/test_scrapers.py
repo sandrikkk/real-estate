@@ -129,6 +129,69 @@ class TestScrapers(unittest.TestCase):
         url_all = scraper._build_search_url(f_all, page=1)
         self.assertNotIn("individualType=", url_all)
 
+    def test_ss_ge_api_url_generation(self):
+        scraper = SSGeScraper()
+        f_owner = SearchFilters(deal_type="sale", price_min_usd=50000, price_max_usd=100000, owner_type="owner")
+        url_owner = scraper._build_api_url(f_owner, page=1)
+        self.assertIn("deal_types=1", url_owner)
+        self.assertIn("price_from=50000", url_owner)
+        self.assertIn("price_to=100000", url_owner)
+        self.assertIn("owner_type=physical", url_owner)
+
+        f_rent = SearchFilters(deal_type="rent", rent_price_min_usd=400, rent_price_max_usd=1200, owner_type="agent")
+        url_rent = scraper._build_api_url(f_rent, page=2)
+        self.assertIn("deal_types=2", url_rent)
+        self.assertIn("price_from=400", url_rent)
+        self.assertIn("price_to=1200", url_rent)
+        self.assertIn("owner_type=agent", url_rent)
+        self.assertIn("page=2", url_rent)
+
+    def test_ss_ge_api_response_normalization(self):
+        scraper = SSGeScraper()
+        api_raw = {
+            "id": 26173851,
+            "dynamic_title": "იყიდება 1 ოთახიანი ბინა დიდ დიღომში",
+            "dynamic_slug": "iyideba-1-otaxiani-bina-did-dighomshi",
+            "comment": "სასწრაფოდ იყიდება ბინა. 595 167976 ვარ მეპატრონე",
+            "area": 31.5,
+            "price": {
+                "1": {"price_total": 174736},
+                "2": {"price_total": 67000}
+            },
+            "city_name": "თბილისი",
+            "urban_name": "დიდი დიღომი",
+            "district_name": "ვაკე-საბურთალო",
+            "address": "აღმაშენებლის ხეივ. 188",
+            "floor": 7,
+            "total_floors": 13,
+            "room": "1",
+            "bedroom": "1",
+            "user_type": {"type": "physical"},
+            "user_phone_number": "595167***",
+            "condition_id": 1,
+            "status_id": 2,
+            "images": [
+                {"large": "https://static-statements.tnet.ge/uploads/img1.webp"}
+            ],
+            "last_updated": "2026-09-27 10:02:27"
+        }
+        listing = scraper._normalize_item(api_raw)
+        self.assertIsNotNone(listing)
+        self.assertEqual(listing.id, "ss_ge_26173851")
+        self.assertEqual(listing.source, "ss_ge")
+        self.assertEqual(listing.deal_type, "sale")
+        self.assertEqual(listing.price_usd, 67000.0)
+        self.assertEqual(listing.price_gel, 174736.0)
+        self.assertEqual(listing.area_m2, 31.5)
+        self.assertEqual(listing.district, "დიდი დიღომი")
+        self.assertIsNone(listing.subdistrict)
+        self.assertEqual(listing.url, "https://home.ss.ge/ka/udzravi-qoneba/iyideba-1-otaxiani-bina-did-dighomshi-26173851")
+        self.assertTrue(listing.is_owner)
+        self.assertEqual(listing.phone_number, "+995 595 16 79 76")
+        self.assertEqual(listing.condition_id, 1)
+        self.assertEqual(listing.condition_name, "ახალი გარემონტებული")
+        self.assertEqual(len(listing.images), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
