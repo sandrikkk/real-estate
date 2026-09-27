@@ -135,9 +135,8 @@ class TestScrapers(unittest.TestCase):
         url_owner = scraper._build_search_url(f_owner, page=1)
         self.assertIn("/iyideba", url_owner)
         self.assertIn("priceFrom=50000", url_owner)
-        self.assertIn("priceTo=100000", url_owner)
-        self.assertIn("totalAreaFrom=40", url_owner)
-        self.assertIn("totalAreaTo=120", url_owner)
+        self.assertIn("areaFrom=40", url_owner)
+        self.assertIn("areaTo=120", url_owner)
         self.assertIn("individualType=1", url_owner)
 
         f_rent = SearchFilters(

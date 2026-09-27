@@ -19,7 +19,7 @@ class SSGeScraper(BaseScraper):
 
     def _build_search_url(self, filters: SearchFilters, page: int = 1) -> str:
         deal_path = "iyideba" if filters.deal_type == "sale" else "qiravdeba"
-        url = f"https://home.ss.ge/ka/udzravi-qoneba/l/bina/{deal_path}?city=1&priceType=1&page={page}"
+        url = f"https://home.ss.ge/ka/udzravi-qoneba/l/bina/{deal_path}?cityIdList=95&currencyId=2&order=1&page={page}"
 
         params = []
         min_p = (
@@ -37,9 +37,11 @@ class SSGeScraper(BaseScraper):
         if max_p is not None:
             params.append(f"priceTo={int(max_p)}")
         if filters.area_min_m2 is not None:
-            params.append(f"totalAreaFrom={int(filters.area_min_m2)}")
+            params.append(f"areaFrom={int(filters.area_min_m2)}")
         if filters.area_max_m2 is not None:
-            params.append(f"totalAreaTo={int(filters.area_max_m2)}")
+            params.append(f"areaTo={int(filters.area_max_m2)}")
+        if filters.rooms_min is not None and filters.rooms_min > 0:
+            params.append(f"rooms={int(filters.rooms_min)}")
         if filters.owner_type:
             ot = str(filters.owner_type).lower().strip()
             if ot in ["owner", "physical", "მესაკუთრე"]:
