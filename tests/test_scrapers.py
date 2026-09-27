@@ -252,6 +252,43 @@ class TestScrapers(unittest.TestCase):
             "https://home.ss.ge/ka/udzravi-qoneba/36774387",
         )
 
+    def test_ss_ge_deal_type_detection(self):
+        scraper = SSGeScraper()
+        # Item with dealType=1 (rent)
+        rent_item = {
+            "applicationId": 36774390,
+            "dealType": 1,
+            "title": "ბინა საბურთალოზე",
+            "price": {"priceUsd": 600},
+            "totalArea": 50,
+        }
+        res_rent = scraper._normalize_item(rent_item)
+        self.assertIsNotNone(res_rent)
+        self.assertEqual(res_rent.deal_type, "rent")
+
+        # Item with Georgian "ქირავდება" in title
+        rent_geo_title = {
+            "applicationId": 36774391,
+            "title": "ქირავდება 2 ოთახიანი ბინა ვაკეში",
+            "price": {"priceUsd": 700},
+            "totalArea": 55,
+        }
+        res_geo = scraper._normalize_item(rent_geo_title)
+        self.assertIsNotNone(res_geo)
+        self.assertEqual(res_geo.deal_type, "rent")
+
+        # Item with dealType=4 (sale)
+        sale_item = {
+            "applicationId": 36774392,
+            "dealType": 4,
+            "title": "ბინა დიდუბეში",
+            "price": {"priceUsd": 60000},
+            "totalArea": 50,
+        }
+        res_sale = scraper._normalize_item(sale_item)
+        self.assertIsNotNone(res_sale)
+        self.assertEqual(res_sale.deal_type, "sale")
+
 
 if __name__ == "__main__":
     unittest.main()
