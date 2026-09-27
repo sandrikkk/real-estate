@@ -1,3 +1,4 @@
+# Python cache and environments
 __pycache__/
 *.pyc
 *.pyo
@@ -6,5 +7,23 @@ __pycache__/
 env/
 venv/
 .venv/
+
+# Environment files and credentials (CRITICAL: never commit secrets)
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+id_rsa*
+id_ed25519*
+credentials*.json
+client_secrets*.json
+service_account*.json
+
+# IDE and OS
 .idea/
+.vscode/
+.DS_Store
+Thumbs.db

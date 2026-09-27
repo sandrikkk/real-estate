@@ -1,0 +1,22 @@
+#!/bin/sh
+# Pre-commit hook: scan for secrets and sensitive credentials before allowing commit
+
+if [ -f "./.venv/Scripts/python.exe" ]; then
+    ./.venv/Scripts/python.exe scripts/detect_secrets.py
+elif command -v python3 >/dev/null 2>&1; then
+    python3 scripts/detect_secrets.py
+elif command -v python >/dev/null 2>&1; then
+    python scripts/detect_secrets.py
+else
+    echo "Warning: Python not found in path, skipping secrets pre-commit hook."
+    exit 0
+fi
+
+RESULT=$?
+
+if [ $RESULT -ne 0 ]; then
+    echo "Commit aborted by pre-commit security hook."
+    exit 1
+fi
+
+exit 0
