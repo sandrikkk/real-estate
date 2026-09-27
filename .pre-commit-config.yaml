@@ -1,0 +1,59 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+        exclude: ^data/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+        exclude: ^data/
+      - id: trailing-whitespace
+        exclude: ^data/
+      - id: mixed-line-ending
+        exclude: ^data/
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.6
+    hooks:
+      - id: ruff
+        args: ["--no-fix"]
+      - id: ruff-format
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1
+    hooks:
+      - id: codespell
+        additional_dependencies: ["tomli"]
+        args: ["--toml", "pyproject.toml"]
+        exclude: ^(data/|\.venv/|skills-lock\.json)
+
+  - repo: local
+    hooks:
+      - id: detect-secrets
+        name: detect secrets and credentials (security)
+        language: python
+        entry: python scripts/detect_secrets.py
+        stages: [pre-commit]
+
+      - id: strip-disallowed-trailers
+        name: strip disallowed Co-authored-by trailers (project policy)
+        language: python
+        entry: python scripts/git/strip_bad_trailers.py
+        stages: [commit-msg]
+
+      - id: setup-ai-config
+        name: generate AI coding-agent config pointers
+        language: python
+        entry: python scripts/setup_ai_config.py
+        stages: [pre-commit, post-checkout, post-merge, post-rewrite]
+        always_run: true
+        pass_filenames: false
+
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.4.1
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]

@@ -1,0 +1,16 @@
+[tool.commitizen]
+name = "cz_conventional_commits"
+tag_format = "v$version"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+    "data",
+    ".venv",
+    "__pycache__",
+]
+
+[tool.codespell]
+skip = "data/*,.venv/*,skills-lock.json"
+ignore-words-list = "te,nd,ser"
