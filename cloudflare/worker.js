@@ -172,6 +172,11 @@ export default {
       return handleApiUsers(request, env);
     }
 
+    // 2.1 Protected D1 Database API for Python Runner: POST /api/db/query
+    if (url.pathname === "/api/db/query" && request.method === "POST") {
+      return handleDbRequest(request, env);
+    }
+
     // Debug status endpoint
     if (url.pathname === "/api/debug") {
       const kv = await getKV(env);
@@ -318,6 +323,78 @@ async function handleApiUsers(request, env) {
     return new Response(JSON.stringify({ error: fatalErr.message, stack: fatalErr.stack }), {
       status: 500,
       headers: { "content-type": "application/json; charset=utf-8" }
+    });
+  }
+}
+
+/**
+ * Protected D1 Database API for Python Runner: query & batch operations
+ */
+async function handleDbRequest(request, env) {
+  try {
+    const expectedKey = (env.SYNC_KEY || "").trim();
+    if (expectedKey) {
+      const syncKey = (request.headers.get("X-Sync-Key") || new URL(request.url).searchParams.get("key") || "").trim();
+      if (syncKey !== expectedKey) {
+        return new Response(JSON.stringify({ success: false, error: "Unauthorized" }), {
+          status: 401,
+          headers: { "content-type": "application/json" }
+        });
+      }
+    }
+
+    if (!env.DB || typeof env.DB.prepare !== "function") {
+      return new Response(JSON.stringify({ success: false, error: "D1 database binding 'DB' not configured in Worker" }), {
+        status: 500,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    const body = await request.json();
+
+    // 1. Batch queries: { batch: [ { sql: "...", params: [...] }, ... ] }
+    if (Array.isArray(body.batch)) {
+      const stmts = body.batch.map(q => {
+        const stmt = env.DB.prepare(q.sql);
+        return (q.params && Array.isArray(q.params) && q.params.length > 0)
+          ? stmt.bind(...q.params)
+          : stmt;
+      });
+      const results = await env.DB.batch(stmts);
+      // Map batch results to clean output: array of { results: [...], meta: {...} }
+      const cleanResults = results.map(r => ({
+        results: r.results || [],
+        meta: r.meta || {}
+      }));
+      return new Response(JSON.stringify({ success: true, batch_results: cleanResults }), {
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    // 2. Single query: { sql: "...", params: [...] }
+    if (body.sql) {
+      let stmt = env.DB.prepare(body.sql);
+      if (body.params && Array.isArray(body.params) && body.params.length > 0) {
+        stmt = stmt.bind(...body.params);
+      }
+      const res = await stmt.all();
+      return new Response(JSON.stringify({
+        success: true,
+        results: res.results || [],
+        meta: res.meta || {}
+      }), {
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    return new Response(JSON.stringify({ success: false, error: "Invalid request payload. Expected 'sql' or 'batch'." }), {
+      status: 400,
+      headers: { "content-type": "application/json" }
+    });
+  } catch (err) {
+    return new Response(JSON.stringify({ success: false, error: err.message }), {
+      status: 500,
+      headers: { "content-type": "application/json" }
     });
   }
 }

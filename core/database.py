@@ -1,22 +1,188 @@
 import json
 import sqlite3
 import statistics
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Dict, Set
-from core.models import PropertyListing, DistrictPriceStats
+from typing import Dict, Optional, Set
+
+from config import settings
+from core.models import DistrictPriceStats, PropertyListing
+
+
+class D1Row:
+    """Dictionary wrapper mimicking sqlite3.Row for Cloudflare D1 query results."""
+
+    def __init__(self, data: dict):
+        self._data = data
+        self._keys = list(data.keys())
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._data[self._keys[key]]
+        return self._data[key]
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def keys(self):
+        return self._data.keys()
+
+    def values(self):
+        return self._data.values()
+
+    def items(self):
+        return self._data.items()
+
+    def __contains__(self, key):
+        return key in self._data
+
+    def __repr__(self):
+        return f"D1Row({self._data})"
+
+
+class D1Cursor:
+    """Cursor wrapper for Cloudflare D1 HTTP API."""
+
+    def __init__(self, client: "D1Client"):
+        self.client = client
+        self.rows: list = []
+        self.rowcount: int = 0
+        self.lastrowid = None
+
+    def execute(self, sql: str, params: tuple = ()):
+        res = self.client.query(sql, list(params) if params else [])
+        raw_rows = res.get("results", [])
+        self.rows = [D1Row(r) for r in raw_rows]
+        meta = res.get("meta", {})
+        self.rowcount = meta.get("changes", len(self.rows))
+        return self
+
+    def executemany(self, sql: str, seq_of_params):
+        batch_queries = [{"sql": sql, "params": list(p)} for p in seq_of_params]
+        if batch_queries:
+            res = self.client.batch(batch_queries)
+            self.rowcount = sum(r.get("meta", {}).get("changes", 0) for r in res)
+        else:
+            self.rowcount = 0
+        self.rows = []
+        return self
+
+    def fetchone(self) -> Optional[D1Row]:
+        if self.rows:
+            return self.rows.pop(0)
+        return None
+
+    def fetchall(self) -> list:
+        res = self.rows
+        self.rows = []
+        return res
+
+
+class D1Connection:
+    """Connection wrapper for Cloudflare D1 HTTP API."""
+
+    def __init__(self, client: "D1Client"):
+        self.client = client
+
+    def cursor(self) -> D1Cursor:
+        return D1Cursor(self.client)
+
+    def execute(self, sql: str, params: tuple = ()):
+        cursor = self.cursor()
+        return cursor.execute(sql, params)
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class D1Client:
+    """HTTP Client for Cloudflare Worker D1 database proxy endpoint."""
+
+    def __init__(self, worker_url: str, sync_key: str, timeout: int = 15):
+        self.url = worker_url.strip().rstrip("/") + "/api/db/query"
+        self.sync_key = sync_key.strip()
+        self.timeout = timeout
+
+    def query(self, sql: str, params: list = None) -> dict:
+        payload = {"sql": sql, "params": params or []}
+        return self._send(payload)
+
+    def batch(self, queries: list) -> list:
+        payload = {"batch": queries}
+        resp_data = self._send(payload)
+        return resp_data.get("batch_results", [])
+
+    def _send(self, payload: dict) -> dict:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "RealEstate-Orchestrator/2.0",
+            "Accept": "application/json",
+        }
+        if self.sync_key:
+            headers["X-Sync-Key"] = self.sync_key
+
+        url = f"{self.url}?key={self.sync_key}" if self.sync_key else self.url
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                res_body = resp.read().decode("utf-8")
+                parsed = json.loads(res_body)
+                if not parsed.get("success", False) and "error" in parsed:
+                    raise RuntimeError(f"D1 Query Error: {parsed.get('error')}")
+                return parsed
+        except urllib.error.HTTPError as e:
+            err_msg = e.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"D1 HTTP {e.code}: {err_msg}") from e
+        except Exception as e:
+            raise RuntimeError(f"D1 Connection Error: {e}") from e
 
 
 class DatabaseEngine:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None, use_d1: Optional[bool] = None):
+        self.db_path = str(db_path) if db_path else str(settings.DATABASE_PATH)
         self._ensure_db_dir()
         self.seen_ids_path = Path(self.db_path).parent / "seen_ids.txt"
         self._seen_ids = self._load_seen_ids()
         self.user_seen_path = Path(self.db_path).parent / "user_seen.json"
         self._user_seen: Dict[str, Set[str]] = defaultdict(set)
         self._load_user_seen()
+
+        # Cloudflare D1 connection setup
+        self.d1_client: Optional[D1Client] = None
+        self.use_d1 = False
+
+        should_try_d1 = (
+            use_d1
+            if use_d1 is not None
+            else (
+                getattr(settings, "USE_CLOUDFLARE_D1", True)
+                and bool(getattr(settings, "CLOUDFLARE_PROXY_URL", ""))
+                and (db_path is None or str(db_path) == str(settings.DATABASE_PATH))
+            )
+        )
+
+        if should_try_d1:
+            try:
+                client = D1Client(settings.CLOUDFLARE_PROXY_URL, settings.CLOUDFLARE_SYNC_KEY)
+                test_res = client.query("SELECT 1 as test")
+                if test_res.get("success"):
+                    self.d1_client = client
+                    self.use_d1 = True
+                    print("[Database]: Connected to Cloudflare D1 via Worker proxy.")
+                else:
+                    print(f"[Database Warning]: D1 test failed: {test_res}. Using local SQLite.")
+            except Exception as e:
+                print(
+                    f"[Database Warning]: Could not reach Cloudflare D1 ({e}). Using local SQLite."
+                )
+
         self.init_db()
 
     def _ensure_db_dir(self):
@@ -67,87 +233,116 @@ class DatabaseEngine:
 
     @contextmanager
     def _connection(self):
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-        finally:
-            conn.close()
+        if self.use_d1 and self.d1_client:
+            yield D1Connection(self.d1_client)
+        else:
+            conn = sqlite3.connect(self.db_path, timeout=10)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+            finally:
+                conn.close()
 
     def init_db(self):
         with self._connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS properties (
-                    id TEXT PRIMARY KEY,
-                    source TEXT NOT NULL,
-                    source_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    description TEXT,
-                    price_usd REAL NOT NULL,
-                    price_gel REAL,
-                    area_m2 REAL NOT NULL,
-                    price_per_m2 REAL NOT NULL,
-                    city TEXT DEFAULT 'თბილისი',
-                    district TEXT,
-                    subdistrict TEXT,
-                    street TEXT,
-                    floor TEXT,
-                    total_floors INTEGER,
-                    rooms INTEGER,
-                    bedrooms INTEGER,
-                    url TEXT NOT NULL,
-                    images_json TEXT,
-                    published_at TEXT,
-                    scraped_at TEXT NOT NULL,
-                    is_bargain INTEGER DEFAULT 0,
-                    is_notified INTEGER DEFAULT 0,
-                    metro_station_id INTEGER,
-                    condition_id INTEGER,
-                    deal_type TEXT DEFAULT 'sale',
-                    phone_number TEXT
+            if not self.use_d1:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS properties (
+                        id TEXT PRIMARY KEY,
+                        source TEXT NOT NULL,
+                        source_id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        description TEXT,
+                        price_usd REAL NOT NULL,
+                        price_gel REAL,
+                        area_m2 REAL NOT NULL,
+                        price_per_m2 REAL NOT NULL,
+                        city TEXT DEFAULT 'თბილისი',
+                        district TEXT,
+                        subdistrict TEXT,
+                        street TEXT,
+                        floor TEXT,
+                        total_floors INTEGER,
+                        rooms INTEGER,
+                        bedrooms INTEGER,
+                        url TEXT NOT NULL,
+                        images_json TEXT,
+                        published_at TEXT,
+                        scraped_at TEXT NOT NULL,
+                        is_bargain INTEGER DEFAULT 0,
+                        is_notified INTEGER DEFAULT 0,
+                        metro_station_id INTEGER,
+                        condition_id INTEGER,
+                        deal_type TEXT DEFAULT 'sale',
+                        phone_number TEXT
+                    )
+                """)
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_properties_district ON properties(district)"
                 )
-            """)
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_properties_district ON properties(district)"
-            )
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_properties_scraped_at ON properties(scraped_at)"
-            )
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_properties_is_notified ON properties(is_notified)"
-            )
-
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS user_notifications (
-                    chat_id TEXT NOT NULL,
-                    listing_id TEXT NOT NULL,
-                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (chat_id, listing_id)
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_properties_scraped_at ON properties(scraped_at)"
                 )
-            """)
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_user_notif ON user_notifications(chat_id, listing_id)"
-            )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_properties_is_notified ON properties(is_notified)"
+                )
 
-            # Auto-migrate existing database schema with newly introduced columns
-            cursor.execute("PRAGMA table_info(properties)")
-            cols = {row["name"] for row in cursor.fetchall()}
-            if "metro_station_id" not in cols:
-                cursor.execute("ALTER TABLE properties ADD COLUMN metro_station_id INTEGER")
-            if "condition_id" not in cols:
-                cursor.execute("ALTER TABLE properties ADD COLUMN condition_id INTEGER")
-            if "is_hot_deal" not in cols:
-                cursor.execute("ALTER TABLE properties ADD COLUMN is_hot_deal INTEGER DEFAULT 0")
-            if "phone_number" not in cols:
-                cursor.execute("ALTER TABLE properties ADD COLUMN phone_number TEXT")
-            if "deal_type" not in cols:
-                cursor.execute("ALTER TABLE properties ADD COLUMN deal_type TEXT DEFAULT 'sale'")
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_properties_deal_type ON properties(deal_type)"
-            )
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS user_notifications (
+                        chat_id TEXT NOT NULL,
+                        listing_id TEXT NOT NULL,
+                        sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (chat_id, listing_id)
+                    )
+                """)
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_user_notif ON user_notifications(chat_id, listing_id)"
+                )
 
-            conn.commit()
+                # Auto-migrate existing database schema with newly introduced columns
+                cursor.execute("PRAGMA table_info(properties)")
+                cols = {row["name"] for row in cursor.fetchall()}
+                if "metro_station_id" not in cols:
+                    cursor.execute("ALTER TABLE properties ADD COLUMN metro_station_id INTEGER")
+                if "condition_id" not in cols:
+                    cursor.execute("ALTER TABLE properties ADD COLUMN condition_id INTEGER")
+                if "is_hot_deal" not in cols:
+                    cursor.execute(
+                        "ALTER TABLE properties ADD COLUMN is_hot_deal INTEGER DEFAULT 0"
+                    )
+                if "phone_number" not in cols:
+                    cursor.execute("ALTER TABLE properties ADD COLUMN phone_number TEXT")
+                if "deal_type" not in cols:
+                    cursor.execute(
+                        "ALTER TABLE properties ADD COLUMN deal_type TEXT DEFAULT 'sale'"
+                    )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_properties_deal_type ON properties(deal_type)"
+                )
+
+                # Duplicate detection tables
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS image_hashes (
+                        listing_id TEXT NOT NULL,
+                        image_index INTEGER NOT NULL,
+                        phash TEXT NOT NULL,
+                        PRIMARY KEY (listing_id, image_index),
+                        FOREIGN KEY (listing_id) REFERENCES properties(id)
+                    )
+                """)
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_image_hashes_phash ON image_hashes(phash)"
+                )
+
+                # group_id column on properties for duplicate clustering
+                if "group_id" not in cols:
+                    cursor.execute("ALTER TABLE properties ADD COLUMN group_id TEXT")
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_properties_group_id ON properties(group_id)"
+                )
+
+                conn.commit()
 
             # Synchronize seen_ids cache with properties table
             cursor.execute("SELECT id FROM properties")

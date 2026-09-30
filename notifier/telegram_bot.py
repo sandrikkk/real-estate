@@ -8,6 +8,7 @@ from core.models import PropertyListing
 try:
     from telegram import Bot
     from telegram.constants import ParseMode
+
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
@@ -38,7 +39,7 @@ class TelegramNotifier:
             except Exception as e:
                 print(f"[Telegram Notifier Warning]: Failed to initialize Telegram Bot: {e}")
 
-    def format_message(self, listing: PropertyListing) -> str:
+    def format_message(self, listing: PropertyListing, dup_info: Optional[dict] = None) -> str:
         is_rent = getattr(listing, "deal_type", "sale") == "rent"
         if is_rent:
             price_info = f"${listing.price_usd:,.0f}/თვე | {listing.area_m2} მ²"
@@ -58,7 +59,7 @@ class TelegramNotifier:
                 header = f"🏠 <b>{price_info}</b>"
 
         # Condition: [ახალი გარემონტებული / მწვანე კარკასი / etc.]
-        safe_condition = html.escape(listing.condition_name or 'მითითებული არ არის')
+        safe_condition = html.escape(listing.condition_name or "მითითებული არ არის")
         condition_line = f"🛠 <b>მდგომარეობა:</b> {safe_condition}"
 
         # Location: District / Street / Metro proximity
@@ -74,7 +75,11 @@ class TelegramNotifier:
         if listing.metro_station_name:
             loc_parts.append(f"🚇 <b>მ. {html.escape(listing.metro_station_name)}</b>")
 
-        location_line = f"📍 <b>ლოკაცია:</b> {' | '.join(loc_parts)}" if loc_parts else "📍 <b>ლოკაცია:</b> თბილისი"
+        location_line = (
+            f"📍 <b>ლოკაცია:</b> {' | '.join(loc_parts)}"
+            if loc_parts
+            else "📍 <b>ლოკაცია:</b> თბილისი"
+        )
 
         # Details: Owner vs Agent | Floor / Total Floors
         if listing.is_owner is True:
@@ -105,11 +110,9 @@ class TelegramNotifier:
         details_line = " | ".join(details_parts)
 
         # Direct listing link
-        source_name = {
-            "myhome": "MyHome.ge",
-            "ss_ge": "SS.ge",
-            "area_ge": "Area.ge"
-        }.get(listing.source, listing.source.upper())
+        source_name = {"myhome": "MyHome.ge", "ss_ge": "SS.ge", "area_ge": "Area.ge"}.get(
+            listing.source, listing.source.upper()
+        )
         safe_url = html.escape(listing.url)
         link_line = f'🔗 <a href="{safe_url}">განცხადების ლინკი ({source_name})</a>'
 
@@ -126,9 +129,11 @@ class TelegramNotifier:
                     tel_url = clean_digits
                 phone_line = f'📞 <a href="tel:{tel_url}">{safe_phone}</a>'
             else:
-                phone_line = f'📞 <code>{safe_phone}</code> <i>(ნომრის სანახავად გადადით ლინკზე)</i>'
+                phone_line = (
+                    f"📞 <code>{safe_phone}</code> <i>(ნომრის სანახავად გადადით ლინკზე)</i>"
+                )
         else:
-            phone_line = '📞 <i>ტელეფონი მითითებულია განცხადებაში</i>'
+            phone_line = "📞 <i>ტელეფონი მითითებულია განცხადებაში</i>"
 
         lines = [
             header,
@@ -140,28 +145,62 @@ class TelegramNotifier:
 
         # Valuation scale / analytics if present
         if listing.valuation_scale_label:
-            safe_scale_vis = html.escape(listing.valuation_scale_visual or '')
+            safe_scale_vis = html.escape(listing.valuation_scale_visual or "")
             safe_scale_lbl = html.escape(listing.valuation_scale_label)
             lines.append("")
             lines.append(f"📈 <b>MyHome შეფასება:</b> {safe_scale_vis} <b>{safe_scale_lbl}</b>")
         elif listing.market_median_price_m2:
             lines.append("")
-            lines.append(f"📊 <b>საბაზრო შედარება:</b> უბნის ეტალონი <b>${listing.market_median_price_m2:,.0f}/მ²</b>")
+            lines.append(
+                f"📊 <b>საბაზრო შედარება:</b> უბნის ეტალონი <b>${listing.market_median_price_m2:,.0f}/მ²</b>"
+            )
 
-        lines.extend([
-            "",
-            link_line,
-            phone_line,
-        ])
+        lines.extend(
+            [
+                "",
+                link_line,
+                phone_line,
+            ]
+        )
+
+        # Duplicate cluster info (computed from dup_info dict, not stored on model)
+        if dup_info and dup_info.get("duplicate_count", 0) > 1:
+            lines.append("")
+            lines.append(
+                f"🔻 <b>ახალი ყველაზე დაბალი ფასი</b> "
+                f"({dup_info['duplicate_count']} განცხადება იგივე ბინაზე)"
+            )
+            best_url = dup_info.get("best_price_url")
+            best_price = dup_info.get("best_price_usd")
+            if best_price and best_url and best_url != listing.url:
+                safe_bp_url = html.escape(best_url)
+                lines.append(
+                    f'💰 ყველაზე იაფი: <b>${best_price:,.0f}</b> (<a href="{safe_bp_url}">ლინკი</a>)'
+                )
+            elif best_price:
+                lines.append(f"💰 ყველაზე იაფი: <b>${best_price:,.0f}</b>")
+            owner_phone = dup_info.get("probable_owner_phone")
+            if owner_phone:
+                safe_owner_phone = html.escape(owner_phone)
+                lines.append(f"📞 სავარაუდო მესაკუთრე: <b>{safe_owner_phone}</b>")
 
         return "\n".join(lines)
 
-    async def send_notification(self, listing: PropertyListing, target_chat_id: Optional[str] = None) -> bool:
-        message_html = self.format_message(listing)
+    async def send_notification(
+        self,
+        listing: PropertyListing,
+        target_chat_id: Optional[str] = None,
+        dup_info: Optional[dict] = None,
+    ) -> bool:
+        message_html = self.format_message(listing, dup_info=dup_info)
 
         # Print to console if enabled or if bot is not configured
         if self.enable_console or not self.bot:
-            scale_info = f" [📈 შკალა: {listing.valuation_scale_label}]" if listing.valuation_scale_label else ""
+            scale_info = (
+                f" [📈 შკალა: {listing.valuation_scale_label}]"
+                if listing.valuation_scale_label
+                else ""
+            )
             status_tag = f" [{listing.price_status_label}]" if listing.price_status_label else ""
             alert_text = (
                 "\n" + "=" * 60 + "\n"
@@ -169,8 +208,7 @@ class TelegramNotifier:
                 f"Title:    {listing.title}\n"
                 f"Price:    ${listing.price_usd:,.0f} (${listing.price_per_m2:,.0f}/m²){status_tag}{scale_info}\n"
                 f"Location: {listing.city}, {listing.district or 'N/A'}, {listing.street or ''}\n"
-                f"URL:      {listing.url}\n"
-                + "=" * 60
+                f"URL:      {listing.url}\n" + "=" * 60
             )
             _safe_print(alert_text)
 
@@ -187,7 +225,7 @@ class TelegramNotifier:
                         chat_id=recipient_id,
                         photo=first_image,
                         caption=message_html,
-                        parse_mode=ParseMode.HTML
+                        parse_mode=ParseMode.HTML,
                     )
                     await asyncio.sleep(0.2)
                     return True
@@ -199,7 +237,7 @@ class TelegramNotifier:
                 chat_id=recipient_id,
                 text=message_html,
                 parse_mode=ParseMode.HTML,
-                disable_web_page_preview=False
+                disable_web_page_preview=False,
             )
             await asyncio.sleep(0.2)
             return True
@@ -216,9 +254,7 @@ class TelegramNotifier:
         try:
             formatted_text = f"<pre>{html.escape(report_text)}</pre>"
             await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=formatted_text,
-                parse_mode=ParseMode.HTML
+                chat_id=self.chat_id, text=formatted_text, parse_mode=ParseMode.HTML
             )
             return True
         except Exception as e:

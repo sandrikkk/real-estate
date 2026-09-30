@@ -9,7 +9,7 @@ on:
   workflow_dispatch: # საშუალებას გაძლევთ ნებისმიერ დროს ხელითაც გაუშვათ Actions ტაბიდან
 
 permissions:
-  contents: write # საჭიროა ნანახი ბინების ბაზის შესანახად
+  contents: read
 
 jobs:
   scrape:
@@ -37,27 +37,6 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CLOUDFLARE_PROXY_URL: ${{ secrets.CLOUDFLARE_PROXY_URL }}
           CLOUDFLARE_SYNC_KEY: ${{ secrets.CLOUDFLARE_SYNC_KEY }}
+          USE_CLOUDFLARE_D1: "True"
         run: |
           python main.py --once
-
-      - name: Commit & Push Seen Listings Database
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f data/properties.db data/seen_ids.txt data/user_seen.json || true
-          if ! git diff --staged --quiet; then
-            git commit -m "Auto-update seen properties database [skip ci]"
-            for i in 1 2 3; do
-              git fetch origin master
-              git rebase origin/master -X ours || (git rebase --abort 2>/dev/null || true; git merge origin/master -X ours -m "merge remote changes" || true)
-              if git push origin master; then
-                echo "Successfully committed and pushed updated seen database."
-                exit 0
-              fi
-              echo "Push rejected or conflict, retrying in 3 seconds..."
-              sleep 3
-            done
-            echo "Failed to push after retries, continuing..."
-          else
-            echo "No database changes to commit."
-          fi

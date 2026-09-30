@@ -7,6 +7,7 @@ import warnings
 from config import settings
 from core.analytics import MarketAnalytics
 from core.database import DatabaseEngine
+from core.dedup import DuplicateDetector
 from core.filters import ListingFilter
 from core.models import PropertyListing
 from core.user_sync import fetch_active_users
@@ -57,6 +58,9 @@ class RealEstateOrchestrator:
             chat_id=settings.TELEGRAM_CHAT_ID,
             enable_console=settings.ENABLE_CONSOLE_NOTIFICATIONS,
         )
+
+        print("[Init]: Initializing Duplicate Detector...")
+        self.dedup = DuplicateDetector(db=self.db, hash_threshold=8)
 
         self.running = True
 
@@ -314,6 +318,14 @@ class RealEstateOrchestrator:
             # 4. Save to Database
             self.db.save_listing(listing)
 
+            # 4.5 Duplicate Detection
+            dup_info = await self.dedup.check_listing(listing)
+            if dup_info:
+                listing.duplicate_group_id = dup_info["group_id"]
+                # Skip alert if this apartment was already alerted at a lower price
+                if not dup_info.get("is_new_best_price"):
+                    continue
+
             # 5. Dispatch Alert to each matching unnotified user via Telegram Bot
             sent_any = False
             if self.telegram_notifier:
@@ -322,7 +334,7 @@ class RealEstateOrchestrator:
                         continue
                     try:
                         sent = await self.telegram_notifier.send_notification(
-                            listing, target_chat_id=user.chat_id
+                            listing, target_chat_id=user.chat_id, dup_info=dup_info
                         )
                         if sent:
                             sent_any = True

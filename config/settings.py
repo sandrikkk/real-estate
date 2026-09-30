@@ -1,6 +1,5 @@
-import os
 from pathlib import Path
-from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE_PATH = Path(__file__).resolve().parent.parent / ".env"
@@ -8,9 +7,7 @@ ENV_FILE_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(ENV_FILE_PATH),
-        env_file_encoding="utf-8",
-        extra="ignore"
+        env_file=str(ENV_FILE_PATH), env_file_encoding="utf-8", extra="ignore"
     )
 
     # Telegram Bot Notifier (Exclusive)
@@ -20,6 +17,7 @@ class Settings(BaseSettings):
     # Proxy / Cloudflare Worker / ScraperAPI (For Cloud Runners / GitHub Actions)
     CLOUDFLARE_PROXY_URL: str = ""
     CLOUDFLARE_SYNC_KEY: str = ""
+    USE_CLOUDFLARE_D1: bool = True
     ENABLE_MULTI_USER: bool = True
     SCRAPER_API_KEY: str = ""
 
@@ -32,7 +30,9 @@ class Settings(BaseSettings):
     # Paths
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
     DATABASE_PATH: str = str(Path(__file__).resolve().parent.parent / "data" / "properties.db")
-    FILTERS_CONFIG_PATH: str = str(Path(__file__).resolve().parent.parent / "config" / "filters.json")
+    FILTERS_CONFIG_PATH: str = str(
+        Path(__file__).resolve().parent.parent / "config" / "filters.json"
+    )
 
     # Logging
     LOG_LEVEL: str = "INFO"
