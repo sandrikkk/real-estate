@@ -27,3 +27,10 @@ service_account*.json
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local database and caches (Cloudflare D1 used in production)
+data/*.db
+data/*.db-journal
+data/*.txt
+data/*.json
+data/*.tmp
