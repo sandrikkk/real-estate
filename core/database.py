@@ -345,20 +345,22 @@ class DatabaseEngine:
                 conn.commit()
 
             # Synchronize seen_ids cache with properties table
-            cursor.execute("SELECT id FROM properties")
-            for row in cursor.fetchall():
-                self._seen_ids.add(row["id"])
+            # Skip full-table scan for D1 to conserve row-read quota;
+            # is_seen() has per-row DB fallback, is_user_notified() gets one below.
+            if not self.use_d1:
+                cursor.execute("SELECT id FROM properties")
+                for row in cursor.fetchall():
+                    self._seen_ids.add(row["id"])
 
-            # Synchronize user_seen cache with user_notifications table
-            cursor.execute("SELECT chat_id, listing_id FROM user_notifications")
-            for row in cursor.fetchall():
-                self._user_seen[str(row["chat_id"])].add(row["listing_id"])
+                cursor.execute("SELECT chat_id, listing_id FROM user_notifications")
+                for row in cursor.fetchall():
+                    self._user_seen[str(row["chat_id"])].add(row["listing_id"])
 
-            # Seed default admin (Sandro) with existing seen_ids if not already seeded
-            sandro_chat_id = "1105321687"
-            if not self._user_seen.get(sandro_chat_id):
-                for sid in self._seen_ids:
-                    self._user_seen[sandro_chat_id].add(sid)
+                # Seed default admin (Sandro) with existing seen_ids if not already seeded
+                sandro_chat_id = "1105321687"
+                if not self._user_seen.get(sandro_chat_id):
+                    for sid in self._seen_ids:
+                        self._user_seen[sandro_chat_id].add(sid)
 
         # Persist full set to seen_ids.txt and user_seen.json
         try:
@@ -370,7 +372,21 @@ class DatabaseEngine:
         self._save_user_seen()
 
     def is_user_notified(self, chat_id: str, listing_id: str) -> bool:
-        return listing_id in self._user_seen.get(str(chat_id), set())
+        cid = str(chat_id)
+        if listing_id in self._user_seen.get(cid, set()):
+            return True
+        # DB fallback for D1 mode (cache not pre-loaded at init)
+        if self.use_d1:
+            with self._connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT 1 FROM user_notifications WHERE chat_id = ? AND listing_id = ?",
+                    (cid, listing_id),
+                )
+                if cursor.fetchone() is not None:
+                    self._user_seen[cid].add(listing_id)
+                    return True
+        return False
 
     def mark_user_notified(self, chat_id: str, listing_id: str):
         cid = str(chat_id)
