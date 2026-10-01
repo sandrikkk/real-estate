@@ -88,6 +88,10 @@ class DuplicateDetector:
 
     def _load_phone_index(self):
         """Populates phone -> listing_ids from DB."""
+        # Skip full-table scan for D1 to conserve row-read quota;
+        # index is built incrementally as listings are checked.
+        if self.db.use_d1:
+            return
         with self.db._connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -310,12 +314,16 @@ class DuplicateDetector:
         matched_group_ids: Set[str] = set()
 
         # Prioritize candidates that already have hashes (no download needed)
-        cands_with_hash = [c for c in candidates if self._get_hashes(c["id"])]
-        cands_without_hash = [c for c in candidates if not self._get_hashes(c["id"])]
+        # Cache lookups to avoid redundant D1 queries (was 2-3× per candidate)
+        cand_hash_cache = {c["id"]: self._get_hashes(c["id"]) for c in candidates}
+        cands_with_hash = [c for c in candidates if cand_hash_cache[c["id"]]]
+        cands_without_hash = [c for c in candidates if not cand_hash_cache[c["id"]]]
         ordered = cands_with_hash + cands_without_hash[: self.MAX_CANDIDATES_TO_HASH]
 
         for cand in ordered:
-            cand_hashes = await self._ensure_hashes(cand["id"], images_json=cand.get("images_json"))
+            cand_hashes = cand_hash_cache.get(cand["id"]) or await self._ensure_hashes(
+                cand["id"], images_json=cand.get("images_json")
+            )
 
             if not listing_hashes or not cand_hashes:
                 continue
