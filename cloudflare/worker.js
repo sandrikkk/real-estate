@@ -230,8 +230,16 @@ async function handleProxy(targetUrl, request) {
     const parsed = new URL(targetUrl);
     const headers = new Headers();
     headers.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
-    headers.set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
     headers.set("Accept-Language", "ka-GE,ka;q=0.9,en-US;q=0.8,en;q=0.7");
+
+    // Detect tnet.ge JSON API requests and use appropriate headers
+    if (parsed.hostname.includes("tnet.ge") || parsed.hostname.includes("api-statements")) {
+      headers.set("Accept", "application/json, text/plain, */*");
+      headers.set("locale", "ka");
+      headers.set("X-Website-Key", "myhome");
+    } else {
+      headers.set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
+    }
 
     const response = await fetch(parsed.toString(), {
       method: "GET",
