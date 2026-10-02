@@ -3,6 +3,7 @@ import re
 import urllib.parse
 from typing import List, Optional, Dict, Any
 from curl_cffi.requests import AsyncSession
+from config import settings
 from core.models import PropertyListing, SearchFilters
 from scrapers.base import BaseScraper
 
@@ -204,10 +205,23 @@ class MyHomeScraper(BaseScraper):
         return url + "&".join(params)
 
     async def _fetch_api_page(self, url: str) -> Optional[List[dict]]:
-        """Directly queries the TNET statements JSON API using impersonated TLS session."""
+        """Queries the TNET statements JSON API, routing through Cloudflare proxy when configured."""
+        target_url = url
+        req_headers = dict(self.API_HEADERS)
+        timeout = self.timeout
+
+        if settings.CLOUDFLARE_PROXY_URL:
+            target_url = (
+                f"{settings.CLOUDFLARE_PROXY_URL.rstrip('/')}/?url={urllib.parse.quote_plus(url)}"
+            )
+            req_headers = {}
+            timeout = max(self.timeout, 30)
+
         try:
             async with AsyncSession(impersonate="chrome124") as session:
-                response = await session.get(url, headers=self.API_HEADERS, timeout=self.timeout)
+                response = await session.get(
+                    target_url, headers=req_headers if req_headers else None, timeout=timeout
+                )
                 if response.status_code == 200:
                     payload = response.json()
                     data = payload.get("data", {})
@@ -257,9 +271,22 @@ class MyHomeScraper(BaseScraper):
         condition_id, condition, status_id, metro_station_id, user_phone_number, price_label.
         """
         url = f"{self.API_BASE}/{source_id}?locale=ka"
+        target_url = url
+        req_headers = dict(self.API_HEADERS)
+        timeout = 10
+
+        if settings.CLOUDFLARE_PROXY_URL:
+            target_url = (
+                f"{settings.CLOUDFLARE_PROXY_URL.rstrip('/')}/?url={urllib.parse.quote_plus(url)}"
+            )
+            req_headers = {}
+            timeout = 30
+
         try:
             async with AsyncSession(impersonate="chrome124") as session:
-                response = await session.get(url, headers=self.API_HEADERS, timeout=10)
+                response = await session.get(
+                    target_url, headers=req_headers if req_headers else None, timeout=timeout
+                )
                 if response.status_code == 200:
                     payload = response.json()
                     return payload.get("data", {}).get("statement")
