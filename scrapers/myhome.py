@@ -563,8 +563,8 @@ class MyHomeScraper(BaseScraper):
 
     # MyHome returns all promoted (Super-VIP / VIP+ / VIP) listings before regular
     # ones, so keep paging past max_pages until enough regular listings are seen.
-    MIN_REGULAR_ITEMS = 20
-    MAX_PAGES_HARD = 10
+    MIN_REGULAR_ITEMS = 15
+    MAX_PAGES_HARD = 5
 
     async def fetch_listings(self, filters: SearchFilters) -> List[PropertyListing]:
         all_listings: List[PropertyListing] = []
