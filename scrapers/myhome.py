@@ -51,6 +51,80 @@ BUILDING_STATUSES: Dict[int, str] = {
     3: "მშენებარე",
 }
 
+# Mapping of Georgian district/neighborhood names to TNET statement API urban_ids
+MYHOME_URBAN_MAP: Dict[str, List[int]] = {
+    # 1. დიდუბე
+    "დიდუბე": [23],
+    "წერეთელი": [23],
+    "წერეთლის გამზ.": [23],
+    # 2. დიღმის მასივი
+    "დიღმის მასივი": [24],
+    "დიღმის მას.": [24],
+    # 3. ჩუღურეთი
+    "ჩუღურეთი": [27, 25, 26],
+    "კუკია": [25],
+    "სვანეთის უბანი": [26],
+    "ივერთუბანი": [27],
+    "მარჯანიშვილი": [27],
+    "ვორონცოვი": [27],
+    # 4. ნაძალადევი
+    "ნაძალადევი": [10, 11, 6],
+    "სან. ზონა": [11],
+    "სანზონა": [11],
+    "თემქა": [6],
+    "ლოტკინი": [10],
+    # 5. გლდანი
+    "გლდანი": [2],
+    "გლდანულა": [2],
+    "ავჭალა": [2],
+    # 6. ვაკე
+    "ვაკე": [38, 28, 64],
+    "ბაგები": [28],
+    "კუს ტბა": [38],
+    "ვერა": [64],
+    "წყნეთი": [38],
+    # 7. საბურთალო
+    "საბურთალო": [47, 39, 46, 43, 101],
+    "ვაშლიჯვარი": [39],
+    "ვეძისი": [47],
+    "თხინვალი": [47],
+    "ლისი": [43],
+    "ლისის მიმდებარედ": [101],
+    "ნუცუბიძის ფერდობი": [46],
+    "ნუცუბიძე": [46],
+    "დელისი": [47],
+    # 8. დიდი დიღომი
+    "დიდი დიღომი": [29, 30, 48],
+    "დიღომი 1-9": [30],
+    "სოფ. დიღომი": [48],
+    "დიღომი": [24, 29, 30, 48],
+    # 9. ისანი
+    "ისანი": [53, 62],
+    "ავლაბარი": [62],
+    "ნავთლუღი": [53],
+    # 10. სამგორი
+    "სამგორი": [59, 52, 51, 55, 78],
+    "ვარკეთილი": [52],
+    "ვაზისუბანი": [51],
+    "მესამე მასივი": [55],
+    "მოსკოვის გამზირი": [78],
+    "მოსკოვის გამზ.": [78],
+    # 11. მთაწმინდა
+    "მთაწმინდა": [66, 67],
+    "სოლოლაკი": [67],
+    "რუსთაველი": [66],
+    "თავისუფლება": [66],
+    # 12. კრწანისი
+    "კრწანისი": [65, 57],
+    "ორთაჭალა": [57],
+    # Parent dual districts
+    "ვაკე-საბურთალო": [38, 28, 64, 47, 39, 46, 43, 101],
+    "ისანი-სამგორი": [53, 62, 59, 52, 51, 55, 78],
+    "გლდანი-ნაძალადევი": [2, 10, 11, 6],
+    "დიდუბე-ჩუღურეთი": [23, 27, 25, 26],
+    "ძველი თბილისი": [66, 67, 65, 57, 62, 64],
+}
+
 
 def _safe_int(val: Any) -> Optional[int]:
     if val is None:
@@ -148,6 +222,21 @@ class MyHomeScraper(BaseScraper):
                 params.append("owner_type=physical")
             elif ot in ["agent", "agency", "სააგენტო"]:
                 params.append("owner_type=agent")
+
+        target_districts = filters.whitelist_districts or filters.target_districts
+        if target_districts:
+            urban_ids = set()
+            for d in target_districts:
+                d_clean = str(d).strip()
+                if d_clean in MYHOME_URBAN_MAP:
+                    urban_ids.update(MYHOME_URBAN_MAP[d_clean])
+                else:
+                    for k, uids in MYHOME_URBAN_MAP.items():
+                        if k.lower() == d_clean.lower():
+                            urban_ids.update(uids)
+                            break
+            if urban_ids:
+                params.append(f"urbans={','.join(str(u) for u in sorted(urban_ids))}")
 
         return f"{self.API_BASE}?{'&'.join(params)}"
 
@@ -472,10 +561,16 @@ class MyHomeScraper(BaseScraper):
             print(f"[MyHome Normalization Error for item {item.get('id')}]: {e}")
             return None
 
+    # MyHome returns all promoted (Super-VIP / VIP+ / VIP) listings before regular
+    # ones, so keep paging past max_pages until enough regular listings are seen.
+    MIN_REGULAR_ITEMS = 20
+    MAX_PAGES_HARD = 10
+
     async def fetch_listings(self, filters: SearchFilters) -> List[PropertyListing]:
         all_listings: List[PropertyListing] = []
+        regular_seen = 0
 
-        for page in range(1, self.max_pages + 1):
+        for page in range(1, self.MAX_PAGES_HARD + 1):
             raw_items = None
             # 1. Primary Strategy: Direct JSON API
             api_url = self._build_api_url(filters, page=page)
@@ -495,6 +590,14 @@ class MyHomeScraper(BaseScraper):
                 normalized = self._normalize_item(raw, filters=filters)
                 if normalized:
                     all_listings.append(normalized)
+
+            regular_seen += sum(
+                1
+                for raw in raw_items
+                if not (raw.get("is_super_vip") or raw.get("is_vip_plus") or raw.get("is_vip"))
+            )
+            if page >= self.max_pages and regular_seen >= self.MIN_REGULAR_ITEMS:
+                break
 
         return all_listings
 

@@ -20,6 +20,20 @@ class TestMyHomeScraper(unittest.TestCase):
         self.assertIn("statuses=1,2", url)
         self.assertIn("conditions=1,2,3,5,8", url)
         self.assertIn("page=1", url)
+        self.assertIn("urbans=", url)
+
+    def test_build_api_url_without_districts(self):
+        f = SearchFilters(whitelist_districts=[])
+        url = self.scraper._build_api_url(f, page=1)
+        self.assertNotIn("urbans=", url)
+
+    def test_build_api_url_with_districts(self):
+        f = SearchFilters(whitelist_districts=["საბურთალო", "დიდუბე"])
+        url = self.scraper._build_api_url(f, page=1)
+        self.assertIn("urbans=", url)
+        # Didube is 23, Saburtalo includes 47
+        self.assertIn("23", url)
+        self.assertIn("47", url)
 
     def test_extract_phone_number_from_comment(self):
         # Unmasked mobile written in seller's comment
@@ -77,6 +91,37 @@ class TestMyHomeScraper(unittest.TestCase):
         self.assertTrue(listing.is_owner)
         self.assertEqual(listing.phone_number, "+995 599 18 01 18")
         self.assertEqual(len(listing.images), 1)
+
+    def test_fetch_listings_pages_past_promoted_block(self):
+        # MyHome returns all Super-VIP/VIP+ listings first; regular new listings
+        # only start after them. 3 promoted-only pages must not end pagination.
+        def item(i, promoted):
+            return {
+                "id": i,
+                "deal_type_id": 1,
+                "real_estate_type_id": 1,
+                "area": 50,
+                "price": {"2": {"price_total": 60000}},
+                "is_super_vip": promoted,
+            }
+
+        pages = {p: [item(p * 100 + i, True) for i in range(24)] for p in (1, 2, 3)}
+        pages[4] = [item(400 + i, False) for i in range(24)]
+        pages[5] = [item(500 + i, False) for i in range(24)]
+        requested = []
+
+        async def fake_fetch(url):
+            page = int(url.split("page=")[1].split("&")[0])
+            requested.append(page)
+            return pages.get(page)
+
+        import asyncio
+
+        self.scraper._fetch_api_page = fake_fetch
+        listings = asyncio.run(self.scraper.fetch_listings(self.filters))
+
+        self.assertEqual(requested, [1, 2, 3, 4])
+        self.assertIn("myhome_400", {item.id for item in listings})
 
 
 if __name__ == "__main__":
