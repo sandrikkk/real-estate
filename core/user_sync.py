@@ -7,9 +7,40 @@ import urllib.request
 import urllib.error
 
 from config import settings
-from core.models import UserSubscription, SearchFilters
+from core.models import UserSubscription
 
 logger = logging.getLogger(__name__)
+
+USER_CACHE_FILE = Path(settings.BASE_DIR) / "data" / "active_users_cache.json"
+
+
+def save_cached_users(users: List[UserSubscription]):
+    """Persists active users locally so rate limits or network blips don't reset filters."""
+    try:
+        USER_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        data = [u.model_dump() for u in users]
+        with open(USER_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to cache active users: {e}")
+
+
+def load_cached_users() -> List[UserSubscription]:
+    """Loads active users from local cache if available."""
+    if not USER_CACHE_FILE.exists():
+        return []
+    try:
+        with open(USER_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            users = []
+            for item in data:
+                u = UserSubscription(**item)
+                if u.is_active and u.chat_id:
+                    users.append(u)
+            return users
+    except Exception as e:
+        logger.warning(f"Failed to read cached active users: {e}")
+        return []
 
 
 def get_default_fallback_user() -> UserSubscription:
@@ -60,17 +91,23 @@ def get_default_fallback_user() -> UserSubscription:
         rooms_min=rooms_min,
         districts=districts,
         owner_type=owner_type,
-        is_active=True
+        is_active=True,
     )
 
 
-def fetch_active_users(worker_url: Optional[str] = None, sync_key: Optional[str] = None) -> List[UserSubscription]:
+def fetch_active_users(
+    worker_url: Optional[str] = None, sync_key: Optional[str] = None
+) -> List[UserSubscription]:
     """
     Fetches the active user list from the Cloudflare Worker KV storage.
     If the worker is not configured or an error occurs, safely falls back
     to the single admin user defined in settings / filters.json.
     """
-    base_url = (worker_url if worker_url is not None else settings.CLOUDFLARE_PROXY_URL or "").strip().rstrip("/")
+    base_url = (
+        (worker_url if worker_url is not None else settings.CLOUDFLARE_PROXY_URL or "")
+        .strip()
+        .rstrip("/")
+    )
     key = (sync_key if sync_key is not None else settings.CLOUDFLARE_SYNC_KEY or "").strip()
 
     # If worker is not configured or multi-user is disabled, return fallback
@@ -82,7 +119,7 @@ def fetch_active_users(worker_url: Optional[str] = None, sync_key: Optional[str]
         "User-Agent": "RealEstate-Orchestrator/2.0",
         "Accept": "application/json",
         "Cache-Control": "no-cache, no-store, must-revalidate",
-        "Pragma": "no-cache"
+        "Pragma": "no-cache",
     }
     if key:
         headers["X-Sync-Key"] = key
@@ -103,13 +140,24 @@ def fetch_active_users(worker_url: Optional[str] = None, sync_key: Optional[str]
                         logger.warning(f"Error parsing user object {item}: {parse_err}")
 
                 if users:
+                    save_cached_users(users)
                     return users
                 else:
-                    logger.info("Cloudflare Worker returned 0 active users, using default fallback user.")
+                    logger.info("Cloudflare Worker returned 0 active users, checking cache.")
+                    cached = load_cached_users()
+                    if cached:
+                        return cached
                     return [get_default_fallback_user()]
             else:
-                logger.warning(f"Cloudflare Worker returned HTTP {resp.status}, using default fallback user.")
+                logger.warning(f"Cloudflare Worker returned HTTP {resp.status}, checking cache.")
     except Exception as e:
-        logger.warning(f"Could not reach Cloudflare Worker users API ({api_url}): {e}. Using local fallback filters.")
+        logger.warning(
+            f"Could not reach Cloudflare Worker users API ({api_url}): {e}. Using cached or fallback filters."
+        )
+
+    cached = load_cached_users()
+    if cached:
+        logger.info("Using cached active users (%d subscribers).", len(cached))
+        return cached
 
     return [get_default_fallback_user()]

@@ -148,7 +148,12 @@ class TelegramNotifier:
             safe_scale_vis = html.escape(listing.valuation_scale_visual or "")
             safe_scale_lbl = html.escape(listing.valuation_scale_label)
             lines.append("")
-            lines.append(f"📈 <b>MyHome შეფასება:</b> {safe_scale_vis} <b>{safe_scale_lbl}</b>")
+            if getattr(listing, "valuation_scale_source", None) == "myhome":
+                lines.append(f"📈 <b>MyHome შეფასება:</b> {safe_scale_vis} <b>{safe_scale_lbl}</b>")
+            else:
+                lines.append(
+                    f"📊 <b>საბაზრო შეფასება:</b> {safe_scale_vis} <b>{safe_scale_lbl}</b>"
+                )
         elif listing.market_median_price_m2:
             lines.append("")
             lines.append(
@@ -166,19 +171,30 @@ class TelegramNotifier:
         # Duplicate cluster info (computed from dup_info dict, not stored on model)
         if dup_info and dup_info.get("duplicate_count", 0) > 1:
             lines.append("")
-            lines.append(
-                f"🔻 <b>ახალი ყველაზე დაბალი ფასი</b> "
-                f"({dup_info['duplicate_count']} განცხადება იგივე ბინაზე)"
-            )
+            dup_count = dup_info["duplicate_count"]
+            if dup_info.get("is_strictly_lower"):
+                lines.append(
+                    f"🔻 <b>ახალი ყველაზე დაბალი ფასი!</b> ({dup_count} განცხადება იგივე ბინაზე)"
+                )
+            elif dup_info.get("is_first_owner"):
+                lines.append(
+                    f"🔑 <b>მესაკუთრის განცხადება!</b> ({dup_count} განცხადება იგივე ბინაზე)"
+                )
+            else:
+                lines.append(f"🔄 <b>ნაპოვნია დუბლიკატი</b> ({dup_count} განცხადება იგივე ბინაზე)")
+
             best_url = dup_info.get("best_price_url")
             best_price = dup_info.get("best_price_usd")
-            if best_price and best_url and best_url != listing.url:
-                safe_bp_url = html.escape(best_url)
-                lines.append(
-                    f'💰 ყველაზე იაფი: <b>${best_price:,.0f}</b> (<a href="{safe_bp_url}">ლინკი</a>)'
-                )
-            elif best_price:
-                lines.append(f"💰 ყველაზე იაფი: <b>${best_price:,.0f}</b>")
+            # Only show cheaper listing link if there is a listing strictly cheaper than the current one
+            if best_price and best_price < listing.price_usd:
+                if best_url and best_url != listing.url:
+                    safe_bp_url = html.escape(best_url)
+                    lines.append(
+                        f'💰 ყველაზე იაფი: <b>${best_price:,.0f}</b> (<a href="{safe_bp_url}">ლინკი</a>)'
+                    )
+                else:
+                    lines.append(f"💰 ყველაზე იაფი: <b>${best_price:,.0f}</b>")
+
             owner_phone = dup_info.get("probable_owner_phone")
             if owner_phone:
                 safe_owner_phone = html.escape(owner_phone)

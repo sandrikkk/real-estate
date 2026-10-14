@@ -41,11 +41,7 @@ class MarketAnalytics:
     def __init__(self, fallback_default_avg_m2: float = 1250.0):
         self.default_avg_m2 = fallback_default_avg_m2
 
-    def get_district_benchmark(
-        self,
-        district: Optional[str],
-        rooms: Optional[int] = None
-    ) -> float:
+    def get_district_benchmark(self, district: Optional[str], rooms: Optional[int] = None) -> float:
         """
         Retrieves real-world market $/m² benchmark for the district
         based on calibrated Tbilisi real estate market indices (TBC Capital / Galt & Taggart / MyHome).
@@ -64,9 +60,7 @@ class MarketAnalytics:
         return self.default_avg_m2
 
     def compute_valuation_scale(
-        self,
-        listing: PropertyListing,
-        myhome_price_label: Optional[dict] = None
+        self, listing: PropertyListing, myhome_price_label: Optional[dict] = None
     ) -> PropertyListing:
         """
         Assigns the 5-tier valuation scale:
@@ -78,17 +72,26 @@ class MarketAnalytics:
             range_lbl = str(myhome_price_label.get("range_label") or "").strip().lower()
 
             # Exact key lookup or prioritized prefix match (high_middle_price before middle_price)
-            ordered_keys = ["high_middle_price", "middle_price", "high_price", "top_price", "good_price", "low_price"]
+            ordered_keys = [
+                "high_middle_price",
+                "middle_price",
+                "high_price",
+                "top_price",
+                "good_price",
+                "low_price",
+            ]
             for key in ordered_keys:
                 if disp == key or key in range_lbl or key in disp:
                     name, tier, visual = MYHOME_SCALE_MAPPING[key]
                     listing.valuation_scale_label = name
                     listing.valuation_scale_tier = tier
                     listing.valuation_scale_visual = visual
+                    listing.valuation_scale_source = "myhome"
                     return listing
 
         # Universal calculation based on discount_pct against real district benchmark
         pct = listing.discount_pct if listing.discount_pct is not None else 0.0
+        listing.valuation_scale_source = "market"
         if pct >= 15.0:
             listing.valuation_scale_label = "დაბალი ფასი"
             listing.valuation_scale_tier = 1
@@ -117,7 +120,7 @@ class MarketAnalytics:
         listing: PropertyListing,
         db: Optional[DatabaseEngine] = None,
         discount_threshold_pct: float = 15.0,
-        myhome_price_label: Optional[dict] = None
+        myhome_price_label: Optional[dict] = None,
     ) -> PropertyListing:
         """
         Enriches listing with objective real-world market benchmarks and MyHome official valuation scale.
@@ -194,7 +197,6 @@ class MarketAnalytics:
 
         return listing
 
-
     def format_market_report(self, db: DatabaseEngine) -> str:
         """
         Generates a comprehensive market intelligence report across all tracked Tbilisi districts.
@@ -217,9 +219,13 @@ class MarketAnalytics:
             lines.append("მონაცემები ჯერჯერობით გროვდება...")
         else:
             # Sort districts by median price descending
-            sorted_districts = sorted(stats_map.values(), key=lambda s: s.median_price_per_m2, reverse=True)
+            sorted_districts = sorted(
+                stats_map.values(), key=lambda s: s.median_price_per_m2, reverse=True
+            )
             for s in sorted_districts:
-                iqr_str = f"${s.iqr_p25:,.0f} - ${s.iqr_p75:,.0f}" if s.iqr_p25 and s.iqr_p75 else "N/A"
+                iqr_str = (
+                    f"${s.iqr_p25:,.0f} - ${s.iqr_p75:,.0f}" if s.iqr_p25 and s.iqr_p75 else "N/A"
+                )
                 lines.append(
                     f"{s.district:<16} | {s.sample_count:<5} | ${s.median_price_per_m2:>10,.0f}/მ² | {iqr_str:<18}"
                 )

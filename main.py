@@ -6,7 +6,7 @@ import warnings
 
 from config import settings
 from core.analytics import MarketAnalytics
-from core.database import DatabaseEngine
+from core.database import DatabaseEngine, DatabaseUnavailableError
 from core.dedup import DuplicateDetector
 from core.filters import ListingFilter
 from core.models import PropertyListing
@@ -36,7 +36,11 @@ if sys.platform == "win32":
 class RealEstateOrchestrator:
     def __init__(self):
         print("[Init]: Initializing Database Engine...")
-        self.db = DatabaseEngine(settings.DATABASE_PATH)
+        try:
+            self.db = DatabaseEngine(settings.DATABASE_PATH)
+        except DatabaseUnavailableError as e:
+            print(f"[Circuit Breaker Fatal]: {e}")
+            raise
 
         print(f"[Init]: Loading search criteria from {settings.FILTERS_CONFIG_PATH}...")
         self.filter_engine = ListingFilter.from_json(settings.FILTERS_CONFIG_PATH)
@@ -68,6 +72,18 @@ class RealEstateOrchestrator:
         print(
             f"\n--- [Cycle Started at {asyncio.get_event_loop().time():.2f}] Scraping active portals... ---"
         )
+
+        # Fail-closed Circuit Breaker: verify database health before scraping
+        if self.db.use_d1 and not self.db.is_healthy():
+            print(
+                "[Circuit Breaker]: Cloudflare D1 is unavailable. Halting scraping cycle to prevent duplicate alerts."
+            )
+            return {
+                "status": "halted",
+                "reason": "d1_circuit_breaker",
+                "scraped": 0,
+                "notified": 0,
+            }
 
         # 0. Sync active user profiles (from Cloudflare KV or fallback)
         active_users = fetch_active_users()
@@ -186,41 +202,55 @@ class RealEstateOrchestrator:
         user_sent_count = {}
         MAX_ALERTS_PER_USER_CYCLE = 10
 
+        # 1. In-memory batch deduplication across all scraped listings
+        unique_listings = []
         for listing in all_listings:
-            # In-memory batch deduplication
-            if listing.id in seen_in_batch:
-                continue
-            seen_in_batch.add(listing.id)
+            if listing.id not in seen_in_batch:
+                seen_in_batch.add(listing.id)
+                unique_listings.append(listing)
+                if listing.id not in self.db._seen_ids:
+                    new_count += 1
 
-            is_new_listing = listing.id not in self.db._seen_ids
-            if is_new_listing:
-                new_count += 1
+        # 2. Batch save all newly fetched listings in 1 single HTTP/database query
+        self.db.save_listings_batch(unique_listings)
 
+        # 3. Batch check unnotified listing IDs for each active user (1 query per user)
+        all_unique_ids = [item.id for item in unique_listings]
+        unnotified_ids_by_user = {}
+        for u in active_users:
+            unnotified_ids_by_user[str(u.chat_id)] = set(
+                self.db.filter_unnotified_listings(u.chat_id, all_unique_ids)
+            )
+
+        if not getattr(settings, "ENABLE_MULTI_USER", True) and settings.TELEGRAM_CHAT_ID:
+            admin_cid = str(settings.TELEGRAM_CHAT_ID)
+            if admin_cid not in unnotified_ids_by_user:
+                unnotified_ids_by_user[admin_cid] = set(
+                    self.db.filter_unnotified_listings(admin_cid, all_unique_ids)
+                )
+
+        for listing in unique_listings:
             # 1. Baseline Filter Hygiene (Under Construction, Black Frame, Stop-words, Location Blacklist)
             if not self.filter_engine.matches_hygiene(listing):
-                self.db.save_listing(listing)
                 continue
 
             # 2. Identify active users who match this listing AND have not received it yet
             matching_users = [
                 u
                 for u in active_users
-                if not self.db.is_user_notified(u.chat_id, listing.id)
+                if listing.id in unnotified_ids_by_user.get(str(u.chat_id), set())
                 and self.filter_engine.matches_user(u, listing, tentative=True)
             ]
 
             # Fallback for single-admin / legacy mode if no user matched via multi-user
             if not matching_users and not getattr(settings, "ENABLE_MULTI_USER", True):
-                if not self.db.is_user_notified(
-                    settings.TELEGRAM_CHAT_ID, listing.id
+                admin_cid = str(settings.TELEGRAM_CHAT_ID)
+                if listing.id in unnotified_ids_by_user.get(
+                    admin_cid, set()
                 ) and self.filter_engine.matches(listing):
-                    matching_users = [
-                        u for u in active_users if u.chat_id == settings.TELEGRAM_CHAT_ID
-                    ]
+                    matching_users = [u for u in active_users if str(u.chat_id) == admin_cid]
 
             if not matching_users:
-                # Save to database so property details are archived
-                self.db.save_listing(listing)
                 continue
 
             matched_count += 1
@@ -341,6 +371,7 @@ class RealEstateOrchestrator:
                             notified_count += 1
                             user_sent_count[user.chat_id] = user_sent_count.get(user.chat_id, 0) + 1
                             self.db.mark_user_notified(user.chat_id, listing.id)
+                            unnotified_ids_by_user.get(str(user.chat_id), set()).discard(listing.id)
                     except Exception as e:
                         print(f"[Telegram Notification Error for {user.chat_id}]: {e}")
                     await asyncio.sleep(settings.RATE_LIMIT_DELAY_SECONDS)
@@ -370,6 +401,10 @@ class RealEstateOrchestrator:
         while self.running:
             try:
                 await self.run_cycle()
+            except DatabaseUnavailableError as e:
+                print(
+                    f"[Circuit Breaker]: D1 database unavailable ({e}). Waiting for next cycle..."
+                )
             except Exception as e:
                 print(f"[Orchestrator Unexpected Error]: {e}")
 
@@ -390,7 +425,12 @@ class RealEstateOrchestrator:
 
 
 async def main():
-    orchestrator = RealEstateOrchestrator()
+    try:
+        orchestrator = RealEstateOrchestrator()
+    except DatabaseUnavailableError as e:
+        print(f"[Circuit Breaker Fatal]: {e}")
+        print("[Circuit Breaker]: Halting process execution (Fail-Closed).")
+        sys.exit(1)
 
     if "--stats" in sys.argv or "--report" in sys.argv:
         print("\n[Market Intelligence]: Computing comprehensive statistics...")
@@ -403,7 +443,20 @@ async def main():
 
     if "--once" in sys.argv:
         print("[Run-Once Mode]: Executing 1 full market scan & alert cycle...")
-        stats = await orchestrator.run_cycle()
+        try:
+            stats = await orchestrator.run_cycle()
+        except DatabaseUnavailableError as e:
+            print(
+                f"[Circuit Breaker Fatal]: D1 database error during run ({e}). Halting process (Fail-Closed)."
+            )
+            sys.exit(1)
+
+        if stats.get("status") == "halted":
+            print(
+                f"[Circuit Breaker]: Cycle was halted ({stats.get('reason')}). No duplicate alerts sent."
+            )
+            sys.exit(1)
+
         print(
             f"[Finished]: Fetched: {stats.get('total_fetched', 0)} | New: {stats.get('new_listings', 0)} | Matched: {stats.get('matched_filters', 0)} | Alerts: {stats.get('notifications_sent', 0)}"
         )

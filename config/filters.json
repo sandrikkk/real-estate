@@ -1,14 +1,14 @@
 {
   "city": "თბილისი",
   "deal_type": "sale",
-  "price_min_usd": 10000,
-  "price_max_usd": 100000,
+  "price_min_usd": 45000,
+  "price_max_usd": 75000,
   "rent_price_min_usd": 300,
   "rent_price_max_usd": 1500,
-  "area_min_m2": 10,
-  "area_max_m2": 100,
+  "area_min_m2": 40,
+  "area_max_m2": 65,
   "price_per_m2_max_usd": null,
-  "rooms_min": 2,
+  "rooms_min": 1,
   "owner_type": null,
   "myhome_url": null,
   "target_metro_ids": [
@@ -29,13 +29,9 @@
   "whitelist_districts": [
     "დიდუბე",
     "ნაძალადევი",
-    "ჩუღურეთი",
-    "ისანი",
     "გლდანი",
     "ვაკე",
-    "სამგორი",
-    "მთაწმინდა",
-    "კრწანისი",
+    "საბურთალო",
     "დიღმის მასივი"
   ],
   "blacklist_keywords": [
