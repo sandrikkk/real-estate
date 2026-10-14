@@ -122,7 +122,7 @@ class DuplicateDetector:
             sql = """
                 SELECT id, source, price_usd, area_m2, url, phone_number,
                        floor, rooms, total_floors, images_json, group_id,
-                       published_at
+                       published_at, is_owner, user_type
                 FROM properties
                 WHERE id != ? AND district = ? AND area_m2 BETWEEN ? AND ?
             """
@@ -151,18 +151,35 @@ class DuplicateDetector:
             )
             return [row["phash"] for row in cursor.fetchall()]
 
+    def _get_hashes_batch(self, listing_ids: List[str]) -> Dict[str, List[str]]:
+        """Loads cached dHash hex strings for multiple listings in 1 single query."""
+        if not listing_ids:
+            return {}
+        result = {lid: [] for lid in listing_ids}
+        with self.db._connection() as conn:
+            cursor = conn.cursor()
+            placeholders = ",".join(["?"] * len(listing_ids))
+            cursor.execute(
+                f"SELECT listing_id, phash FROM image_hashes WHERE listing_id IN ({placeholders}) ORDER BY image_index",
+                tuple(listing_ids),
+            )
+            for row in cursor.fetchall():
+                lid = row["listing_id"]
+                result[lid].append(row["phash"])
+        return result
+
     def _save_hashes(self, listing_id: str, hashes: List[str]):
-        """Saves dHash hex strings to DB."""
+        """Saves dHash hex strings to DB using batch executemany."""
         if not hashes:
             return
         with self.db._connection() as conn:
             cursor = conn.cursor()
-            for idx, h in enumerate(hashes):
-                cursor.execute(
-                    "INSERT OR REPLACE INTO image_hashes (listing_id, image_index, phash) "
-                    "VALUES (?, ?, ?)",
-                    (listing_id, idx, h),
-                )
+            rows = [(listing_id, idx, h) for idx, h in enumerate(hashes)]
+            cursor.executemany(
+                "INSERT OR REPLACE INTO image_hashes (listing_id, image_index, phash) "
+                "VALUES (?, ?, ?)",
+                rows,
+            )
             conn.commit()
 
     async def _ensure_hashes(
@@ -227,11 +244,11 @@ class DuplicateDetector:
             conn.commit()
 
     def _get_group_info(self, group_id: str, current_listing_id: str) -> Optional[dict]:
-        """Computes group stats from DB: count, best price, probable owner, is_new_best."""
+        """Computes group stats from DB: count, best price, probable owner, is_new_best, is_strictly_lower."""
         with self.db._connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id, price_usd, url, phone_number, published_at "
+                "SELECT id, price_usd, url, phone_number, published_at, is_owner, user_type "
                 "FROM properties WHERE group_id = ? ORDER BY price_usd ASC",
                 (group_id,),
             )
@@ -242,32 +259,73 @@ class DuplicateDetector:
 
         best = rows[0]  # sorted ASC
 
-        # Is the current listing the new best price?
+        # Is the current listing the new strictly lowest price or first owner listing?
         other_prices = [r["price_usd"] for r in rows if r["id"] != current_listing_id]
         current_price = next((r["price_usd"] for r in rows if r["id"] == current_listing_id), None)
-        is_new_best = current_price is not None and (
-            not other_prices or current_price <= min(other_prices)
+        is_strictly_lower = (
+            current_price is not None and bool(other_prices) and current_price < min(other_prices)
         )
 
-        # Owner heuristic: phone appearing on fewest total listings → likely owner
+        def _is_verified_owner(val) -> bool:
+            return val is True or val == 1 or val == "1"
+
+        def _is_explicitly_not_owner(val) -> bool:
+            return val is False or val == 0 or val == "0"
+
+        has_previous_owner = any(
+            (
+                _is_verified_owner(r.get("is_owner"))
+                or (
+                    not _is_explicitly_not_owner(r.get("is_owner"))
+                    and r.get("is_owner") is None
+                    and str(r.get("user_type") or "").lower() == "physical"
+                )
+            )
+            for r in rows
+            if r["id"] != current_listing_id
+        )
+        curr_row = next((r for r in rows if r["id"] == current_listing_id), {})
+        is_curr_owner = _is_verified_owner(curr_row.get("is_owner")) or (
+            not _is_explicitly_not_owner(curr_row.get("is_owner"))
+            and curr_row.get("is_owner") is None
+            and str(curr_row.get("user_type") or "").lower() == "physical"
+        )
+        is_first_owner = not has_previous_owner and is_curr_owner
+        is_new_best = is_strictly_lower or not other_prices or is_first_owner
+
+        # Probable Owner heuristic:
+        # Priority 1: Strictly verified owner (is_owner == 1)
         owner_phone = None
-        phones_with_freq = []
         for r in rows:
-            p = r.get("phone_number")
-            if p:
-                freq = len(self._phone_index.get(p, set()))
-                phones_with_freq.append((p, freq))
+            if r.get("phone_number") and _is_verified_owner(r.get("is_owner")):
+                owner_phone = r["phone_number"]
+                break
 
-        if phones_with_freq:
-            phones_with_freq.sort(key=lambda x: x[1])
-            owner_phone = phones_with_freq[0][0]
-
-        # Fallback: earliest published_at with phone
+        # Priority 2: Candidates that are not explicitly disqualified agents/brokers
+        # Private brokers often have user_type='physical' but is_owner=0; they must NEVER be considered owners.
         if not owner_phone:
-            for r in sorted(rows, key=lambda x: x.get("published_at") or "9999"):
-                if r.get("phone_number"):
-                    owner_phone = r["phone_number"]
-                    break
+            candidates = []
+            for r in rows:
+                p = r.get("phone_number")
+                if not p:
+                    continue
+                is_own = r.get("is_owner")
+                u_type = str(r.get("user_type") or "").lower()
+                if _is_explicitly_not_owner(is_own):
+                    continue
+                if u_type in ("agent", "agency", "broker", "developer", "company"):
+                    continue
+                freq = len(self._phone_index.get(p, set()))
+                is_phys = u_type == "physical"
+                candidates.append((0 if is_phys else 1, freq, p))
+
+            if candidates:
+                candidates.sort(key=lambda x: (x[0], x[1]))
+                best_cand = candidates[0]
+                if best_cand[1] <= 1 or (len(candidates) > 1 and best_cand[1] < candidates[1][1]):
+                    owner_phone = best_cand[2]
+                elif len(candidates) == 1 and best_cand[1] <= 2:
+                    owner_phone = best_cand[2]
 
         prices = [r["price_usd"] for r in rows]
         return {
@@ -278,6 +336,8 @@ class DuplicateDetector:
             "probable_owner_phone": owner_phone,
             "price_spread": max(prices) - min(prices),
             "is_new_best_price": is_new_best,
+            "is_strictly_lower": is_strictly_lower,
+            "is_first_owner": is_first_owner,
         }
 
     # --- Main entry point ---
@@ -313,9 +373,8 @@ class DuplicateDetector:
 
         matched_group_ids: Set[str] = set()
 
-        # Prioritize candidates that already have hashes (no download needed)
-        # Cache lookups to avoid redundant D1 queries (was 2-3× per candidate)
-        cand_hash_cache = {c["id"]: self._get_hashes(c["id"]) for c in candidates}
+        # Cache lookups in 1 single batch query to avoid redundant D1 round-trips
+        cand_hash_cache = self._get_hashes_batch([c["id"] for c in candidates])
         cands_with_hash = [c for c in candidates if cand_hash_cache[c["id"]]]
         cands_without_hash = [c for c in candidates if not cand_hash_cache[c["id"]]]
         ordered = cands_with_hash + cands_without_hash[: self.MAX_CANDIDATES_TO_HASH]
@@ -370,7 +429,7 @@ class DuplicateDetector:
         info = self._get_group_info(group_id, listing.id)
         if info:
             print(
-                f"[Dedup]: ⚠️ Duplicate detected! {listing.id} → group {group_id} "
+                f"[Dedup]: Duplicate detected: {listing.id} -> group {group_id} "
                 f"({info['duplicate_count']} listings, spread: ${info['price_spread']:,.0f})"
             )
         return info

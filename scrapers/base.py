@@ -31,7 +31,9 @@ class BaseScraper(ABC):
         req_headers = self.headers
         timeout = self.timeout
         if settings.CLOUDFLARE_PROXY_URL:
-            target_url = f"{settings.CLOUDFLARE_PROXY_URL.rstrip('/')}/?url={urllib.parse.quote_plus(url)}"
+            target_url = (
+                f"{settings.CLOUDFLARE_PROXY_URL.rstrip('/')}/?url={urllib.parse.quote_plus(url)}"
+            )
             req_headers = {}
             timeout = max(self.timeout, 30)
         elif settings.SCRAPER_API_KEY:
@@ -41,12 +43,28 @@ class BaseScraper(ABC):
 
         try:
             async with AsyncSession(impersonate="chrome124") as session:
-                response = await session.get(target_url, headers=req_headers if req_headers else None, timeout=timeout)
+                response = await session.get(
+                    target_url, headers=req_headers if req_headers else None, timeout=timeout
+                )
                 if response.status_code == 200:
                     return response.text
-                else:
-                    print(f"[{self.name} HTTP Error]: Status {response.status_code} for {url}")
+                elif response.status_code == 429 and target_url != url:
+                    # Cloudflare worker / proxy hit daily limit or rate limit. Fallback directly!
+                    direct_resp = await session.get(url, headers=self.headers, timeout=self.timeout)
+                    if direct_resp.status_code == 200:
+                        return direct_resp.text
+                print(f"[{self.name} HTTP Error]: Status {response.status_code} for {url}")
         except Exception as e:
+            if target_url != url:
+                try:
+                    async with AsyncSession(impersonate="chrome124") as session:
+                        direct_resp = await session.get(
+                            url, headers=self.headers, timeout=self.timeout
+                        )
+                        if direct_resp.status_code == 200:
+                            return direct_resp.text
+                except Exception:
+                    pass
             print(f"[{self.name} Network Error]: {e}")
         return None
 

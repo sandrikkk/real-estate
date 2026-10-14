@@ -354,11 +354,45 @@ class MyHomeScraper(BaseScraper):
             print(f"[MyHome.ge JSON Parsing Error]: {e}")
         return []
 
+    def extract_statement_from_html(self, html: Optional[str]) -> Optional[dict]:
+        """Extracts the statement detail dictionary from Next.js SSR dehydratedState."""
+        if not html:
+            return None
+        match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group(1))
+            page_props = data.get("props", {}).get("pageProps", {})
+            queries = page_props.get("dehydratedState", {}).get("queries", [])
+            for q in queries:
+                st_data = q.get("state", {}).get("data", {})
+                if isinstance(st_data, dict):
+                    inner = st_data.get("data", {})
+                    if isinstance(inner, dict):
+                        statement = inner.get("statement")
+                        if isinstance(statement, dict) and statement.get("id"):
+                            return statement
+            if "statement" in page_props and isinstance(page_props["statement"], dict):
+                return page_props["statement"]
+        except Exception as e:
+            print(f"[MyHome Statement HTML Extraction Error]: {e}")
+        return None
+
     async def fetch_statement_details(self, source_id: str) -> Optional[dict]:
         """
-        Enriches a listing with exact detail fields from the statement details endpoint:
+        Enriches a listing with exact detail fields from statement page or details endpoint:
         condition_id, condition, status_id, metro_station_id, user_phone_number, price_label.
         """
+        # Primary Strategy: Fetch listing detail page via HTML SSR (contains full dehydrated state)
+        detail_page_url = f"https://www.myhome.ge/ka/pr/{source_id}"
+        html = await self.fetch_html(detail_page_url)
+        if html:
+            st = self.extract_statement_from_html(html)
+            if st:
+                return st
+
+        # Fallback Strategy: JSON API endpoint
         url = f"{self.API_BASE}/{source_id}?locale=ka"
         target_url = url
         req_headers = dict(self.API_HEADERS)

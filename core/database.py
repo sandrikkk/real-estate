@@ -12,6 +12,12 @@ from config import settings
 from core.models import DistrictPriceStats, PropertyListing
 
 
+class DatabaseUnavailableError(RuntimeError):
+    """Raised when Cloudflare D1 connection fails and fail-closed circuit breaker trips."""
+
+    pass
+
+
 class D1Row:
     """Dictionary wrapper mimicking sqlite3.Row for Cloudflare D1 query results."""
 
@@ -135,13 +141,13 @@ class D1Client:
                 res_body = resp.read().decode("utf-8")
                 parsed = json.loads(res_body)
                 if not parsed.get("success", False) and "error" in parsed:
-                    raise RuntimeError(f"D1 Query Error: {parsed.get('error')}")
+                    raise DatabaseUnavailableError(f"D1 Query Error: {parsed.get('error')}")
                 return parsed
         except urllib.error.HTTPError as e:
             err_msg = e.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"D1 HTTP {e.code}: {err_msg}") from e
+            raise DatabaseUnavailableError(f"D1 HTTP {e.code}: {err_msg}") from e
         except Exception as e:
-            raise RuntimeError(f"D1 Connection Error: {e}") from e
+            raise DatabaseUnavailableError(f"D1 Connection Error: {e}") from e
 
 
 class DatabaseEngine:
@@ -177,13 +183,30 @@ class DatabaseEngine:
                     self.use_d1 = True
                     print("[Database]: Connected to Cloudflare D1 via Worker proxy.")
                 else:
-                    print(f"[Database Warning]: D1 test failed: {test_res}. Using local SQLite.")
+                    raise DatabaseUnavailableError(
+                        f"D1 test query returned unsuccessful: {test_res}"
+                    )
             except Exception as e:
-                print(
-                    f"[Database Warning]: Could not reach Cloudflare D1 ({e}). Using local SQLite."
-                )
+                # Fail-Closed Circuit Breaker: Do NOT silently downgrade to an empty local SQLite!
+                # Downgrading would cause all previously notified listings to be re-alerted as new.
+                raise DatabaseUnavailableError(
+                    f"Cloudflare D1 is unavailable ({e}). Circuit breaker tripped: "
+                    f"halting to prevent duplicate alerts from being sent."
+                ) from e
 
         self.init_db()
+
+    def is_healthy(self) -> bool:
+        """Checks if the database is operational (specifically queries D1 when use_d1=True)."""
+        if not self.use_d1:
+            return True
+        try:
+            if not self.d1_client:
+                return False
+            res = self.d1_client.query("SELECT 1 as health_check")
+            return bool(res.get("success"))
+        except Exception:
+            return False
 
     def _ensure_db_dir(self):
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -275,7 +298,9 @@ class DatabaseEngine:
                         metro_station_id INTEGER,
                         condition_id INTEGER,
                         deal_type TEXT DEFAULT 'sale',
-                        phone_number TEXT
+                        phone_number TEXT,
+                        is_owner INTEGER,
+                        user_type TEXT
                     )
                 """)
                 cursor.execute(
@@ -317,6 +342,10 @@ class DatabaseEngine:
                     cursor.execute(
                         "ALTER TABLE properties ADD COLUMN deal_type TEXT DEFAULT 'sale'"
                     )
+                if "is_owner" not in cols:
+                    cursor.execute("ALTER TABLE properties ADD COLUMN is_owner INTEGER")
+                if "user_type" not in cols:
+                    cursor.execute("ALTER TABLE properties ADD COLUMN user_type TEXT")
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_properties_deal_type ON properties(deal_type)"
                 )
@@ -388,6 +417,36 @@ class DatabaseEngine:
                     return True
         return False
 
+    def filter_unnotified_listings(self, chat_id: str, listing_ids: list) -> list:
+        """Batch-checks which listing IDs have NOT been notified to chat_id in 1 query."""
+        if not listing_ids:
+            return []
+        cid = str(chat_id)
+        seen_set = self._user_seen.get(cid, set())
+
+        to_check = [lid for lid in listing_ids if lid not in seen_set]
+        if not to_check:
+            return []
+
+        # Query in chunks of 200 (within SQL variable limit)
+        CHUNK_SIZE = 200
+        notified_in_db = set()
+
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            for i in range(0, len(to_check), CHUNK_SIZE):
+                chunk = to_check[i : i + CHUNK_SIZE]
+                placeholders = ",".join(["?"] * len(chunk))
+                sql = f"SELECT listing_id FROM user_notifications WHERE chat_id = ? AND listing_id IN ({placeholders})"
+                params = [cid] + chunk
+                cursor.execute(sql, tuple(params))
+                for row in cursor.fetchall():
+                    lid = row["listing_id"] if hasattr(row, "__getitem__") else row[0]
+                    notified_in_db.add(lid)
+                    self._user_seen[cid].add(lid)
+
+        return [lid for lid in listing_ids if lid not in seen_set and lid not in notified_in_db]
+
     def mark_user_notified(self, chat_id: str, listing_id: str):
         cid = str(chat_id)
         if listing_id not in self._user_seen[cid]:
@@ -458,8 +517,9 @@ class DatabaseEngine:
                         floor, total_floors, rooms, bedrooms,
                         url, images_json, published_at, scraped_at,
                         is_bargain, is_notified,
-                        metro_station_id, condition_id, is_hot_deal, phone_number
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        metro_station_id, condition_id, is_hot_deal, phone_number,
+                        is_owner, user_type
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         listing.id,
@@ -490,6 +550,10 @@ class DatabaseEngine:
                         listing.condition_id,
                         1 if listing.is_hot_deal else 0,
                         listing.phone_number,
+                        1
+                        if listing.is_owner is True
+                        else (0 if listing.is_owner is False else None),
+                        listing.user_type,
                     ),
                 )
                 conn.commit()
@@ -497,6 +561,79 @@ class DatabaseEngine:
             except Exception as e:
                 print(f"[Database Error]: Failed to save listing {listing.id}: {e}")
                 return False
+
+    def save_listings_batch(self, listings: list) -> int:
+        """Batch-inserts multiple PropertyListing instances in 1 single atomic/batch operation."""
+        if not listings:
+            return 0
+
+        for item in listings:
+            self._append_seen_id(item.id)
+
+        sql = """
+            INSERT OR IGNORE INTO properties (
+                id, source, source_id, deal_type, title, description,
+                price_usd, price_gel, area_m2, price_per_m2,
+                city, district, subdistrict, street,
+                floor, total_floors, rooms, bedrooms,
+                url, images_json, published_at, scraped_at,
+                is_bargain, is_notified,
+                metro_station_id, condition_id, is_hot_deal, phone_number,
+                is_owner, user_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+
+        params_list = []
+        for listing in listings:
+            scraped_at_str = (
+                listing.scraped_at.isoformat()
+                if hasattr(listing.scraped_at, "isoformat")
+                else str(listing.scraped_at)
+            )
+            params_list.append(
+                (
+                    listing.id,
+                    listing.source,
+                    listing.source_id,
+                    getattr(listing, "deal_type", "sale"),
+                    listing.title,
+                    listing.description,
+                    listing.price_usd,
+                    listing.price_gel,
+                    listing.area_m2,
+                    listing.price_per_m2,
+                    listing.city,
+                    listing.district,
+                    listing.subdistrict,
+                    listing.street,
+                    listing.floor,
+                    listing.total_floors,
+                    listing.rooms,
+                    listing.bedrooms,
+                    listing.url,
+                    json.dumps(listing.images, ensure_ascii=False),
+                    listing.published_at,
+                    scraped_at_str,
+                    1 if listing.is_bargain else 0,
+                    0,
+                    listing.metro_station_id,
+                    listing.condition_id,
+                    1 if listing.is_hot_deal else 0,
+                    listing.phone_number,
+                    1 if listing.is_owner is True else (0 if listing.is_owner is False else None),
+                    listing.user_type,
+                )
+            )
+
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.executemany(sql, params_list)
+                conn.commit()
+                return cursor.rowcount
+            except Exception as e:
+                print(f"[Database Error]: Failed to save batch of listings: {e}")
+                return 0
 
     def mark_as_notified(self, listing_id: str):
         self._append_seen_id(listing_id)

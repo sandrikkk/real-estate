@@ -129,6 +129,9 @@ class PropertyListing(BaseModel):
     valuation_scale_label: Optional[str] = None
     valuation_scale_tier: Optional[int] = None
     valuation_scale_visual: Optional[str] = None
+    valuation_scale_source: Optional[str] = (
+        None  # "myhome" for official MyHome label, "market" for benchmark calculation
+    )
 
     # Duplicate detection fields
     duplicate_group_id: Optional[str] = None
