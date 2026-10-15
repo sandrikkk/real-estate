@@ -262,6 +262,15 @@ class RealEstateOrchestrator:
                 if myhome_scraper and hasattr(myhome_scraper, "fetch_statement_details"):
                     details = await myhome_scraper.fetch_statement_details(listing.source_id)
                     if details:
+                        live_usd = details.get("price_usd")
+                        live_gel = details.get("price_gel")
+                        if live_usd and live_usd > 0:
+                            listing.price_usd = live_usd
+                            if live_gel and live_gel > 0:
+                                listing.price_gel = live_gel
+                            if listing.area_m2 and listing.area_m2 > 0:
+                                listing.price_per_m2 = round(listing.price_usd / listing.area_m2, 2)
+
                         if "is_owner" in details and details["is_owner"] is not None:
                             listing.is_owner = bool(details["is_owner"])
                         elif (
@@ -293,6 +302,15 @@ class RealEstateOrchestrator:
                 if ss_scraper and hasattr(ss_scraper, "fetch_statement_details"):
                     details = await ss_scraper.fetch_statement_details(listing.source_id)
                     if details:
+                        live_usd = details.get("price_usd")
+                        live_gel = details.get("price_gel")
+                        if live_usd and live_usd > 0:
+                            listing.price_usd = live_usd
+                            if live_gel and live_gel > 0:
+                                listing.price_gel = live_gel
+                            if listing.area_m2 and listing.area_m2 > 0:
+                                listing.price_per_m2 = round(listing.price_usd / listing.area_m2, 2)
+
                         if "is_owner" in details and details["is_owner"] is not None:
                             listing.is_owner = bool(details["is_owner"])
                         elif details.get("agency_id") or details.get("agency_name"):
@@ -320,7 +338,12 @@ class RealEstateOrchestrator:
                         if details.get("price_label"):
                             myhome_label = details.get("price_label")
 
-            # Re-verify matching users after detail enrichment (ensures verified is_owner status matches preferences)
+            # Re-verify baseline filter hygiene with enriched live price, condition & status
+            if not self.filter_engine.matches_hygiene(listing):
+                self.db.save_listing(listing)
+                continue
+
+            # Re-verify matching users after detail enrichment (ensures verified price and is_owner status match preferences)
             matching_users = [
                 u
                 for u in matching_users

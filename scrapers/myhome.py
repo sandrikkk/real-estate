@@ -1,7 +1,7 @@
 import json
 import re
 import urllib.parse
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from curl_cffi.requests import AsyncSession
 from config import settings
 from core.models import PropertyListing, SearchFilters
@@ -379,43 +379,104 @@ class MyHomeScraper(BaseScraper):
             print(f"[MyHome Statement HTML Extraction Error]: {e}")
         return None
 
+    @staticmethod
+    def _extract_prices(item: dict) -> Tuple[float, Optional[float]]:
+        """
+        Robustly extracts (price_usd, price_gel) from MyHome listing or detail dict.
+        Respects currency 2 (USD) and currency 1 (GEL), and handles currency_id field correctly.
+        """
+        price_usd = 0.0
+        price_gel = None
+        price_obj = item.get("price")
+
+        if isinstance(price_obj, dict):
+            # 2 is USD
+            usd_info = price_obj.get("2") or price_obj.get(2)
+            if isinstance(usd_info, dict) and "price_total" in usd_info:
+                try:
+                    price_usd = float(usd_info["price_total"] or 0)
+                except (ValueError, TypeError):
+                    pass
+
+            # 1 is GEL
+            gel_info = price_obj.get("1") or price_obj.get(1)
+            if isinstance(gel_info, dict) and "price_total" in gel_info:
+                try:
+                    price_gel = float(gel_info["price_total"] or 0)
+                except (ValueError, TypeError):
+                    pass
+
+        if price_usd <= 0 and "price_usd" in item:
+            try:
+                price_usd = float(item.get("price_usd") or 0)
+            except (ValueError, TypeError):
+                pass
+
+        if "total_price" in item:
+            try:
+                raw_val = float(item.get("total_price") or 0)
+                cid = item.get("currency_id") or item.get("statement_currency_id")
+                if str(cid) == "2" and price_usd <= 0:
+                    price_usd = raw_val
+                elif str(cid) == "1" and not price_gel:
+                    price_gel = raw_val
+                elif str(cid) == "3" and price_usd <= 0:
+                    price_usd = round(raw_val * 1.08, 2)
+                elif not cid and price_usd <= 0:
+                    price_usd = raw_val
+            except (ValueError, TypeError):
+                pass
+
+        # Fallback GEL -> USD conversion if only GEL is available
+        if price_usd <= 0 and price_gel and price_gel > 0:
+            price_usd = round(price_gel / 2.65, 2)
+
+        return price_usd, price_gel
+
     async def fetch_statement_details(self, source_id: str) -> Optional[dict]:
         """
         Enriches a listing with exact detail fields from statement page or details endpoint:
-        condition_id, condition, status_id, metro_station_id, user_phone_number, price_label.
+        condition_id, condition, status_id, metro_station_id, user_phone_number, price_label,
+        and authoritative live price (price_usd, price_gel).
         """
+        st_data = None
         # Primary Strategy: Fetch listing detail page via HTML SSR (contains full dehydrated state)
         detail_page_url = f"https://www.myhome.ge/ka/pr/{source_id}"
         html = await self.fetch_html(detail_page_url)
         if html:
             st = self.extract_statement_from_html(html)
             if st:
-                return st
+                st_data = st
 
-        # Fallback Strategy: JSON API endpoint
-        url = f"{self.API_BASE}/{source_id}?locale=ka"
-        target_url = url
-        req_headers = dict(self.API_HEADERS)
-        timeout = 10
+        if not st_data:
+            # Fallback Strategy: JSON API endpoint
+            url = f"{self.API_BASE}/{source_id}?locale=ka"
+            target_url = url
+            req_headers = dict(self.API_HEADERS)
+            timeout = 10
 
-        if settings.CLOUDFLARE_PROXY_URL:
-            target_url = (
-                f"{settings.CLOUDFLARE_PROXY_URL.rstrip('/')}/?url={urllib.parse.quote_plus(url)}"
-            )
-            req_headers = {}
-            timeout = 30
+            if settings.CLOUDFLARE_PROXY_URL:
+                target_url = f"{settings.CLOUDFLARE_PROXY_URL.rstrip('/')}/?url={urllib.parse.quote_plus(url)}"
+                req_headers = {}
+                timeout = 30
 
-        try:
-            async with AsyncSession(impersonate="chrome124") as session:
-                response = await session.get(
-                    target_url, headers=req_headers if req_headers else None, timeout=timeout
-                )
-                if response.status_code == 200:
-                    payload = response.json()
-                    return payload.get("data", {}).get("statement")
-        except Exception as e:
-            print(f"[MyHome.ge Statement Detail Error for {source_id}]: {e}")
-        return None
+            try:
+                async with AsyncSession(impersonate="chrome124") as session:
+                    response = await session.get(
+                        target_url, headers=req_headers if req_headers else None, timeout=timeout
+                    )
+                    if response.status_code == 200:
+                        payload = response.json()
+                        st_data = payload.get("data", {}).get("statement")
+            except Exception as e:
+                print(f"[MyHome.ge Statement Detail Error for {source_id}]: {e}")
+
+        if st_data and isinstance(st_data, dict):
+            usd, gel = self._extract_prices(st_data)
+            st_data["price_usd"] = usd
+            st_data["price_gel"] = gel
+
+        return st_data
 
     def _normalize_item(
         self, item: dict, filters: Optional[SearchFilters] = None
@@ -440,41 +501,7 @@ class MyHomeScraper(BaseScraper):
                     return None
 
             # Price extraction (USD is currency 2, GEL is currency 1)
-            price_usd = 0.0
-            price_gel = None
-            price_obj = item.get("price")
-
-            if isinstance(price_obj, dict):
-                # 2 is USD
-                usd_info = price_obj.get("2") or price_obj.get(2)
-                if isinstance(usd_info, dict) and "price_total" in usd_info:
-                    try:
-                        price_usd = float(usd_info["price_total"] or 0)
-                    except (ValueError, TypeError):
-                        pass
-
-                # 1 is GEL
-                gel_info = price_obj.get("1") or price_obj.get(1)
-                if isinstance(gel_info, dict) and "price_total" in gel_info:
-                    try:
-                        price_gel = float(gel_info["price_total"] or 0)
-                    except (ValueError, TypeError):
-                        pass
-
-            if price_usd <= 0 and "price_usd" in item:
-                try:
-                    price_usd = float(item.get("price_usd") or 0)
-                except (ValueError, TypeError):
-                    pass
-            if price_usd <= 0 and "total_price" in item:
-                try:
-                    price_usd = float(item.get("total_price") or 0)
-                except (ValueError, TypeError):
-                    pass
-
-            # Fallback GEL -> USD conversion if only GEL is available
-            if price_usd <= 0 and price_gel and price_gel > 0:
-                price_usd = round(price_gel / 2.65, 2)
+            price_usd, price_gel = self._extract_prices(item)
 
             # Area extraction
             try:

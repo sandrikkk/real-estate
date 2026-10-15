@@ -1,6 +1,6 @@
 import json
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from curl_cffi.requests import AsyncSession
 from core.models import PropertyListing, SearchFilters
 from scrapers.base import BaseScraper
@@ -167,6 +167,7 @@ class SSGeScraper(BaseScraper):
                                     condition_id = cid
                                     break
 
+                        p_usd, p_gel = self._extract_prices(app_data)
                         return {
                             "is_owner": is_owner,
                             "agency_id": agency_id,
@@ -179,10 +180,71 @@ class SSGeScraper(BaseScraper):
                             "status_id": status_id,
                             "price_label": price_label,
                             "comment": comment,
+                            "price_usd": p_usd,
+                            "price_gel": p_gel,
                         }
         except Exception as e:
             print(f"[SS.ge Statement Detail Error for {source_id_or_url}]: {e}")
         return None
+
+    @staticmethod
+    def _extract_prices(item: dict) -> Tuple[float, Optional[float]]:
+        price_usd = 0.0
+        price_gel = None
+        price_obj = item.get("price") or {}
+
+        if isinstance(price_obj, dict):
+            # TNET JSON API structure
+            usd_info = price_obj.get("2") or price_obj.get(2)
+            if isinstance(usd_info, dict) and "price_total" in usd_info:
+                try:
+                    price_usd = float(usd_info["price_total"] or 0)
+                except (ValueError, TypeError):
+                    pass
+            elif "priceUsd" in price_obj:
+                try:
+                    price_usd = float(price_obj["priceUsd"] or 0)
+                except (ValueError, TypeError):
+                    pass
+
+            gel_info = price_obj.get("1") or price_obj.get(1)
+            if isinstance(gel_info, dict) and "price_total" in gel_info:
+                try:
+                    price_gel = float(gel_info["price_total"] or 0)
+                except (ValueError, TypeError):
+                    pass
+            elif "priceGeo" in price_obj:
+                try:
+                    price_gel = float(price_obj["priceGeo"] or 0)
+                except (ValueError, TypeError):
+                    pass
+
+        if price_usd <= 0 and "priceUsd" in item:
+            try:
+                price_usd = float(item["priceUsd"] or 0)
+            except (ValueError, TypeError):
+                pass
+        if price_usd <= 0 and "price_usd" in item:
+            try:
+                price_usd = float(item["price_usd"] or 0)
+            except (ValueError, TypeError):
+                pass
+        if "total_price" in item or "totalPrice" in item:
+            try:
+                raw_val = float(item.get("total_price") or item.get("totalPrice") or 0)
+                cid = item.get("currency_id") or item.get("currencyId")
+                if str(cid) == "2" and price_usd <= 0:
+                    price_usd = raw_val
+                elif str(cid) == "1" and not price_gel:
+                    price_gel = raw_val
+                elif not cid and price_usd <= 0:
+                    price_usd = raw_val
+            except (ValueError, TypeError):
+                pass
+        if price_usd <= 0 and price_gel and price_gel > 0:
+            price_usd = round(price_gel / 2.65, 2)
+
+        return price_usd, price_gel
 
     def _normalize_item(
         self, item: dict, filters: Optional[SearchFilters] = None
@@ -232,53 +294,7 @@ class SSGeScraper(BaseScraper):
                     return None
 
             # Price extraction (currency 2 is USD, currency 1 is GEL)
-            price_usd = 0.0
-            price_gel = None
-            price_obj = item.get("price") or {}
-
-            if isinstance(price_obj, dict):
-                # TNET JSON API structure
-                usd_info = price_obj.get("2") or price_obj.get(2)
-                if isinstance(usd_info, dict) and "price_total" in usd_info:
-                    try:
-                        price_usd = float(usd_info["price_total"] or 0)
-                    except (ValueError, TypeError):
-                        pass
-                elif "priceUsd" in price_obj:
-                    try:
-                        price_usd = float(price_obj["priceUsd"] or 0)
-                    except (ValueError, TypeError):
-                        pass
-
-                gel_info = price_obj.get("1") or price_obj.get(1)
-                if isinstance(gel_info, dict) and "price_total" in gel_info:
-                    try:
-                        price_gel = float(gel_info["price_total"] or 0)
-                    except (ValueError, TypeError):
-                        pass
-                elif "priceGeo" in price_obj:
-                    try:
-                        price_gel = float(price_obj["priceGeo"] or 0)
-                    except (ValueError, TypeError):
-                        pass
-
-            if price_usd <= 0 and "priceUsd" in item:
-                try:
-                    price_usd = float(item["priceUsd"] or 0)
-                except (ValueError, TypeError):
-                    pass
-            if price_usd <= 0 and "price_usd" in item:
-                try:
-                    price_usd = float(item["price_usd"] or 0)
-                except (ValueError, TypeError):
-                    pass
-            if price_usd <= 0 and "total_price" in item:
-                try:
-                    price_usd = float(item["total_price"] or 0)
-                except (ValueError, TypeError):
-                    pass
-            if price_usd <= 0 and price_gel and price_gel > 0:
-                price_usd = round(price_gel / 2.65, 2)
+            price_usd, price_gel = self._extract_prices(item)
 
             # Area extraction
             try:
