@@ -128,7 +128,7 @@ def save_listings_batch(self, listings: list) -> int:
 *How it works over HTTP:* In D1 mode, `D1Cursor.executemany` compiles all statement objects into a single payload sent to `/batch`. 200 listings are persisted in exactly 1 HTTP round-trip.
 
 #### B. Batch Notification Query (`filter_unnotified_listings`)
-Replaced hundreds of `SELECT is_notified FROM user_notifications WHERE chat_id=? AND listing_id=?` queries with a single set-based SQL `IN (...)` query chunked safely at 200 parameters:
+Replaced hundreds of `SELECT is_notified FROM user_notifications WHERE chat_id=? AND listing_id=?` queries with a single set-based SQL `IN (...)` query chunked safely at 50 parameters (well within Cloudflare D1's hard limit of 100 bound variables):
 
 ```python
 def filter_unnotified_listings(self, chat_id: str, listing_ids: list) -> list:
@@ -141,7 +141,9 @@ def filter_unnotified_listings(self, chat_id: str, listing_ids: list) -> list:
     if not to_check:
         return []
 
-    CHUNK_SIZE = 200
+    # Cloudflare D1 strictly limits bound parameters to 100 per query.
+    # CHUNK_SIZE = 50 ensures 1 + 50 = 51 <= 100.
+    CHUNK_SIZE = 50
     notified_in_db = set()
 
     with self._connection() as conn:
@@ -162,23 +164,29 @@ def filter_unnotified_listings(self, chat_id: str, listing_ids: list) -> list:
 ### 3.2 Duplicate Detector Batching (`core/dedup.py`)
 
 #### A. Batch Candidate Hash Retrieval (`_get_hashes_batch`)
-Previously, candidate listings loaded their image hashes one by one in a loop (`for c in candidates: self._get_hashes(c["id"])`). This was refactored to fetch all hashes in one query:
+Previously, candidate listings loaded their image hashes one by one in a loop (`for c in candidates: self._get_hashes(c["id"])`). This was refactored to fetch hashes in batches of 50 to avoid D1 variable limit exhaustion:
 
 ```python
 def _get_hashes_batch(self, listing_ids: List[str]) -> Dict[str, List[str]]:
-    """Loads cached dHash hex strings for multiple listings in 1 single query."""
+    """Loads cached dHash hex strings for multiple listings in batches <= 50."""
     if not listing_ids:
         return {}
     result = {lid: [] for lid in listing_ids}
+    CHUNK_SIZE = 50
     with self.db._connection() as conn:
         cursor = conn.cursor()
-        placeholders = ",".join(["?"] * len(listing_ids))
-        cursor.execute(
-            f"SELECT listing_id, phash FROM image_hashes WHERE listing_id IN ({placeholders}) ORDER BY image_index",
-            tuple(listing_ids),
-        )
-        for row in cursor.fetchall():
-            result[row["listing_id"]].append(row["phash"])
+        for i in range(0, len(listing_ids), CHUNK_SIZE):
+            chunk = listing_ids[i:i + CHUNK_SIZE]
+            placeholders = ",".join(["?"] * len(chunk))
+            cursor.execute(
+                f"SELECT listing_id, phash FROM image_hashes WHERE listing_id IN ({placeholders}) ORDER BY image_index",
+                tuple(chunk),
+            )
+            for row in cursor.fetchall():
+                lid = row["listing_id"] if hasattr(row, "__getitem__") else row[0]
+                phash = row["phash"] if hasattr(row, "__getitem__") else row[1]
+                if lid in result:
+                    result[lid].append(phash)
     return result
 ```
 

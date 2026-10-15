@@ -90,6 +90,47 @@ class TestBatchDatabaseOperations(unittest.TestCase):
         d1_db.save_listings_batch([l1, l2])
         self.assertEqual(mock_client.batch.call_count, 1)
 
+    def test_filter_unnotified_chunks_at_50(self):
+        """Should split inputs larger than 50 items into multiple safe chunks <= 50 params."""
+        mock_client = MagicMock(spec=D1Client)
+        mock_client.query.return_value = {"success": True, "results": [], "meta": {}}
+
+        d1_db = DatabaseEngine(db_path=self.db_path, use_d1=False)
+        d1_db.use_d1 = True
+        d1_db.d1_client = mock_client
+
+        # 125 items -> chunks of 50, 50, 25 -> exactly 3 queries
+        items = [f"item_{i}" for i in range(125)]
+        d1_db.filter_unnotified_listings("chat_1", items)
+
+        self.assertEqual(mock_client.query.call_count, 3)
+        # Verify param length never exceeds 51 (1 for chat_id + 50 items)
+        for call_args in mock_client.query.call_args_list:
+            params = call_args[0][1]
+            self.assertLessEqual(len(params), 51)
+
+    def test_get_hashes_batch_chunks_at_50(self):
+        """Should split dedup candidate hash lookups into safe chunks <= 50."""
+        from core.dedup import DuplicateDetector
+
+        mock_client = MagicMock(spec=D1Client)
+        mock_client.query.return_value = {"success": True, "results": [], "meta": {}}
+
+        d1_db = DatabaseEngine(db_path=self.db_path, use_d1=False)
+        d1_db.use_d1 = True
+        d1_db.d1_client = mock_client
+
+        detector = DuplicateDetector(db=d1_db)
+        items = [f"item_{i}" for i in range(130)]
+        res = detector._get_hashes_batch(items)
+
+        self.assertEqual(len(res), 130)
+        # 130 items / 50 = 3 queries (50, 50, 30)
+        self.assertEqual(mock_client.query.call_count, 3)
+        for call_args in mock_client.query.call_args_list:
+            params = call_args[0][1]
+            self.assertLessEqual(len(params), 50)
+
 
 if __name__ == "__main__":
     unittest.main()

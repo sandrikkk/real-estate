@@ -269,7 +269,34 @@ class DatabaseEngine:
     def init_db(self):
         with self._connection() as conn:
             cursor = conn.cursor()
-            if not self.use_d1:
+            if self.use_d1:
+                # Ensure D1 has all required columns via safe auto-migration
+                try:
+                    cursor.execute("PRAGMA table_info(properties)")
+                    cols = {
+                        row["name"] if hasattr(row, "__getitem__") else row[1]
+                        for row in cursor.fetchall()
+                    }
+                    for col_name, col_type in [
+                        ("is_owner", "INTEGER"),
+                        ("user_type", "TEXT"),
+                        ("deal_type", "TEXT DEFAULT 'sale'"),
+                        ("metro_station_id", "INTEGER"),
+                        ("condition_id", "INTEGER"),
+                        ("is_hot_deal", "INTEGER DEFAULT 0"),
+                        ("phone_number", "TEXT"),
+                        ("group_id", "TEXT"),
+                    ]:
+                        if col_name not in cols:
+                            try:
+                                cursor.execute(
+                                    f"ALTER TABLE properties ADD COLUMN {col_name} {col_type}"
+                                )
+                            except Exception:
+                                pass
+                except Exception as e:
+                    print(f"[D1 Migration Warning]: {e}")
+            else:
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS properties (
                         id TEXT PRIMARY KEY,
@@ -428,8 +455,9 @@ class DatabaseEngine:
         if not to_check:
             return []
 
-        # Query in chunks of 200 (within SQL variable limit)
-        CHUNK_SIZE = 200
+        # Cloudflare D1 strictly limits bound parameters to 100 per query.
+        # Use CHUNK_SIZE = 50 so (1 param for chat_id + 50 listing_ids) = 51 <= 100.
+        CHUNK_SIZE = 50
         notified_in_db = set()
 
         with self._connection() as conn:
@@ -628,9 +656,14 @@ class DatabaseEngine:
         with self._connection() as conn:
             cursor = conn.cursor()
             try:
-                cursor.executemany(sql, params_list)
+                BATCH_CHUNK = 50
+                total_changes = 0
+                for i in range(0, len(params_list), BATCH_CHUNK):
+                    chunk_params = params_list[i : i + BATCH_CHUNK]
+                    cursor.executemany(sql, chunk_params)
+                    total_changes += cursor.rowcount
                 conn.commit()
-                return cursor.rowcount
+                return total_changes
             except Exception as e:
                 print(f"[Database Error]: Failed to save batch of listings: {e}")
                 return 0
