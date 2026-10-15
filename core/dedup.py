@@ -152,20 +152,25 @@ class DuplicateDetector:
             return [row["phash"] for row in cursor.fetchall()]
 
     def _get_hashes_batch(self, listing_ids: List[str]) -> Dict[str, List[str]]:
-        """Loads cached dHash hex strings for multiple listings in 1 single query."""
+        """Loads cached dHash hex strings for multiple listings in batches <= 50."""
         if not listing_ids:
             return {}
         result = {lid: [] for lid in listing_ids}
+        CHUNK_SIZE = 50
         with self.db._connection() as conn:
             cursor = conn.cursor()
-            placeholders = ",".join(["?"] * len(listing_ids))
-            cursor.execute(
-                f"SELECT listing_id, phash FROM image_hashes WHERE listing_id IN ({placeholders}) ORDER BY image_index",
-                tuple(listing_ids),
-            )
-            for row in cursor.fetchall():
-                lid = row["listing_id"]
-                result[lid].append(row["phash"])
+            for i in range(0, len(listing_ids), CHUNK_SIZE):
+                chunk = listing_ids[i : i + CHUNK_SIZE]
+                placeholders = ",".join(["?"] * len(chunk))
+                cursor.execute(
+                    f"SELECT listing_id, phash FROM image_hashes WHERE listing_id IN ({placeholders}) ORDER BY image_index",
+                    tuple(chunk),
+                )
+                for row in cursor.fetchall():
+                    lid = row["listing_id"] if hasattr(row, "__getitem__") else row[0]
+                    phash = row["phash"] if hasattr(row, "__getitem__") else row[1]
+                    if lid in result:
+                        result[lid].append(phash)
         return result
 
     def _save_hashes(self, listing_id: str, hashes: List[str]):
