@@ -1,15 +1,11 @@
-import asyncio
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
 from core.models import PropertyListing, SearchFilters
 from core.database import DatabaseEngine
 from core.filters import ListingFilter
 from core.analytics import MarketAnalytics
 from notifier.ntfy_notifier import NtfyNotifier
-from scrapers.myhome import MyHomeScraper
-from scrapers.ss_ge import SSGeScraper
 
 
 class TestEndToEndSystemFlow(unittest.TestCase):
@@ -29,7 +25,7 @@ class TestEndToEndSystemFlow(unittest.TestCase):
             rooms=None,
             owner_type="physical",
             target_districts=["დიღომი", "დიდუბე", "საბურთალო", "ვაკე", "გლდანი", "თემქა"],
-            stop_words=["დაგირავება", "იპოთეკური"]
+            stop_words=["დაგირავება", "იპოთეკური"],
         )
         self.filter_engine = ListingFilter(self.filters)
         self.analytics = MarketAnalytics()
@@ -55,7 +51,7 @@ class TestEndToEndSystemFlow(unittest.TestCase):
             area_m2=45,
             district="დიდუბე",
             rooms=2,
-            url="https://www.myhome.ge/ka/pr/999001"
+            url="https://www.myhome.ge/ka/pr/999001",
         )
 
         # Step 1: Check not seen
@@ -91,7 +87,7 @@ class TestEndToEndSystemFlow(unittest.TestCase):
             area_m2=48,
             district="საბურთალო",
             rooms=2,
-            url="https://home.ss.ge/ka/udzravi-qoneba/l/888002"
+            url="https://home.ss.ge/ka/udzravi-qoneba/l/888002",
         )
 
         # First cycle: save it
@@ -115,7 +111,7 @@ class TestEndToEndSystemFlow(unittest.TestCase):
             area_m2=50,
             rooms=1,
             district="საბურთალო",
-            url="https://www.myhome.ge/ka/pr/777003"
+            url="https://www.myhome.ge/ka/pr/777003",
         )
         self.assertFalse(self.filter_engine.matches(too_expensive))
 
@@ -128,7 +124,7 @@ class TestEndToEndSystemFlow(unittest.TestCase):
             area_m2=35,
             rooms=1,
             district="საბურთალო",
-            url="https://www.myhome.ge/ka/pr/777004"
+            url="https://www.myhome.ge/ka/pr/777004",
         )
         self.assertFalse(self.filter_engine.matches(too_small_area))
 
@@ -141,7 +137,7 @@ class TestEndToEndSystemFlow(unittest.TestCase):
             area_m2=45,
             rooms=1,
             district="რუსთავი",
-            url="https://www.myhome.ge/ka/pr/777005"
+            url="https://www.myhome.ge/ka/pr/777005",
         )
         self.assertFalse(self.filter_engine.matches(wrong_district))
 
@@ -160,7 +156,7 @@ class TestEndToEndSystemFlow(unittest.TestCase):
             district="დიღომი",
             street="აღმაშენებლის ხეივანი",
             rooms=1,
-            url="https://www.myhome.ge/ka/pr/666006"
+            url="https://www.myhome.ge/ka/pr/666006",
         )
         title = self.notifier.format_title(listing)
         body = self.notifier.format_body(listing)
@@ -170,6 +166,58 @@ class TestEndToEndSystemFlow(unittest.TestCase):
         self.assertIn("35.0 მ²", body)
         self.assertIn("MyHome.ge", body)
         self.assertEqual(listing.url, "https://www.myhome.ge/ka/pr/666006")
+
+    def test_live_price_enrichment_prevents_false_alert_on_out_of_budget_edit(self):
+        """
+        Scenario 5: A listing is initially scraped with a stale/erroneous search price ($46,981),
+        which tentatively matches the user's budget ($45,000 - $75,000).
+        During detail enrichment, statement details reveal the real/edited price is $122,100.
+        -> The listing's price_usd must be updated to $122,100.
+        -> matches_user must reject the listing because 122,100 > 75,000.
+        -> No alert is dispatched.
+        """
+        from core.models import UserSubscription
+
+        user = UserSubscription(
+            chat_id="1105321687",
+            price_min_usd=45000,
+            price_max_usd=75000,
+            districts=["საბურთალო"],
+            deal_type="sale",
+        )
+
+        listing = PropertyListing(
+            id="myhome_26352490",
+            source="myhome",
+            source_id="26352490",
+            title="იყიდება 2 ოთახიანი ბინა საბურთალოზე",
+            price_usd=46981,
+            price_gel=122100,
+            area_m2=55.5,
+            price_per_m2=846.5,
+            district="საბურთალო",
+            rooms=2,
+            bedrooms=1,
+            url="https://www.myhome.ge/ka/pr/26352490",
+        )
+
+        # Tentative check passes
+        self.assertTrue(self.filter_engine.matches_user(user, listing, tentative=True))
+
+        # Statement detail enrichment mock
+        details = {"price_usd": 122100.0, "price_gel": 317301.0, "is_owner": False}
+
+        # Simulate orchestrator price enrichment
+        if details.get("price_usd") and details["price_usd"] > 0:
+            listing.price_usd = details["price_usd"]
+            listing.price_gel = details.get("price_gel")
+            listing.price_per_m2 = round(listing.price_usd / listing.area_m2, 2)
+
+        self.assertEqual(listing.price_usd, 122100.0)
+        self.assertEqual(listing.price_per_m2, 2200.0)
+
+        # Strict check after enrichment MUST fail
+        self.assertFalse(self.filter_engine.matches_user(user, listing, tentative=False))
 
 
 if __name__ == "__main__":

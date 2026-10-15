@@ -289,6 +289,30 @@ class TestScrapers(unittest.TestCase):
         self.assertIsNotNone(res_sale)
         self.assertEqual(res_sale.deal_type, "sale")
 
+    def test_myhome_price_extraction_and_currency_handling(self):
+        scraper = MyHomeScraper()
+        # Case 1: Standard price dict with GEL (1) and USD (2)
+        item1 = {
+            "price": {
+                "1": {"price_total": 317301, "price_square": 5717},
+                "2": {"price_total": 122100, "price_square": 2200},
+            }
+        }
+        usd, gel = scraper._extract_prices(item1)
+        self.assertEqual(usd, 122100.0)
+        self.assertEqual(gel, 317301.0)
+
+        # Case 2: total_price with currency_id=1 (GEL) must not be treated as USD
+        item2 = {"total_price": 122100, "currency_id": 1}
+        usd2, gel2 = scraper._extract_prices(item2)
+        self.assertEqual(gel2, 122100.0)
+        self.assertAlmostEqual(usd2, round(122100 / 2.65, 2))
+
+        # Case 3: total_price with currency_id=2 (USD)
+        item3 = {"total_price": 122100, "currency_id": 2}
+        usd3, gel3 = scraper._extract_prices(item3)
+        self.assertEqual(usd3, 122100.0)
+
 
 if __name__ == "__main__":
     unittest.main()
