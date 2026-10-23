@@ -1,6 +1,6 @@
 import json
 import re
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from curl_cffi.requests import AsyncSession
 from core.models import PropertyListing, SearchFilters
 from scrapers.base import BaseScraper
@@ -10,6 +10,87 @@ from scrapers.myhome import (
     _safe_int,
     _extract_phone_number,
 )
+
+# Official SS.ge Tbilisi subdistrict IDs (/v1/RealEstate/DistricsWithSubDistricts95)
+SS_GE_SUBDISTRICT_MAP: Dict[str, List[int]] = {
+    # 1. დიდუბე
+    "დიდუბე": [1],
+    "წერეთელი": [1],
+    "წერეთლის გამზ.": [1],
+    # 2. დიღმის მასივი
+    "დიღმის მასივი": [28],
+    "დიღმის მას.": [28],
+    # 3. ჩუღურეთი
+    "ჩუღურეთი": [29, 30, 31, 53],
+    "კუკია": [29],
+    "სვანეთის უბანი": [30],
+    "ივერთუბანი": [53],
+    "მარჯანიშვილი": [31],
+    "ვორონცოვი": [31],
+    # 4. ნაძალადევი
+    "ნაძალადევი": [37, 39, 41, 42],
+    "სან. ზონა": [42],
+    "სანზონა": [42],
+    "თემქა": [37],
+    "ლოტკინი": [39],
+    # 5. გლდანი
+    "გლდანი": [32, 33, 34, 38, 40, 43],
+    "გლდანულა": [34],
+    "მუხიანი": [40],
+    "ავჭალა": [32],
+    "კონიაკის დას.": [38],
+    # 6. ვაკე
+    "ვაკე": [23, 27, 44, 47],
+    "ბაგები": [44],
+    "კუს ტბა": [27],
+    "ვერა": [23],
+    "წყნეთი": [47],
+    # 7. საბურთალო
+    "საბურთალო": [2, 3, 5, 26, 48, 49, 50],
+    "ვაშლიჯვარი": [48],
+    "ვეძისი": [49],
+    "თხინვალი": [50],
+    "თხინვალა": [50],
+    "ლისი": [26],
+    "ლისის ტბა": [26],
+    "ლისის მიმდებარედ": [26],
+    "ნუცუბიძის ფერდობი": [2],
+    "ნუცუბიძე": [2],
+    "ვაჟა ფშაველას კვარტლები": [5],
+    "დელისი": [3, 5],
+    # 8. დიდი დიღომი
+    "დიდი დიღომი": [4, 45, 46],
+    "დიღომი 1-9": [46],
+    "სოფ. დიღომი": [4],
+    "დიღომი": [4, 28, 45, 46],
+    # 9. ისანი
+    "ისანი": [10, 21, 24],
+    "ავლაბარი": [21],
+    "ნავთლუღი": [24],
+    # 10. სამგორი
+    "სამგორი": [6, 7, 8, 9, 11, 13, 15, 16, 18, 19],
+    "ვარკეთილი": [9],
+    "ვაზისუბანი": [8],
+    "მესამე მასივი": [13],
+    "ორხევი": [15],
+    "ლილო": [11],
+    "ფონიჭალა": [17],
+    # 11. მთაწმინდა
+    "მთაწმინდა": [23, 51, 52],
+    "სოლოლაკი": [52],
+    "რუსთაველი": [51],
+    "თავისუფლება": [51],
+    # 12. კრწანისი
+    "კრწანისი": [14, 20],
+    "ორთაჭალა": [14],
+    "აბანოთუბანი": [20],
+    # Parent dual districts
+    "ვაკე-საბურთალო": [2, 3, 4, 5, 26, 27, 44, 45, 46, 47, 48, 49, 50],
+    "ისანი-სამგორი": [6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 24],
+    "გლდანი-ნაძალადევი": [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 53],
+    "დიდუბე-ჩუღურეთი": [1, 28, 29, 30, 31],
+    "ძველი თბილისი": [20, 21, 22, 23, 51, 52],
+}
 
 
 class SSGeScraper(BaseScraper):
@@ -32,6 +113,8 @@ class SSGeScraper(BaseScraper):
             if filters.deal_type == "rent" and filters.rent_price_max_usd is not None
             else filters.price_max_usd
         )
+        if min_p is not None or max_p is not None:
+            params.append("priceType=1")
         if min_p is not None:
             params.append(f"priceFrom={int(min_p)}")
         if max_p is not None:
@@ -40,14 +123,31 @@ class SSGeScraper(BaseScraper):
             params.append(f"areaFrom={int(filters.area_min_m2)}")
         if filters.area_max_m2 is not None:
             params.append(f"areaTo={int(filters.area_max_m2)}")
-        if filters.rooms_min is not None and filters.rooms_min > 0:
-            params.append(f"rooms={int(filters.rooms_min)}")
+        if filters.rooms_min is not None and int(filters.rooms_min) > 1:
+            r_min = int(filters.rooms_min)
+            room_vals = [str(r) for r in range(r_min, 6)] if r_min <= 5 else [str(r_min)]
+            params.append(f"rooms={','.join(room_vals)}")
         if filters.owner_type:
             ot = str(filters.owner_type).lower().strip()
             if ot in ["owner", "physical", "მესაკუთრე"]:
                 params.append("individualType=1")
             elif ot in ["agent", "agency", "სააგენტო"]:
                 params.append("individualType=2")
+
+        target_districts = filters.whitelist_districts or filters.target_districts
+        if target_districts:
+            sub_ids = set()
+            for d in target_districts:
+                d_clean = str(d).strip()
+                if d_clean in SS_GE_SUBDISTRICT_MAP:
+                    sub_ids.update(SS_GE_SUBDISTRICT_MAP[d_clean])
+                else:
+                    for k, sids in SS_GE_SUBDISTRICT_MAP.items():
+                        if k.lower() == d_clean.lower():
+                            sub_ids.update(sids)
+                            break
+            if sub_ids:
+                params.append(f"subdistrictIds={','.join(str(s) for s in sorted(sub_ids))}")
 
         if params:
             url += "&" + "&".join(params)

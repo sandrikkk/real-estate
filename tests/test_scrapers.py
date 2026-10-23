@@ -313,6 +313,76 @@ class TestScrapers(unittest.TestCase):
         usd3, gel3 = scraper._extract_prices(item3)
         self.assertEqual(usd3, 122100.0)
 
+    def test_ss_ge_search_url_rooms_price_type_and_subdistricts(self):
+        scraper = SSGeScraper()
+        # Case 1: rooms_min=1 must NOT restrict to rooms=1 (1-room only)
+        f_one_plus = SearchFilters(
+            deal_type="sale",
+            price_min_usd=45000,
+            price_max_usd=75000,
+            area_min_m2=40,
+            area_max_m2=65,
+            rooms_min=1,
+            whitelist_districts=["დიდუბე", "ნაძალადევი"],
+        )
+        url_1 = scraper._build_search_url(f_one_plus, page=1)
+        self.assertIn("priceType=1", url_1)
+        self.assertIn("priceFrom=45000", url_1)
+        self.assertIn("priceTo=75000", url_1)
+        self.assertNotIn("rooms=", url_1)
+        self.assertIn("subdistrictIds=1,37,39,41,42", url_1)
+
+        # Case 2: rooms_min=2 must pass rooms=2,3,4,5
+        f_two_plus = SearchFilters(
+            deal_type="sale",
+            price_min_usd=90000,
+            price_max_usd=115000,
+            rooms_min=2,
+            whitelist_districts=["ნაძალადევი"],
+        )
+        url_2 = scraper._build_search_url(f_two_plus, page=1)
+        self.assertIn("priceType=1", url_2)
+        self.assertIn("rooms=2,3,4,5", url_2)
+        self.assertIn("subdistrictIds=37,39,41,42", url_2)
+
+    def test_orchestrator_builds_separate_per_user_envelopes(self):
+        from core.filters import ListingFilter
+        from core.models import UserSubscription
+        from main import RealEstateOrchestrator
+
+        orch = RealEstateOrchestrator.__new__(RealEstateOrchestrator)
+        orch.filter_engine = ListingFilter(SearchFilters())
+
+        u1 = UserSubscription(
+            chat_id="1105321687",
+            deal_type="sale",
+            price_min_usd=45000,
+            price_max_usd=75000,
+            area_min_m2=40,
+            area_max_m2=65,
+            rooms_min=1,
+            districts=["დიდუბე", "საბურთალო"],
+            owner_type="all",
+        )
+        u2 = UserSubscription(
+            chat_id="646957970",
+            deal_type="sale",
+            price_min_usd=90000,
+            price_max_usd=115000,
+            area_min_m2=40,
+            area_max_m2=120,
+            rooms_min=2,
+            districts=["ნაძალადევი"],
+            owner_type="all",
+        )
+
+        envelopes = orch._build_search_envelopes("sale", [u1, u2])
+        self.assertEqual(len(envelopes), 2)
+        self.assertEqual((envelopes[0].price_min_usd, envelopes[0].price_max_usd), (45000, 75000))
+        self.assertEqual((envelopes[0].area_min_m2, envelopes[0].area_max_m2), (40, 65))
+        self.assertEqual((envelopes[1].price_min_usd, envelopes[1].price_max_usd), (90000, 115000))
+        self.assertEqual((envelopes[1].area_min_m2, envelopes[1].area_max_m2), (40, 120))
+
 
 if __name__ == "__main__":
     unittest.main()
