@@ -123,6 +123,54 @@ class TestMyHomeScraper(unittest.TestCase):
         self.assertEqual(requested, [1, 2, 3, 4])
         self.assertIn("myhome_400", {item.id for item in listings})
 
+    def test_build_search_url_includes_urbans_when_districts_set(self):
+        f = SearchFilters(
+            deal_type="sale",
+            price_min_usd=45000,
+            price_max_usd=75000,
+            area_min_m2=40,
+            area_max_m2=65,
+            whitelist_districts=["საბურთალო", "დიდუბე"],
+        )
+        url = self.scraper._build_search_url(f, page=2)
+        self.assertIn("urbans=", url)
+        self.assertIn("23", url)  # დიდუბე
+        self.assertIn("47", url)  # საბურთალო
+        self.assertIn("page=2", url)
+
+    def test_fetch_listings_skips_api_after_first_page_failure(self):
+        import asyncio
+
+        api_calls = []
+        html_calls = []
+
+        async def failing_api(url):
+            api_calls.append(url)
+            return None
+
+        async def fake_html(url):
+            html_calls.append(url)
+            return "<html></html>"
+
+        self.scraper._fetch_api_page = failing_api
+        self.scraper.fetch_html = fake_html
+        self.scraper._extract_listings_from_html = lambda html: [
+            {
+                "id": len(html_calls) * 100 + i,
+                "deal_type_id": 1,
+                "real_estate_type_id": 1,
+                "area": 50,
+                "price": {"2": {"price_total": 60000}},
+                "is_super_vip": False,
+            }
+            for i in range(10)
+        ]
+
+        listings = asyncio.run(self.scraper.fetch_listings(self.filters))
+        self.assertEqual(len(api_calls), 1)
+        self.assertGreaterEqual(len(html_calls), 2)
+        self.assertGreater(len(listings), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

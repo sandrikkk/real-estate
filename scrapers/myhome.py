@@ -250,8 +250,13 @@ class MyHomeScraper(BaseScraper):
                 (parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment)
             )
 
-        deal_path = "iyideba" if filters.deal_type == "sale" else "qiravdeba"
-        deal_type_val = "1" if filters.deal_type == "sale" else "2"
+        deal_path = "qiravdeba" if filters.deal_type == "rent" else "iyideba"
+        if filters.deal_type == "both":
+            deal_type_val = "1,2"
+        elif filters.deal_type == "sale":
+            deal_type_val = "1"
+        else:
+            deal_type_val = "2"
         url = f"https://www.myhome.ge/ka/s/{deal_path}-bina-tbilisi/?"
         params = [
             f"deal_types={deal_type_val}",
@@ -290,6 +295,21 @@ class MyHomeScraper(BaseScraper):
                 params.append("owner_type=physical")
             elif ot in ["agent", "agency", "სააგენტო"]:
                 params.append("owner_type=agent")
+
+        target_districts = filters.whitelist_districts or filters.target_districts
+        if target_districts:
+            urban_ids = set()
+            for d in target_districts:
+                d_clean = str(d).strip()
+                if d_clean in MYHOME_URBAN_MAP:
+                    urban_ids.update(MYHOME_URBAN_MAP[d_clean])
+                else:
+                    for k, uids in MYHOME_URBAN_MAP.items():
+                        if k.lower() == d_clean.lower():
+                            urban_ids.update(uids)
+                            break
+            if urban_ids:
+                params.append(f"urbans={','.join(str(u) for u in sorted(urban_ids))}")
 
         return url + "&".join(params)
 
@@ -630,12 +650,16 @@ class MyHomeScraper(BaseScraper):
     async def fetch_listings(self, filters: SearchFilters) -> List[PropertyListing]:
         all_listings: List[PropertyListing] = []
         regular_seen = 0
+        use_api = True
 
         for page in range(1, self.MAX_PAGES_HARD + 1):
             raw_items = None
-            # 1. Primary Strategy: Direct JSON API
-            api_url = self._build_api_url(filters, page=page)
-            raw_items = await self._fetch_api_page(api_url)
+            # 1. Primary Strategy: Direct JSON API (disable for remaining pages if it fails)
+            if use_api:
+                api_url = self._build_api_url(filters, page=page)
+                raw_items = await self._fetch_api_page(api_url)
+                if not raw_items:
+                    use_api = False
 
             # 2. Fallback Strategy: SSR HTML Parsing
             if not raw_items:
