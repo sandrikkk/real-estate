@@ -219,30 +219,34 @@ class RealEstateOrchestrator:
             if listing.id not in seen_in_batch:
                 seen_in_batch.add(listing.id)
                 unique_listings.append(listing)
-                if listing.id not in self.db._seen_ids:
-                    new_count += 1
 
-        # 2. Batch save all newly fetched listings in 1 single HTTP/database query
-        self.db.save_listings_batch(unique_listings)
-
-        # 3. Batch check unnotified listing IDs for each active user (1 query per user)
+        # 2. Batch check which scraped listing IDs are genuinely NEW (not yet in properties table)
         all_unique_ids = [item.id for item in unique_listings]
-        unnotified_ids_by_user = {}
-        for u in active_users:
-            unnotified_ids_by_user[str(u.chat_id)] = set(
-                self.db.filter_unnotified_listings(u.chat_id, all_unique_ids)
-            )
+        new_listing_ids = set(self.db.filter_new_listings(all_unique_ids))
+        new_listings = [item for item in unique_listings if item.id in new_listing_ids]
+        new_count = len(new_listings)
 
-        if not getattr(settings, "ENABLE_MULTI_USER", True) and settings.TELEGRAM_CHAT_ID:
-            admin_cid = str(settings.TELEGRAM_CHAT_ID)
-            if admin_cid not in unnotified_ids_by_user:
-                unnotified_ids_by_user[admin_cid] = set(
-                    self.db.filter_unnotified_listings(admin_cid, all_unique_ids)
+        # 3. Batch check unnotified listing IDs for each active user (only for genuinely new listings)
+        new_ids = [item.id for item in new_listings]
+        unnotified_ids_by_user = {}
+        if new_ids:
+            for u in active_users:
+                unnotified_ids_by_user[str(u.chat_id)] = set(
+                    self.db.filter_unnotified_listings(u.chat_id, new_ids)
                 )
 
-        for listing in unique_listings:
+            if not getattr(settings, "ENABLE_MULTI_USER", True) and settings.TELEGRAM_CHAT_ID:
+                admin_cid = str(settings.TELEGRAM_CHAT_ID)
+                if admin_cid not in unnotified_ids_by_user:
+                    unnotified_ids_by_user[admin_cid] = set(
+                        self.db.filter_unnotified_listings(admin_cid, new_ids)
+                    )
+
+        unmatched_to_save = []
+        for listing in new_listings:
             # 1. Baseline Filter Hygiene (Under Construction, Black Frame, Stop-words, Location Blacklist)
             if not self.filter_engine.matches_hygiene(listing):
+                unmatched_to_save.append(listing)
                 continue
 
             # 2. Identify active users who match this listing AND have not received it yet
@@ -261,6 +265,16 @@ class RealEstateOrchestrator:
                 ) and self.filter_engine.matches(listing):
                     matching_users = [u for u in active_users if str(u.chat_id) == admin_cid]
 
+            if not matching_users:
+                unmatched_to_save.append(listing)
+                continue
+
+            # Defer to next cycle if all matching users have already reached their per-cycle alert cap
+            matching_users = [
+                u
+                for u in matching_users
+                if user_sent_count.get(u.chat_id, 0) < MAX_ALERTS_PER_USER_CYCLE
+            ]
             if not matching_users:
                 continue
 
@@ -299,6 +313,10 @@ class RealEstateOrchestrator:
                                 if isinstance(cond_obj, dict)
                                 else (cond_obj or None)
                             )
+                        if not listing.status_id and details.get("status_id"):
+                            listing.status_id = details.get("status_id")
+                        if not listing.description and details.get("comment"):
+                            listing.description = str(details.get("comment"))
                         if not listing.phone_number:
                             from scrapers.myhome import _extract_phone_number
 
@@ -334,6 +352,10 @@ class RealEstateOrchestrator:
                                 if isinstance(cond_obj, dict)
                                 else (cond_obj or None)
                             )
+                        if not listing.status_id and details.get("status_id"):
+                            listing.status_id = details.get("status_id")
+                        if not listing.description and details.get("comment"):
+                            listing.description = str(details.get("comment"))
                         if not listing.phone_number and details.get("phone_number"):
                             from scrapers.myhome import _extract_phone_number
 
@@ -412,6 +434,9 @@ class RealEstateOrchestrator:
 
             if sent_any:
                 self.db.mark_as_notified(listing.id)
+
+        if unmatched_to_save:
+            self.db.save_listings_batch(unmatched_to_save)
 
         stats = {
             "total_fetched": len(all_listings),

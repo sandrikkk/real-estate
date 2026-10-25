@@ -48,8 +48,8 @@ class BaseScraper(ABC):
                 )
                 if response.status_code == 200:
                     return response.text
-                elif response.status_code == 429 and target_url != url:
-                    # Cloudflare worker / proxy hit daily limit or rate limit. Fallback directly!
+                elif response.status_code in (403, 429, 500, 502, 503, 504) and target_url != url:
+                    # Cloudflare worker / proxy hit daily limit, rate limit, or WAF block. Fallback directly!
                     direct_resp = await session.get(url, headers=self.headers, timeout=self.timeout)
                     if direct_resp.status_code == 200:
                         return direct_resp.text

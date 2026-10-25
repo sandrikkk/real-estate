@@ -131,6 +131,71 @@ class TestBatchDatabaseOperations(unittest.TestCase):
             params = call_args[0][1]
             self.assertLessEqual(len(params), 50)
 
+    def test_filter_new_listings_sqlite_and_d1_chunks(self):
+        """Should filter out IDs already present in properties table and chunk at <= 50 params."""
+        l1 = self._create_sample_listing("l1", 50000.0)
+        self.db.save_listing(l1)
+        # Simulate cold start in stateless CI runner
+        self.db._seen_ids.clear()
+
+        new_ids = self.db.filter_new_listings(["l1", "l2", "l3"])
+        self.assertEqual(new_ids, ["l2", "l3"])
+        self.assertIn("l1", self.db._seen_ids)
+
+        # D1 chunking test (120 items -> 3 chunks of 50, 50, 20)
+        mock_client = MagicMock(spec=D1Client)
+        mock_client.query.return_value = {
+            "success": True,
+            "results": [{"id": "item_0"}],
+            "meta": {},
+        }
+        d1_db = DatabaseEngine(db_path=self.db_path, use_d1=False)
+        d1_db.use_d1 = True
+        d1_db.d1_client = mock_client
+
+        items = [f"item_{i}" for i in range(120)]
+        res = d1_db.filter_new_listings(items)
+        self.assertNotIn("item_0", res)
+        self.assertEqual(len(res), 119)
+        self.assertEqual(mock_client.query.call_count, 3)
+        for call_args in mock_client.query.call_args_list:
+            params = call_args[0][1]
+            self.assertLessEqual(len(params), 50)
+
+    def test_save_listing_upserts_enriched_fields(self):
+        """save_listing should update enriched fields if the listing already exists in properties."""
+        listing = self._create_sample_listing("myhome_999", 46981.0)
+        listing.is_owner = True
+        listing.condition_id = None
+        listing.phone_number = None
+
+        self.db.save_listings_batch([listing])
+
+        # Enrich the listing (e.g. after fetch_statement_details)
+        listing.price_usd = 122100.0
+        listing.price_per_m2 = round(122100.0 / listing.area_m2, 2)
+        listing.is_owner = False
+        listing.condition_id = 1
+        listing.phone_number = "+995 555 12 34 56"
+        listing.is_bargain = True
+
+        self.db.save_listing(listing)
+
+        with self.db._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT price_usd, is_owner, condition_id, phone_number, is_bargain FROM properties WHERE id = ?",
+                ("myhome_999",),
+            )
+            rows = cursor.fetchall()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(float(row["price_usd"]), 122100.0)
+        self.assertEqual(int(row["is_owner"]), 0)
+        self.assertEqual(int(row["condition_id"]), 1)
+        self.assertEqual(row["phone_number"], "+995 555 12 34 56")
+        self.assertEqual(int(row["is_bargain"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -556,6 +556,201 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(details_fetched[0][0], "myhome_4")
         scraper.fetch_statement_details.assert_called_once_with("4")
 
+    def test_dedup_find_candidates_filters_by_30_days_price_and_limit_50(self):
+        """_find_candidates must filter out >30d old rows, >50% price diff, and cap at LIMIT 50."""
+        from core.dedup import DuplicateDetector
+
+        detector = DuplicateDetector(self.db)
+
+        # 1. Insert an old candidate (45 days ago)
+        old_item = PropertyListing(
+            id="old_1",
+            source="myhome",
+            source_id="old_1",
+            title="Old Apt",
+            price_usd=70000.0,
+            area_m2=60.0,
+            price_per_m2=1166.0,
+            district="საბურთალო",
+            rooms=2,
+            url="https://myhome.ge/old_1",
+        )
+        self.db.save_listing(old_item)
+        with self.db._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE properties SET scraped_at = datetime('now', '-45 days') WHERE id = ?",
+                ("old_1",),
+            )
+            conn.commit()
+
+        # 2. Insert an out-of-price-range candidate ($180,000 vs $70,000)
+        expensive_item = PropertyListing(
+            id="exp_1",
+            source="myhome",
+            source_id="exp_1",
+            title="Expensive Apt",
+            price_usd=180000.0,
+            area_m2=60.0,
+            price_per_m2=3000.0,
+            district="საბურთალო",
+            rooms=2,
+            url="https://myhome.ge/exp_1",
+        )
+        self.db.save_listing(expensive_item)
+
+        # 3. Insert 60 recent matching candidates
+        for i in range(60):
+            item = PropertyListing(
+                id=f"cand_{i}",
+                source="myhome",
+                source_id=f"cand_{i}",
+                title=f"Candidate {i}",
+                price_usd=70000.0,
+                area_m2=60.0,
+                price_per_m2=1166.0,
+                district="საბურთალო",
+                rooms=2,
+                url=f"https://myhome.ge/cand_{i}",
+            )
+            self.db.save_listing(item)
+
+        target = PropertyListing(
+            id="target_new",
+            source="ss_ge",
+            source_id="target_new",
+            title="Target Apt",
+            price_usd=70000.0,
+            area_m2=60.0,
+            price_per_m2=1166.0,
+            district="საბურთალო",
+            rooms=2,
+            url="https://home.ss.ge/target_new",
+        )
+        candidates = detector._find_candidates(target)
+        candidate_ids = {c["id"] for c in candidates}
+
+        self.assertNotIn("old_1", candidate_ids)
+        self.assertNotIn("exp_1", candidate_ids)
+        self.assertEqual(len(candidates), 50)
+
+    async def test_run_cycle_skips_already_seen_properties_on_next_cycle(self):
+        """
+        Listings rejected post-enrichment (e.g. hidden brokers) or pre-enrichment
+        must be saved to properties and skipped on subsequent stateless CI cycles
+        without re-enriching or re-running dedup.
+        """
+        from core.filters import ListingFilter
+        from core.models import SearchFilters
+        from main import RealEstateOrchestrator
+
+        orch = RealEstateOrchestrator.__new__(RealEstateOrchestrator)
+        orch.db = self.db
+        orch.filter_engine = ListingFilter(SearchFilters())
+        orch.analytics = MagicMock()
+        orch.analytics.evaluate_deal = MagicMock(side_effect=lambda x: x)
+        orch.dedup = MagicMock()
+        orch.telegram_notifier = MagicMock()
+        orch.telegram_notifier.send_alert = AsyncMock(return_value=True)
+
+        user_vake = UserSubscription(
+            chat_id="user_vake",
+            deal_type="sale",
+            price_max_usd=100000.0,
+            districts=["ვაკე"],
+            owner_type="owner",
+            onboarding_step="completed",
+            is_active=True,
+        )
+
+        # Listing 1: Appears to match Vake & owner tentatively, but enrichment reveals broker
+        l_broker = PropertyListing(
+            id="myhome_broker_1",
+            source="myhome",
+            source_id="broker_1",
+            title="Apt in Vake",
+            price_usd=80000.0,
+            area_m2=65.0,
+            price_per_m2=1230.0,
+            district="ვაკე",
+            rooms=2,
+            is_owner=True,
+            url="https://myhome.ge/broker_1",
+        )
+        # Listing 2: Unmatched district (Gldani)
+        l_unmatched = PropertyListing(
+            id="myhome_gldani_1",
+            source="myhome",
+            source_id="gldani_1",
+            title="Apt in Gldani",
+            price_usd=60000.0,
+            area_m2=60.0,
+            price_per_m2=1000.0,
+            district="გლდანი",
+            rooms=2,
+            is_owner=True,
+            url="https://myhome.ge/gldani_1",
+        )
+
+        mock_scraper = MagicMock()
+        mock_scraper.name = "MyHome.ge"
+        mock_scraper.fetch_listings = AsyncMock(
+            side_effect=lambda f: [l_broker.model_copy(), l_unmatched.model_copy()]
+        )
+        mock_scraper.fetch_statement_details = AsyncMock(
+            return_value={
+                "user_type": "agent",
+                "is_owner": False,
+                "condition_id": 1,
+                "price_usd": 80000.0,
+            }
+        )
+        orch.scrapers = [mock_scraper]
+
+        with patch("main.fetch_active_users", return_value=[user_vake]):
+            # Cycle 1: l_broker is enriched once and rejected as broker; both saved in properties
+            await orch.run_cycle()
+            self.assertEqual(mock_scraper.fetch_statement_details.call_count, 1)
+            self.assertEqual(orch.dedup.check_listing.call_count, 0)
+
+            # Simulate stateless CI runner cold start on Cycle 2 (empty in-memory _seen_ids)
+            self.db._seen_ids.clear()
+            mock_scraper.fetch_statement_details.reset_mock()
+            orch.dedup.check_listing.reset_mock()
+
+            # Cycle 2: Same listings scraped -> must be skipped via filter_new_listings!
+            await orch.run_cycle()
+            self.assertEqual(mock_scraper.fetch_statement_details.call_count, 0)
+            self.assertEqual(orch.dedup.check_listing.call_count, 0)
+
+    async def test_base_scraper_fetch_html_falls_back_on_403(self):
+        """When Cloudflare proxy returns 403, BaseScraper.fetch_html must fall back to direct URL."""
+        from config import settings
+        from scrapers.ss_ge import SSGeScraper
+
+        scraper = SSGeScraper()
+        old_proxy = settings.CLOUDFLARE_PROXY_URL
+        settings.CLOUDFLARE_PROXY_URL = "https://proxy.example.workers.dev"
+        try:
+            proxy_resp = MagicMock()
+            proxy_resp.status_code = 403
+
+            direct_resp = MagicMock()
+            direct_resp.status_code = 200
+            direct_resp.text = "<html>SS.ge direct ok</html>"
+
+            mock_session = AsyncMock()
+            mock_session.get = AsyncMock(side_effect=[proxy_resp, direct_resp])
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            with patch("scrapers.base.AsyncSession", return_value=mock_session):
+                html = await scraper.fetch_html("https://home.ss.ge/ka/udzravi-qoneba/l/bina/iyideba")
+                self.assertEqual(html, "<html>SS.ge direct ok</html>")
+                self.assertEqual(mock_session.get.call_count, 2)
+        finally:
+            settings.CLOUDFLARE_PROXY_URL = old_proxy
+
 
 if __name__ == "__main__":
     unittest.main()

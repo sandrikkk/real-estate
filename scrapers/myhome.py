@@ -176,6 +176,7 @@ class MyHomeScraper(BaseScraper):
     def __init__(self, timeout: int = 15, max_pages: int = 3):
         super().__init__(name="MyHome.ge", timeout=timeout)
         self.max_pages = max_pages
+        self._api_disabled = False
 
     def _build_api_url(self, filters: SearchFilters, page: int = 1) -> str:
         if filters.deal_type == "both":
@@ -650,16 +651,17 @@ class MyHomeScraper(BaseScraper):
     async def fetch_listings(self, filters: SearchFilters) -> List[PropertyListing]:
         all_listings: List[PropertyListing] = []
         regular_seen = 0
-        use_api = True
+        use_api = not getattr(self, "_api_disabled", False)
 
         for page in range(1, self.MAX_PAGES_HARD + 1):
             raw_items = None
-            # 1. Primary Strategy: Direct JSON API (disable for remaining pages if it fails)
+            # 1. Primary Strategy: Direct JSON API (disable for remaining pages/envelopes if it fails)
             if use_api:
                 api_url = self._build_api_url(filters, page=page)
                 raw_items = await self._fetch_api_page(api_url)
                 if not raw_items:
                     use_api = False
+                    self._api_disabled = True
 
             # 2. Fallback Strategy: SSR HTML Parsing
             if not raw_items:

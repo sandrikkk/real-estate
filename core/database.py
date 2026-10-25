@@ -294,6 +294,9 @@ class DatabaseEngine:
                                 )
                             except Exception:
                                 pass
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_properties_district_area ON properties(district, area_m2)"
+                    )
                 except Exception as e:
                     print(f"[D1 Migration Warning]: {e}")
             else:
@@ -332,6 +335,9 @@ class DatabaseEngine:
                 """)
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_properties_district ON properties(district)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_properties_district_area ON properties(district, area_m2)"
                 )
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_properties_scraped_at ON properties(scraped_at)"
@@ -475,6 +481,32 @@ class DatabaseEngine:
 
         return [lid for lid in listing_ids if lid not in seen_set and lid not in notified_in_db]
 
+    def filter_new_listings(self, listing_ids: list) -> list:
+        """Batch-checks which listing IDs are NOT yet present in the properties table."""
+        if not listing_ids:
+            return []
+
+        to_check = [lid for lid in listing_ids if lid not in self._seen_ids]
+        if not to_check:
+            return []
+
+        CHUNK_SIZE = 50
+        seen_in_db = set()
+
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            for i in range(0, len(to_check), CHUNK_SIZE):
+                chunk = to_check[i : i + CHUNK_SIZE]
+                placeholders = ",".join(["?"] * len(chunk))
+                sql = f"SELECT id FROM properties WHERE id IN ({placeholders})"
+                cursor.execute(sql, tuple(chunk))
+                for row in cursor.fetchall():
+                    lid = row["id"] if hasattr(row, "__getitem__") else row[0]
+                    seen_in_db.add(lid)
+                    self._seen_ids.add(lid)
+
+        return [lid for lid in listing_ids if lid not in self._seen_ids and lid not in seen_in_db]
+
     def mark_user_notified(self, chat_id: str, listing_id: str):
         cid = str(chat_id)
         if listing_id not in self._user_seen[cid]:
@@ -538,7 +570,7 @@ class DatabaseEngine:
             try:
                 cursor.execute(
                     """
-                    INSERT OR IGNORE INTO properties (
+                    INSERT INTO properties (
                         id, source, source_id, deal_type, title, description,
                         price_usd, price_gel, area_m2, price_per_m2,
                         city, district, subdistrict, street,
@@ -548,6 +580,23 @@ class DatabaseEngine:
                         metro_station_id, condition_id, is_hot_deal, phone_number,
                         is_owner, user_type
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        price_usd = excluded.price_usd,
+                        price_gel = COALESCE(excluded.price_gel, properties.price_gel),
+                        price_per_m2 = excluded.price_per_m2,
+                        description = COALESCE(excluded.description, properties.description),
+                        condition_id = COALESCE(excluded.condition_id, properties.condition_id),
+                        phone_number = COALESCE(excluded.phone_number, properties.phone_number),
+                        is_owner = COALESCE(excluded.is_owner, properties.is_owner),
+                        user_type = COALESCE(excluded.user_type, properties.user_type),
+                        is_bargain = excluded.is_bargain,
+                        is_hot_deal = excluded.is_hot_deal
+                    WHERE properties.price_usd IS NOT excluded.price_usd
+                       OR properties.is_owner IS NOT excluded.is_owner
+                       OR properties.condition_id IS NOT excluded.condition_id
+                       OR properties.phone_number IS NOT excluded.phone_number
+                       OR properties.is_bargain IS NOT excluded.is_bargain
+                       OR properties.is_hot_deal IS NOT excluded.is_hot_deal
                 """,
                     (
                         listing.id,
@@ -586,6 +635,8 @@ class DatabaseEngine:
                 )
                 conn.commit()
                 return cursor.rowcount > 0
+            except DatabaseUnavailableError:
+                raise
             except Exception as e:
                 print(f"[Database Error]: Failed to save listing {listing.id}: {e}")
                 return False
@@ -664,6 +715,8 @@ class DatabaseEngine:
                     total_changes += cursor.rowcount
                 conn.commit()
                 return total_changes
+            except DatabaseUnavailableError:
+                raise
             except Exception as e:
                 print(f"[Database Error]: Failed to save batch of listings: {e}")
                 return 0
