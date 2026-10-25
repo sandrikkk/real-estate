@@ -124,9 +124,16 @@ class DuplicateDetector:
                        floor, rooms, total_floors, images_json, group_id,
                        published_at, is_owner, user_type
                 FROM properties
-                WHERE id != ? AND district = ? AND area_m2 BETWEEN ? AND ?
+                WHERE id != ?
+                  AND district = ?
+                  AND area_m2 BETWEEN ? AND ?
+                  AND scraped_at >= datetime('now', '-30 days')
             """
             params: list = [listing.id, listing.district, area_lo, area_hi]
+
+            if listing.price_usd and listing.price_usd > 0:
+                sql += " AND price_usd BETWEEN ? AND ?"
+                params.extend([listing.price_usd * 0.50, listing.price_usd * 1.50])
 
             if listing.rooms:
                 sql += " AND (rooms = ? OR rooms IS NULL)"
@@ -135,6 +142,8 @@ class DuplicateDetector:
             if listing.total_floors:
                 sql += " AND (total_floors = ? OR total_floors IS NULL)"
                 params.append(listing.total_floors)
+
+            sql += " ORDER BY scraped_at DESC LIMIT 50"
 
             cursor.execute(sql, params)
             return [dict(row) for row in cursor.fetchall()]
