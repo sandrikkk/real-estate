@@ -168,6 +168,33 @@ class TelegramNotifier:
             ]
         )
 
+        # In-place price drop on an existing listing (when not already rendered as a duplicate cluster new lowest price)
+        in_place_prev = getattr(listing, "previous_price_usd", None)
+        has_dup_strictly_lower = bool(
+            dup_info and dup_info.get("duplicate_count", 0) > 1 and dup_info.get("is_strictly_lower")
+        )
+        if (
+            in_place_prev is not None
+            and in_place_prev > listing.price_usd
+            and not has_dup_strictly_lower
+        ):
+            price_drop = getattr(listing, "price_drop_usd", None) or (
+                in_place_prev - listing.price_usd
+            )
+            prev_str = (
+                f"${in_place_prev:,.0f}"
+                if in_place_prev == int(in_place_prev)
+                else f"${in_place_prev:,.2f}"
+            )
+            drop_str = (
+                f"${price_drop:,.0f}"
+                if price_drop == int(price_drop)
+                else f"${price_drop:,.2f}"
+            )
+            lines.append("")
+            lines.append("🔻 <b>ფასი დააკლდა!</b>")
+            lines.append(f"📉 წინა ფასი: <b>{prev_str}</b> | დაკლებულია: <b>-{drop_str}</b>")
+
         # Duplicate cluster info (computed from dup_info dict, not stored on model)
         if dup_info and dup_info.get("duplicate_count", 0) > 1:
             lines.append("")
@@ -176,9 +203,13 @@ class TelegramNotifier:
                 lines.append(
                     f"🔻 <b>ახალი ყველაზე დაბალი ფასი!</b> ({dup_count} განცხადება იგივე ბინაზე)"
                 )
-                prev_price = dup_info.get("previous_best_price_usd")
+                prev_price = (
+                    in_place_prev
+                    if (in_place_prev is not None and in_place_prev > listing.price_usd)
+                    else dup_info.get("previous_best_price_usd")
+                )
                 if prev_price is not None and prev_price > listing.price_usd:
-                    price_drop = dup_info.get("price_drop_usd") or (prev_price - listing.price_usd)
+                    price_drop = prev_price - listing.price_usd
                     prev_str = (
                         f"${prev_price:,.0f}"
                         if prev_price == int(prev_price)

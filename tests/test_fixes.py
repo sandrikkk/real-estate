@@ -786,6 +786,108 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
         finally:
             settings.CLOUDFLARE_PROXY_URL = old_proxy
 
+    async def test_run_cycle_alerts_on_in_place_price_drop_once_and_skips_false_drop(self):
+        """Verify that an existing listing dropping price in-place alerts subscribers
+        (even if previously notified at higher price), updates DB so next cycle is silent,
+        and ignores false price drops when live detail price did not actually drop."""
+        from main import RealEstateOrchestrator
+
+        orch = RealEstateOrchestrator()
+        orch.db = self.db
+        orch.telegram_notifier = MagicMock()
+        orch.telegram_notifier.send_notification = AsyncMock(return_value=True)
+
+        user = UserSubscription(
+            chat_id="u_1",
+            price_min_usd=50000,
+            price_max_usd=72000,
+            area_min_m2=45,
+            area_max_m2=65,
+            rooms_min=2,
+            districts=["ისანი"],
+            owner_type="all",
+        )
+
+        # Cycle 1: Listing 1 at $70,000 (notified to u_1) and Listing 2 at $75,000 (above u_1 max price, saved unmatched)
+        l1_v1 = PropertyListing(
+            id="myhome_901",
+            source="myhome",
+            source_id="901",
+            title="იყიდება ბინა ისანში",
+            price_usd=70000.0,
+            area_m2=55.0,
+            rooms=2,
+            district="ისანი",
+            condition_id=1,
+            condition_name="ახალი გარემონტებული",
+            is_owner=True,
+            url="https://myhome.ge/901",
+        )
+        l2_v1 = PropertyListing(
+            id="myhome_902",
+            source="myhome",
+            source_id="902",
+            title="იყიდება ბინა ისანში 2",
+            price_usd=75000.0,
+            area_m2=55.0,
+            rooms=2,
+            district="ისანი",
+            condition_id=1,
+            condition_name="ახალი გარემონტებული",
+            is_owner=True,
+            url="https://myhome.ge/902",
+        )
+
+        mock_scraper = MagicMock()
+        mock_scraper.name = "MyHome.ge"
+        mock_scraper.fetch_listings = AsyncMock(return_value=[l1_v1, l2_v1])
+        mock_scraper.fetch_statement_details = AsyncMock(return_value=None)
+        orch.scrapers = [mock_scraper]
+
+        with patch("main.fetch_active_users", return_value=[user]):
+            stats1 = await orch.run_cycle()
+        self.assertEqual(stats1["notifications_sent"], 1)
+
+        # Cycle 2: l1 drops to $65,000, l2 drops to $68,000 (now inside budget!)
+        l1_v2 = l1_v1.model_copy()
+        l1_v2.price_usd = 65000.0
+        l2_v2 = l2_v1.model_copy()
+        l2_v2.price_usd = 68000.0
+        mock_scraper.fetch_listings = AsyncMock(return_value=[l1_v2, l2_v2])
+
+        with patch("main.fetch_active_users", return_value=[user]):
+            stats2 = await orch.run_cycle()
+        self.assertEqual(stats2["notifications_sent"], 2)
+
+        # Verify l1_v2 had previous_price_usd=70000.0 and price_drop_usd=5000.0
+        sent_listings = [
+            call.args[0] for call in orch.telegram_notifier.send_notification.call_args_list[-2:]
+        ]
+        by_id = {item.id: item for item in sent_listings}
+        self.assertEqual(by_id["myhome_901"].previous_price_usd, 70000.0)
+        self.assertEqual(by_id["myhome_901"].price_drop_usd, 5000.0)
+        self.assertEqual(by_id["myhome_902"].previous_price_usd, 75000.0)
+        self.assertEqual(by_id["myhome_902"].price_drop_usd, 7000.0)
+
+        # Cycle 3: Same dropped prices ($65,000 and $68,000) -> 0 notifications, 0 detail calls
+        mock_scraper.fetch_statement_details.reset_mock()
+        l1_v3 = l1_v2.model_copy()
+        l2_v3 = l2_v2.model_copy()
+        mock_scraper.fetch_listings = AsyncMock(return_value=[l1_v3, l2_v3])
+        with patch("main.fetch_active_users", return_value=[user]):
+            stats3 = await orch.run_cycle()
+        self.assertEqual(stats3["notifications_sent"], 0)
+        mock_scraper.fetch_statement_details.assert_not_called()
+
+        # Cycle 4: False price drop on search page ($64,000), but live detail page says $65,000 (unchanged)
+        l1_false = l1_v2.model_copy()
+        l1_false.price_usd = 64000.0
+        mock_scraper.fetch_listings = AsyncMock(return_value=[l1_false])
+        mock_scraper.fetch_statement_details = AsyncMock(return_value={"price_usd": 65000.0})
+        with patch("main.fetch_active_users", return_value=[user]):
+            stats4 = await orch.run_cycle()
+        self.assertEqual(stats4["notifications_sent"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

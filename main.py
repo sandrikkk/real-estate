@@ -220,13 +220,11 @@ class RealEstateOrchestrator:
                 seen_in_batch.add(listing.id)
                 unique_listings.append(listing)
 
-        # 2. Batch check which scraped listing IDs are genuinely NEW (not yet in properties table)
-        all_unique_ids = [item.id for item in unique_listings]
-        new_listing_ids = set(self.db.filter_new_listings(all_unique_ids))
-        new_listings = [item for item in unique_listings if item.id in new_listing_ids]
+        # 2. Batch check which scraped listing IDs are genuinely NEW or have an in-place price drop
+        new_listings, price_drops = self.db.classify_scraped_listings(unique_listings)
         new_count = len(new_listings)
 
-        # 3. Batch check unnotified listing IDs for each active user (only for genuinely new listings)
+        # 3. Batch check unnotified listing IDs for each active user (only for candidate listings)
         new_ids = [item.id for item in new_listings]
         unnotified_ids_by_user = {}
         if new_ids:
@@ -249,19 +247,24 @@ class RealEstateOrchestrator:
                 unmatched_to_save.append(listing)
                 continue
 
-            # 2. Identify active users who match this listing AND have not received it yet
+            # 2. Identify active users who match this listing AND (have not received it yet OR it dropped price in-place)
+            is_price_drop = listing.id in price_drops
             matching_users = [
                 u
                 for u in active_users
-                if listing.id in unnotified_ids_by_user.get(str(u.chat_id), set())
+                if (
+                    is_price_drop
+                    or listing.id in unnotified_ids_by_user.get(str(u.chat_id), set())
+                )
                 and self.filter_engine.matches_user(u, listing, tentative=True)
             ]
 
             # Fallback for single-admin / legacy mode if no user matched via multi-user
             if not matching_users and not getattr(settings, "ENABLE_MULTI_USER", True):
                 admin_cid = str(settings.TELEGRAM_CHAT_ID)
-                if listing.id in unnotified_ids_by_user.get(
-                    admin_cid, set()
+                if (
+                    is_price_drop
+                    or listing.id in unnotified_ids_by_user.get(admin_cid, set())
                 ) and self.filter_engine.matches(listing):
                     matching_users = [u for u in active_users if str(u.chat_id) == admin_cid]
 
@@ -370,6 +373,27 @@ class RealEstateOrchestrator:
                             )
                         if details.get("price_label"):
                             myhome_label = details.get("price_label")
+
+            # Re-verify in-place price drop after live statement detail enrichment
+            if listing.id in price_drops:
+                old_price = price_drops[listing.id]
+                drop = (
+                    round(old_price - float(listing.price_usd), 2)
+                    if (listing.price_usd and listing.price_usd > 0)
+                    else 0.0
+                )
+                if drop >= 1.0:
+                    listing.previous_price_usd = old_price
+                    listing.price_drop_usd = drop
+                else:
+                    listing.previous_price_usd = None
+                    listing.price_drop_usd = None
+                    price_drops.pop(listing.id, None)
+                    matching_users = [
+                        u
+                        for u in matching_users
+                        if listing.id in unnotified_ids_by_user.get(str(u.chat_id), set())
+                    ]
 
             # Re-verify baseline filter hygiene with enriched live price, condition & status
             if not self.filter_engine.matches_hygiene(listing):

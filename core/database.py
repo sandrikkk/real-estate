@@ -156,6 +156,7 @@ class DatabaseEngine:
         self._ensure_db_dir()
         self.seen_ids_path = Path(self.db_path).parent / "seen_ids.txt"
         self._seen_ids = self._load_seen_ids()
+        self._seen_prices: Dict[str, float] = {}
         self.user_seen_path = Path(self.db_path).parent / "user_seen.json"
         self._user_seen: Dict[str, Set[str]] = defaultdict(set)
         self._load_user_seen()
@@ -507,6 +508,54 @@ class DatabaseEngine:
 
         return [lid for lid in listing_ids if lid not in self._seen_ids and lid not in seen_in_db]
 
+    def classify_scraped_listings(self, listings: list) -> tuple[list, dict]:
+        """Batch-classifies scraped listings into genuinely new listings and existing listings
+        whose price_usd dropped strictly below the stored price_usd (with 0 extra D1 row reads)."""
+        if not listings:
+            return [], {}
+
+        to_check = [item.id for item in listings if item.id and item.id not in self._seen_prices]
+        if to_check:
+            CHUNK_SIZE = 50
+            with self._connection() as conn:
+                cursor = conn.cursor()
+                for i in range(0, len(to_check), CHUNK_SIZE):
+                    chunk = to_check[i : i + CHUNK_SIZE]
+                    placeholders = ",".join(["?"] * len(chunk))
+                    sql = f"SELECT id, price_usd FROM properties WHERE id IN ({placeholders})"
+                    cursor.execute(sql, tuple(chunk))
+                    for row in cursor.fetchall():
+                        lid = row["id"] if hasattr(row, "__getitem__") else row[0]
+                        raw_price = row["price_usd"] if hasattr(row, "__getitem__") else row[1]
+                        self._seen_ids.add(lid)
+                        if raw_price is not None:
+                            try:
+                                self._seen_prices[lid] = float(raw_price)
+                            except (TypeError, ValueError):
+                                pass
+
+        candidates = []
+        price_drops = {}
+        for item in listings:
+            lid = item.id
+            stored_price = self._seen_prices.get(lid)
+            if stored_price is None and lid not in self._seen_ids:
+                candidates.append(item)
+            elif (
+                stored_price is not None
+                and item.price_usd
+                and item.price_usd > 0
+                and item.price_usd < stored_price
+            ):
+                drop = round(stored_price - float(item.price_usd), 2)
+                if drop >= 1.0:
+                    item.previous_price_usd = stored_price
+                    item.price_drop_usd = drop
+                    price_drops[lid] = stored_price
+                    candidates.append(item)
+
+        return candidates, price_drops
+
     def mark_user_notified(self, chat_id: str, listing_id: str):
         cid = str(chat_id)
         if listing_id not in self._user_seen[cid]:
@@ -565,6 +614,8 @@ class DatabaseEngine:
 
     def save_listing(self, listing: PropertyListing) -> bool:
         self._append_seen_id(listing.id)
+        if listing.id and listing.price_usd and listing.price_usd > 0:
+            self._seen_prices[listing.id] = float(listing.price_usd)
         with self._connection() as conn:
             cursor = conn.cursor()
             try:
@@ -648,9 +699,13 @@ class DatabaseEngine:
 
         for item in listings:
             self._append_seen_id(item.id)
+            if item.id and item.price_usd and item.price_usd > 0:
+                prev = self._seen_prices.get(item.id)
+                if prev is None or float(item.price_usd) < prev:
+                    self._seen_prices[item.id] = float(item.price_usd)
 
         sql = """
-            INSERT OR IGNORE INTO properties (
+            INSERT INTO properties (
                 id, source, source_id, deal_type, title, description,
                 price_usd, price_gel, area_m2, price_per_m2,
                 city, district, subdistrict, street,
@@ -660,6 +715,11 @@ class DatabaseEngine:
                 metro_station_id, condition_id, is_hot_deal, phone_number,
                 is_owner, user_type
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                price_usd = excluded.price_usd,
+                price_gel = COALESCE(excluded.price_gel, properties.price_gel),
+                price_per_m2 = excluded.price_per_m2
+            WHERE excluded.price_usd > 0 AND excluded.price_usd < properties.price_usd
         """
 
         params_list = []

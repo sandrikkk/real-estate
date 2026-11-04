@@ -97,6 +97,37 @@ class TestTelegramFormatting(unittest.TestCase):
         self.assertIn("👤 <b>სააგენტო (Agent)</b>", msg)
         self.assertIn("<code>599123***</code>", msg)
 
+    def test_in_place_price_drop_formatting_and_no_double_line_with_dup_info(self):
+        listing = PropertyListing(
+            id="myhome_5555",
+            source="myhome",
+            source_id="5555",
+            title="იყიდება ბინა საბურთალოზე",
+            price_usd=64999.0,
+            previous_price_usd=65000.0,
+            price_drop_usd=1.0,
+            area_m2=50.0,
+            rooms=2,
+            district="საბურთალო",
+            url="https://www.myhome.ge/ka/pr/5555",
+            is_owner=True,
+        )
+        msg = self.notifier.format_message(listing)
+        self.assertIn("🔻 <b>ფასი დააკლდა!</b>", msg)
+        self.assertIn("📉 წინა ფასი: <b>$65,000</b> | დაკლებულია: <b>-$1</b>", msg)
+
+        # When dup_info also has is_strictly_lower=True, "📉 წინა ფასი:" must appear only once
+        dup_info = {
+            "duplicate_count": 2,
+            "is_strictly_lower": True,
+            "previous_best_price_usd": 65000.0,
+            "price_drop_usd": 1.0,
+            "best_price_usd": 64999.0,
+            "best_price_url": "https://www.myhome.ge/ka/pr/5555",
+        }
+        msg_with_dup = self.notifier.format_message(listing, dup_info=dup_info)
+        self.assertEqual(msg_with_dup.count("📉 წინა ფასი:"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

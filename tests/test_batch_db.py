@@ -196,6 +196,66 @@ class TestBatchDatabaseOperations(unittest.TestCase):
         self.assertEqual(row["phone_number"], "+995 555 12 34 56")
         self.assertEqual(int(row["is_bargain"]), 1)
 
+    def test_classify_scraped_listings_detects_new_and_price_drops_only(self):
+        l1 = PropertyListing(
+            id="myhome_1",
+            source="myhome",
+            source_id="1",
+            title="Apt 1",
+            price_usd=70000.0,
+            area_m2=55.0,
+            url="https://myhome.ge/1",
+        )
+        l2 = PropertyListing(
+            id="myhome_2",
+            source="myhome",
+            source_id="2",
+            title="Apt 2",
+            price_usd=65000.0,
+            area_m2=50.0,
+            url="https://myhome.ge/2",
+        )
+        self.db.save_listings_batch([l1, l2])
+
+        # Cold-start simulation (clear in-memory caches as in stateless CI)
+        self.db._seen_ids.clear()
+        self.db._seen_prices.clear()
+
+        l1_dropped = PropertyListing(
+            id="myhome_1",
+            source="myhome",
+            source_id="1",
+            title="Apt 1",
+            price_usd=69999.0,  # $1 drop
+            area_m2=55.0,
+            url="https://myhome.ge/1",
+        )
+        l2_same = PropertyListing(
+            id="myhome_2",
+            source="myhome",
+            source_id="2",
+            title="Apt 2",
+            price_usd=65000.0,  # unchanged
+            area_m2=50.0,
+            url="https://myhome.ge/2",
+        )
+        l3_new = PropertyListing(
+            id="myhome_3",
+            source="myhome",
+            source_id="3",
+            title="Apt 3",
+            price_usd=60000.0,  # brand new
+            area_m2=48.0,
+            url="https://myhome.ge/3",
+        )
+
+        candidates, price_drops = self.db.classify_scraped_listings([l1_dropped, l2_same, l3_new])
+        self.assertEqual([c.id for c in candidates], ["myhome_1", "myhome_3"])
+        self.assertEqual(price_drops, {"myhome_1": 70000.0})
+        self.assertEqual(l1_dropped.previous_price_usd, 70000.0)
+        self.assertEqual(l1_dropped.price_drop_usd, 1.0)
+        self.assertIsNone(l3_new.previous_price_usd)
+
 
 if __name__ == "__main__":
     unittest.main()

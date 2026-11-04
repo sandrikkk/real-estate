@@ -133,8 +133,10 @@ class PropertyListing(BaseModel):
         None  # "myhome" for official MyHome label, "market" for benchmark calculation
     )
 
-    # Duplicate detection fields
+    # Duplicate detection & in-place price drop fields
     duplicate_group_id: Optional[str] = None
+    previous_price_usd: Optional[float] = None
+    price_drop_usd: Optional[float] = None
 
     @model_validator(mode="after")
     def compute_fields(self):
