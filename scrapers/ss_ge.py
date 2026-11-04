@@ -147,17 +147,6 @@ class SSGeScraper(BaseScraper):
                 pass
         return AsyncSession(impersonate="chrome124")
 
-    async def fetch_html(self, url: str) -> Optional[str]:
-        if "ss.ge" in url:
-            try:
-                async with self._create_session(use_origin_resolve=True) as session:
-                    resp = await session.get(url, headers=self.headers, timeout=self.timeout)
-                    if resp.status_code == 200 and resp.text:
-                        return resp.text
-            except Exception:
-                pass
-        return await super().fetch_html(url)
-
     @staticmethod
     def _resolve_subdistrict_ids(filters: SearchFilters) -> List[int]:
         target_districts = filters.whitelist_districts or filters.target_districts
