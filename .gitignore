@@ -34,3 +34,11 @@ data/*.db-journal
 data/*.txt
 data/*.json
 data/*.tmp
+
+# Cloudflare Wrangler local config and ephemeral secrets (never commit resource IDs or .dev.vars)
+cloudflare/wrangler.toml
+!cloudflare/wrangler.toml.example
+.dev.vars
+.dev.vars.*
+.wrangler/
+uv.lock

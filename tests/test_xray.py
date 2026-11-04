@@ -483,6 +483,69 @@ class TestXRayEngine(unittest.TestCase):
         self.assertEqual(parsed["author_listings_count"], 474)
         self.assertEqual(parsed["phone_number"], "+995 577 95 49 66")
 
+    def test_worker_auto_deploy_security_and_fail_closed(self):
+        from pathlib import Path
+        from scripts.deploy_worker import (
+            extract_worker_name,
+            parse_bindings_from_cf_settings,
+            render_wrangler_toml,
+        )
+
+        # 1. Worker name extraction from CLOUDFLARE_PROXY_URL
+        self.assertEqual(
+            extract_worker_name("", "https://soft-smoke-33e0.iashvilisandro7.workers.dev"),
+            "soft-smoke-33e0",
+        )
+        self.assertEqual(
+            extract_worker_name("custom-worker", "https://soft-smoke-33e0.iashvilisandro7.workers.dev"),
+            "custom-worker",
+        )
+
+        # 2. Binding discovery from Cloudflare Worker settings API payload
+        sample_cf_settings = {
+            "success": True,
+            "result": {
+                "bindings": [
+                    {"name": "USERS_KV", "type": "kv_namespace", "namespace_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90"},
+                    {"name": "DB", "type": "d1", "id": "11112222-3333-4444-5555-666677778888", "database_name": "real-estate-db"},
+                    {"name": "TELEGRAM_BOT_TOKEN", "type": "secret_text"},
+                ]
+            },
+        }
+        bindings = parse_bindings_from_cf_settings(sample_cf_settings)
+        self.assertEqual(bindings["kv_namespace_id"], "a1b2c3d4e5f60718293a4b5c6d7e8f90")
+        self.assertEqual(bindings["d1_database_id"], "11112222-3333-4444-5555-666677778888")
+        self.assertEqual(bindings["d1_database_name"], "real-estate-db")
+
+        # 3. Fail-closed validation: missing or unsafe IDs must raise ValueError before wrangler runs
+        with self.assertRaises(ValueError):
+            render_wrangler_toml("soft-smoke-33e0", "", "11112222-3333-4444-5555-666677778888")
+        with self.assertRaises(ValueError):
+            render_wrangler_toml("soft-smoke-33e0", "a1b2c3d4e5f60718293a4b5c6d7e8f90", "")
+        with self.assertRaises(ValueError):
+            render_wrangler_toml("soft-smoke-33e0", "YOUR_KV_NAMESPACE_ID", "11112222-3333-4444-5555-666677778888")
+
+        # 4. Safe TOML generation preserves vars & bindings
+        toml_text = render_wrangler_toml(
+            "soft-smoke-33e0",
+            "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "11112222-3333-4444-5555-666677778888",
+            "real-estate-db",
+        )
+        self.assertIn('name = "soft-smoke-33e0"', toml_text)
+        self.assertIn("keep_vars = true", toml_text)
+        self.assertIn('binding = "USERS_KV"', toml_text)
+        self.assertIn('binding = "DB"', toml_text)
+
+        # 5. Repository hygiene: wrangler.toml is gitignored and no live wrangler.toml exists on disk
+        repo_root = Path(__file__).resolve().parent.parent
+        gitignore_text = (repo_root / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("cloudflare/wrangler.toml", gitignore_text)
+        self.assertIn(".dev.vars", gitignore_text)
+        self.assertFalse((repo_root / "cloudflare" / "wrangler.toml").exists())
+        self.assertTrue((repo_root / "cloudflare" / "wrangler.toml.example").exists())
+        self.assertTrue((repo_root / ".github" / "workflows" / "deploy-worker.yml").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

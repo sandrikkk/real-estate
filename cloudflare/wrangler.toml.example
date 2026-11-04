@@ -1,0 +1,18 @@
+# Example Cloudflare Worker configuration template.
+# DO NOT commit a real cloudflare/wrangler.toml with resource IDs or secrets!
+# Instead, run `python scripts/deploy_worker.py` which auto-discovers existing
+# Worker bindings and generates an ephemeral wrangler.toml only during deploy.
+
+name = "YOUR_WORKER_NAME"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+keep_vars = true
+
+[[kv_namespaces]]
+binding = "USERS_KV"
+id = "YOUR_KV_NAMESPACE_ID"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "real-estate-db"
+database_id = "YOUR_D1_DATABASE_ID"
