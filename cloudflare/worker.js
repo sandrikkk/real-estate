@@ -434,7 +434,7 @@ async function handleTelegramWebhook(request, env) {
 
     // 2. Handle Text Messages
     if (update.message && update.message.text) {
-      await handleMessage(update.message, token, kv);
+      await handleMessage(update.message, token, kv, env);
       return new Response("OK");
     }
   } catch (err) {
@@ -448,7 +448,7 @@ async function handleTelegramWebhook(request, env) {
 /**
  * Processes text messages & bot commands
  */
-async function handleMessage(msg, token, kv) {
+async function handleMessage(msg, token, kv, env) {
   const chatId = msg.chat.id;
   const text = msg.text.trim();
   const userKey = `USER_${chatId}`;
@@ -571,7 +571,8 @@ async function handleMessage(msg, token, kv) {
     await kv.put(userKey, JSON.stringify(user));
     const welcome = (
       `🏢 <b>მოგესალმებით Tbilisi Real Estate Radar-ში!</b>\n\n` +
-      `ეს ბოტი ავტომატურად ასკანერებს <b>MyHome.ge</b> და <b>SS.ge</b> პორტალებს 24/7 რეჟიმში და ახალ ბინებს მომენტალურად გიგზავნით.\n\n` +
+      `ეს ბოტი ავტომატურად ასკანერებს <b>MyHome.ge</b> და <b>SS.ge</b> პორტალებს 24/7 რეჟიმში და ახალ ბინებს მომენტალურად გიგზავნით.\n` +
+      `🔍 <b>რენტგენი (X-Ray):</b> ჩააგდეთ ჩატში ბინის ლინკი, ტელეფონის ნომერი ან FB პოსტის ტექსტი გადასამოწმებლად.\n\n` +
       formatSettingsSummary(user)
     );
     await sendTelegram(token, "sendMessage", {
@@ -629,10 +630,22 @@ async function handleMessage(msg, token, kv) {
     return;
   }
 
+  // On-Demand X-Ray for MyHome/SS.ge URLs, Georgian phone numbers, or Facebook apartment texts
+  const xrayReply = await handleXRayQuery(text, env);
+  if (xrayReply) {
+    await sendTelegram(token, "sendMessage", {
+      chat_id: chatId,
+      text: xrayReply,
+      parse_mode: "HTML",
+      disable_web_page_preview: true
+    });
+    return;
+  }
+
   // Fallback for unrecognized text
   await sendTelegram(token, "sendMessage", {
     chat_id: chatId,
-    text: `გთხოვთ გამოიყენოთ მენიუ ან ბრძანება /filter პარამეტრების სამართავად.`,
+    text: `გთხოვთ გამოიყენოთ მენიუ ან ბრძანება /filter პარამეტრების სამართავად, ან ჩააგდეთ ბინის ლინკი / ტელეფონის ნომერი „რენტგენზე“ შესამოწმებლად.`,
     reply_markup: getMainKeyboard(user)
   });
 }
@@ -952,6 +965,476 @@ async function sendTelegram(token, method, payload) {
     return await res.json();
   } catch (e) {
     console.error(`Telegram API error [${method}]:`, e);
+    return null;
+  }
+}
+
+/**
+ * ============================================================================
+ * ON-DEMAND X-RAY ("რენტგენი") FOR LINKS, PHONE NUMBERS & FACEBOOK POST TEXT
+ * ============================================================================
+ */
+const XRAY_DISTRICT_KEYWORDS = [
+  ["საბურთალო", "საბურთალო"],
+  ["ვაკე", "ვაკე"],
+  ["ვაკის", "ვაკე"],
+  ["დიდი დიღომ", "დიდი დიღომი"],
+  ["დიღმის მასივ", "დიღმის მასივი"],
+  ["დიღომ", "დიღომი"],
+  ["ისან", "ისანი"],
+  ["სამგორ", "სამგორი"],
+  ["ვარკეთილ", "ვარკეთილი"],
+  ["გლდან", "გლდანი"],
+  ["მუხიან", "მუხიანი"],
+  ["ნაძალადევ", "ნაძალადევი"],
+  ["სანზონ", "სანზონა"],
+  ["ჩუღურეთ", "ჩუღურეთი"],
+  ["მთაწმინდ", "მთაწმინდა"],
+  ["სოლოლაკ", "სოლოლაკი"],
+  ["კრწანის", "კრწანისი"],
+  ["ორთაჭალ", "ორთაჭალა"],
+  ["ავლაბარ", "ავლაბარი"],
+  ["ავლაბრ", "ავლაბარი"],
+  ["დიდუბ", "დიდუბე"],
+  ["ბაგებ", "ბაგები"],
+  ["ლის", "ლისი"]
+];
+
+function formatGeorgianPhone(phone9) {
+  return `+995 ${phone9.slice(0, 3)} ${phone9.slice(3, 5)} ${phone9.slice(5, 7)} ${phone9.slice(7, 9)}`;
+}
+
+function extract9DigitPhone(text) {
+  if (!text) return null;
+  const cleaned = String(text).replace(/https?:\/\/\S+/g, " ");
+  const m = cleaned.match(/(?:\+?995[\s\-.]*)?(5\d{2}[\s\-.]*\d{2}[\s\-.]*\d{2}[\s\-.]*\d{2}|\b5\d{8}\b)/);
+  if (!m) return null;
+  const digits = m[1].replace(/\D/g, "");
+  return (digits.length === 9 && digits.startsWith("5")) ? digits : null;
+}
+
+function parseXRayInput(text) {
+  if (!text || typeof text !== "string") return null;
+  const stripped = text.trim();
+  if (!stripped || stripped.startsWith("/")) return null;
+  if (/^\d+(?:\.\d+)?\s*[-\s]\s*\d+(?:\.\d+)?$/.test(stripped)) return null;
+
+  const mhMatch = stripped.match(/https?:\/\/(?:www\.)?myhome\.ge\/(?:[a-z]{2}\/)?pr\/(\d+)(?:\/[^\s]*)?/i);
+  if (mhMatch) {
+    return {
+      kind: "url",
+      source: "myhome",
+      sourceId: mhMatch[1],
+      listingId: `myhome_${mhMatch[1]}`,
+      url: mhMatch[0],
+      phone9: extract9DigitPhone(stripped)
+    };
+  }
+
+  const ssMatch = stripped.match(/https?:\/\/(?:home\.|www\.)?ss\.ge\/[^\s]*?-(\d{5,12})\b/i);
+  if (ssMatch) {
+    return {
+      kind: "url",
+      source: "ss_ge",
+      sourceId: ssMatch[1],
+      listingId: `ss_ge_${ssMatch[1]}`,
+      url: ssMatch[0],
+      phone9: extract9DigitPhone(stripped)
+    };
+  }
+
+  let areaM2 = null;
+  const areaMatch = stripped.match(/\b(\d{2,3}(?:[.,]\d+)?)\s*(?:კვ\.?\s*მ|კვადრატ\S*|მ²|მ2|m2|m²|sqm)/i);
+  if (areaMatch) areaM2 = parseFloat(areaMatch[1].replace(",", "."));
+
+  let floor = null;
+  const floorMatch = stripped.match(/(?:მე[-\s]*)?(\d{1,2})(?:\s*\/\s*\d{1,2})?\s*სართულ\S*|სართულ\S*\s*[:-]?\s*(\d{1,2})/i);
+  if (floorMatch) floor = floorMatch[1] || floorMatch[2];
+
+  let rooms = null;
+  const roomsMatch = stripped.match(/\b(\d)\s*[-\s]*ოთახ\S*/i);
+  if (roomsMatch) rooms = parseInt(roomsMatch[1], 10);
+
+  let priceUsd = null;
+  let priceMatch = stripped.match(/(?:\$\s*(\d{2,3}(?:[,\s]\d{3})+|\d{4,6})|(\d{2,3}(?:[,\s]\d{3})+|\d{4,6})\s*(?:\$|დოლარ\S*|usd))/i);
+  if (!priceMatch) {
+    priceMatch = stripped.match(/ფასი\s*[:-]?\s*(\d{2,3}(?:[,\s]\d{3})+|\d{4,6})\b/i);
+  }
+  if (priceMatch) {
+    const rawP = priceMatch[1] || priceMatch[2];
+    const val = parseFloat(rawP.replace(/[,\s]/g, ""));
+    if (val >= 10000 && val <= 2000000) priceUsd = val;
+  }
+
+  let district = null;
+  const lower = stripped.toLowerCase();
+  for (const [stem, canonical] of XRAY_DISTRICT_KEYWORDS) {
+    if (lower.includes(stem)) {
+      district = canonical;
+      break;
+    }
+  }
+
+  const phone9 = extract9DigitPhone(stripped);
+  const hasFbSignal = areaM2 !== null && (district !== null || priceUsd !== null || floor !== null || rooms !== null);
+  if (hasFbSignal) {
+    return {
+      kind: "fb_text",
+      phone9,
+      formattedPhone: phone9 ? formatGeorgianPhone(phone9) : null,
+      area_m2: areaM2,
+      floor,
+      rooms,
+      price_usd: priceUsd,
+      district
+    };
+  }
+
+  if (phone9) {
+    return {
+      kind: "phone",
+      phone9,
+      formattedPhone: formatGeorgianPhone(phone9)
+    };
+  }
+
+  return null;
+}
+
+async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ka,en-US;q=0.9,en;q=0.8"
+  };
+
+  try {
+    if (source === "myhome") {
+      const apiUrl = `https://api-statements.tnet.ge/v1/statements/${sourceId}`;
+      const res = await fetch(apiUrl, { headers: { ...headers, "Origin": "https://www.myhome.ge", "Referer": "https://www.myhome.ge/" } });
+      if (res.ok) {
+        const json = await res.json();
+        const st = json?.data?.statement || json?.data || {};
+        const phone9 = extract9DigitPhone(st.user_phone_number || st.phone_number || st.comment || "");
+        const ut = String(st.user_type?.type || st.user_type || "").toLowerCase();
+        const isOwner = ut === "physical" || ut === "owner" || st.is_owner === true ? 1 : (ut ? 0 : 1);
+        return {
+          id: `myhome_${sourceId}`,
+          source: "myhome",
+          source_id: String(sourceId),
+          url: rawUrl || `https://www.myhome.ge/ka/pr/${sourceId}/`,
+          price_usd: Number(st.price?.[2]?.price_total || st.price_usd || st.total_price || 0),
+          area_m2: Number(st.area || 0),
+          floor: String(st.floor || ""),
+          rooms: Number(st.room_type_id || st.rooms || 0),
+          district: st.district_name || st.urban_name || "",
+          is_owner: isOwner,
+          user_type: ut || null,
+          phone_number: phone9 ? formatGeorgianPhone(phone9) : null,
+          author_id: st.user_id ? String(st.user_id) : null,
+          author_listings_count: Number(st.user_statements_count || st.statements_count || 0) || null
+        };
+      }
+    }
+
+    const pageUrl = rawUrl || (source === "myhome"
+      ? `https://www.myhome.ge/ka/pr/${sourceId}/`
+      : `https://home.ss.ge/ka/udzravi-qoneba/${sourceId}`);
+    const res = await fetch(pageUrl, { headers });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (!nextMatch) return null;
+    const nextData = JSON.parse(nextMatch[1]);
+    const pp = nextData?.props?.pageProps || {};
+    const st = pp?.dehydratedState?.queries?.[0]?.state?.data?.data?.statement || pp?.applicationData || pp?.statement || {};
+    const phone9 = extract9DigitPhone(st.user_phone_number || st.phoneNumber || st.phone_number || st.description || "");
+    const isAgency = Boolean(st.isForAgency || st.agencyId || st.commercialRealEstateType);
+    return {
+      id: `${source}_${sourceId}`,
+      source,
+      source_id: String(sourceId),
+      url: pageUrl,
+      price_usd: Number(st.price?.priceUsd || st.price_usd || st.total_price || 0),
+      area_m2: Number(st.totalArea || st.area || 0),
+      floor: String(st.floor || ""),
+      rooms: Number(st.rooms || 0),
+      district: st.address?.districtTitle || st.district_name || "",
+      is_owner: isAgency ? 0 : 1,
+      user_type: isAgency ? "agency" : "physical",
+      phone_number: phone9 ? formatGeorgianPhone(phone9) : null,
+      author_id: st.userId || st.user_id ? String(st.userId || st.user_id) : null,
+      author_listings_count: Number(st.userApplicationCount || st.user_statements_count || 0) || null
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+function evaluateWorkerBrokerVerdict(target, relatedRows) {
+  const allRows = [];
+  const seen = new Set();
+  if (target && target.id) {
+    allRows.push(target);
+    seen.add(target.id);
+  }
+  for (const r of relatedRows || []) {
+    if (r && r.id && !seen.has(r.id)) {
+      allRows.push(r);
+      seen.add(r.id);
+    }
+  }
+
+  const aptKeys = new Set();
+  let maxAuthorCount = 0;
+  let anyNonOwner = false;
+  let anyAgentType = false;
+
+  for (const r of allRows) {
+    if (r.is_owner === 0 || r.is_owner === false) anyNonOwner = true;
+    const ut = String(r.user_type || "").toLowerCase();
+    if (["agent", "agency", "broker", "developer"].includes(ut)) anyAgentType = true;
+    const cnt = parseInt(r.author_listings_count, 10);
+    if (!isNaN(cnt) && cnt > maxAuthorCount) maxAuthorCount = cnt;
+    const dist = String(r.district || "").trim();
+    const areaBucket = Math.round((Number(r.area_m2) || 0) / 2);
+    if (dist || areaBucket) aptKeys.add(`${dist}_${areaBucket}`);
+  }
+
+  const uniqueApartments = Math.max(aptKeys.size, allRows.length > 0 && aptKeys.size === 0 ? allRows.length : aptKeys.size);
+  const isBroker = anyNonOwner || anyAgentType || maxAuthorCount >= 3 || uniqueApartments >= 2;
+
+  if (isBroker) {
+    const reasons = [];
+    if (uniqueApartments >= 2 || allRows.length >= 2) {
+      reasons.push(`ბაზაში ამ ნომრით/ავტორით იძებნება <b>${allRows.length} განცხადება</b> (${uniqueApartments} სხვადასხვა ბინა)`);
+    } else if (maxAuthorCount >= 3) {
+      reasons.push(`პორტალზე ავტორს უფიქსირდება <b>${maxAuthorCount} განცხადება</b>`);
+    }
+    if (anyAgentType || anyNonOwner) {
+      reasons.push("პროფილი მონიშნულია როგორც სააგენტო/მაკლერი");
+    }
+    return {
+      isBroker: true,
+      badge: "🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო",
+      reason: reasons.length ? reasons.join(" • ") : "დაფიქსირდა სააგენტოს ნიშნები"
+    };
+  }
+
+  return {
+    isBroker: false,
+    badge: "✅ რეალური მესაკუთრე (Owner)",
+    reason: "ბაზაში და პორტალზე ფიქსირდება მხოლოდ 1 ბინა (სააგენტოს ნიშნების გარეშე)"
+  };
+}
+
+function workerFloorsMatch(f1, f2) {
+  const a = String(f1 || "").trim().split("/")[0].trim();
+  const b = String(f2 || "").trim().split("/")[0].trim();
+  if (!a || !b) return true;
+  return a === b;
+}
+
+function workerRoomsMatch(r1, r2) {
+  const a = parseInt(r1, 10) || 0;
+  const b = parseInt(r2, 10) || 0;
+  if (a <= 0 || b <= 0) return true;
+  return a === b;
+}
+
+async function handleXRayQuery(text, env) {
+  const parsed = parseXRayInput(text);
+  if (!parsed) return null;
+
+  const db = env?.DB;
+  if (!db) {
+    return "⚠️ D1 ბაზა არ არის დაკავშირებული Cloudflare Worker-თან.";
+  }
+
+  try {
+    if (parsed.kind === "phone") {
+      const { results } = await db
+        .prepare("SELECT * FROM properties WHERE phone_number IN (?, ?) ORDER BY scraped_at DESC LIMIT 30")
+        .bind(parsed.formattedPhone, parsed.phone9)
+        .all();
+      const rows = results || [];
+      if (rows.length === 0) {
+        return (
+          `🔎 <b>ტელეფონის რენტგენი:</b> <code>${parsed.formattedPhone}</code>\n\n` +
+          `ℹ️ ჩვენს ბაზაში ამ ნომერზე განცხადებები ჯერ არ ფიქსირდება.`
+        );
+      }
+      const verdict = evaluateWorkerBrokerVerdict(rows[0], rows);
+      const lines = [
+        `🔎 <b>ტელეფონის რენტგენი:</b> <code>${parsed.formattedPhone}</code>`,
+        `👤 <b>სტატუსი:</b> ${verdict.badge}`,
+        `📌 ${verdict.reason}`,
+        "",
+        `📋 <b>ნაპოვნი განცხადებები (${rows.length}):</b>`
+      ];
+      for (const r of rows.slice(0, 5)) {
+        const p = Math.round(Number(r.price_usd) || 0).toLocaleString();
+        const area = Number(r.area_m2) || 0;
+        const dist = r.district || "უცნობი უბანი";
+        const src = r.source === "myhome" ? "MyHome" : "SS.ge";
+        lines.push(`• <a href="${r.url || "#"}">${src}</a> — <b>$${p}</b> | ${area} მ² | ${dist}`);
+      }
+      return lines.join("\n");
+    }
+
+    let target = null;
+    if (parsed.kind === "url") {
+      const row = await db
+        .prepare("SELECT * FROM properties WHERE id = ?")
+        .bind(parsed.listingId)
+        .first();
+      if (row) {
+        target = row;
+      }
+      if (!target || (!target.phone_number && !target.author_id)) {
+        const live = await fetchLiveStatementDetails(parsed.source, parsed.sourceId, parsed.url);
+        if (live) {
+          target = target ? { ...live, ...target, phone_number: target.phone_number || live.phone_number, author_id: target.author_id || live.author_id, author_listings_count: target.author_listings_count || live.author_listings_count } : live;
+        }
+      }
+    } else if (parsed.kind === "fb_text") {
+      target = {
+        id: "fb_input",
+        source: "facebook",
+        price_usd: parsed.price_usd || 0,
+        area_m2: parsed.area_m2 || 0,
+        district: parsed.district || "",
+        floor: parsed.floor || "",
+        rooms: parsed.rooms || 0,
+        phone_number: parsed.formattedPhone,
+        is_owner: null,
+        user_type: null
+      };
+    }
+
+    if (!target) {
+      return (
+        "🔎 <b>განცხადების რენტგენი</b>\n\n" +
+        "ℹ️ ეს განცხადება ჩვენს ბაზაში ჯერ არ იძებნება და პორტალიდან მონაცემების წამოღება ვერ მოხერხდა."
+      );
+    }
+
+    const phone9 = parsed.phone9 || extract9DigitPhone(target.phone_number || "");
+    const relatedMap = new Map();
+    if (phone9) {
+      const fmt = formatGeorgianPhone(phone9);
+      const { results } = await db
+        .prepare("SELECT * FROM properties WHERE phone_number IN (?, ?) ORDER BY scraped_at DESC LIMIT 30")
+        .bind(fmt, phone9)
+        .all();
+      for (const r of results || []) relatedMap.set(r.id, r);
+    }
+    if (target.author_id) {
+      const { results } = await db
+        .prepare("SELECT * FROM properties WHERE author_id = ? ORDER BY scraped_at DESC LIMIT 30")
+        .bind(String(target.author_id))
+        .all();
+      for (const r of results || []) relatedMap.set(r.id, r);
+    }
+
+    const verdict = evaluateWorkerBrokerVerdict(target, Array.from(relatedMap.values()));
+
+    // Find exact duplicates
+    const dupMap = new Map();
+    if (target.group_id) {
+      const { results } = await db
+        .prepare("SELECT * FROM properties WHERE group_id = ? AND id != ?")
+        .bind(target.group_id, target.id || "")
+        .all();
+      for (const r of results || []) dupMap.set(r.id, r);
+    }
+    if (target.district && Number(target.area_m2) > 0) {
+      const area = Number(target.area_m2);
+      const { results } = await db
+        .prepare("SELECT * FROM properties WHERE district = ? AND area_m2 BETWEEN ? AND ? AND id != ? ORDER BY price_usd ASC LIMIT 25")
+        .bind(target.district, area - 1.5, area + 1.5, target.id || "")
+        .all();
+      for (const r of results || []) {
+        if (!workerFloorsMatch(target.floor, r.floor)) continue;
+        if (!workerRoomsMatch(target.rooms, r.rooms)) continue;
+        dupMap.set(r.id, r);
+      }
+    }
+    const duplicates = Array.from(dupMap.values()).sort((a, b) => (Number(a.price_usd) || 0) - (Number(b.price_usd) || 0));
+
+    // District benchmark
+    let bench = null;
+    if (target.district) {
+      const bRow = await db
+        .prepare("SELECT ROUND(AVG(price_per_m2)) AS avg_m2, COUNT(*) AS cnt FROM properties WHERE district = ? AND price_per_m2 > 300 AND price_per_m2 < 6000")
+        .bind(target.district)
+        .first();
+      if (bRow && bRow.avg_m2 && Number(bRow.cnt) >= 1) {
+        bench = { avg_m2: Math.round(Number(bRow.avg_m2)), count: Number(bRow.cnt) };
+      }
+    }
+
+    const currPrice = Number(target.price_usd) || 0;
+    const initPrice = Number(target.initial_price_usd) || currPrice;
+    const areaM2 = Number(target.area_m2) || 0;
+    const priceM2 = currPrice > 0 && areaM2 > 0 ? Math.round(currPrice / areaM2) : 0;
+
+    const headerTitle = parsed.kind === "fb_text"
+      ? "🔎 <b>Facebook განცხადების რენტგენი</b>"
+      : "🔎 <b>განცხადების რენტგენი (X-Ray)</b>";
+    const lines = [
+      headerTitle,
+      `👤 <b>გამყიდველი:</b> ${verdict.badge}`,
+      `📌 ${verdict.reason}`
+    ];
+
+    if (currPrice > 0) {
+      lines.push("");
+      lines.push(`💰 <b>მიმდინარე ფასი:</b> $${Math.round(currPrice).toLocaleString()}${priceM2 ? ` ($${priceM2.toLocaleString()}/მ²)` : ""}`);
+      if (initPrice > 0) {
+        lines.push(`📉 პირვანდელი ფასი: <b>$${Math.round(initPrice).toLocaleString()}</b>`);
+        const diff = Math.round(currPrice - initPrice);
+        if (diff < 0) {
+          const pct = Math.round((Math.abs(diff) / initPrice) * 1000) / 10;
+          lines.push(`✅ დაკლებულია: <b>-$${Math.abs(diff).toLocaleString()} (-${pct}%)</b>`);
+        } else if (diff > 0) {
+          const pct = Math.round((diff / initPrice) * 1000) / 10;
+          lines.push(`📈 მომატებულია: <b>+$${diff.toLocaleString()} (+${pct}%)</b>`);
+        } else {
+          lines.push("➖ ფასი არ შეცვლილა (პირვანდელი ფასია)");
+        }
+      }
+    }
+
+    if (bench && priceM2 > 0) {
+      const diffPct = Math.round(((priceM2 - bench.avg_m2) / bench.avg_m2) * 100);
+      const sign = diffPct > 0 ? `+${diffPct}%` : `${diffPct}%`;
+      lines.push(`📊 <b>უბნის საშუალო ფასი (${target.district}):</b> $${bench.avg_m2.toLocaleString()}/მ² (${sign} საბაზროსთან)`);
+    }
+
+    lines.push("");
+    if (duplicates.length > 0) {
+      lines.push("🎯 <b>იგივე ბინა სხვაგან:</b>");
+      for (const dup of duplicates.slice(0, 4)) {
+        const dupPrice = Math.round(Number(dup.price_usd) || 0);
+        const dupSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
+        const dupOwner = dup.is_owner ? "მესაკუთრე ✅" : "სააგენტო 🕵️‍♂️";
+        let diffStr = "";
+        if (currPrice > 0 && dupPrice > 0) {
+          const delta = Math.round(dupPrice - currPrice);
+          if (delta < 0) diffStr = ` (<b>-$${Math.abs(delta).toLocaleString()} უფრო იაფად!</b>)`;
+          else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
+          else diffStr = " (იგივე ფასი)";
+        }
+        lines.push(`• <a href="${dup.url || "#"}">${dupSrc}</a> — <b>$${dupPrice.toLocaleString()}</b>${diffStr} | ${dupOwner}`);
+      }
+    } else {
+      lines.push("🎯 <b>იგივე ბინა სხვაგან:</b> დუბლიკატი სხვა პორტალზე არ იძებნება.");
+    }
+
+    return lines.join("\n");
+  } catch (err) {
+    console.error("X-Ray query error:", err);
     return null;
   }
 }

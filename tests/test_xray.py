@@ -240,6 +240,39 @@ class TestXRayEngine(unittest.TestCase):
         self.assertIn("$78,000", report)
         self.assertIn("-$5,000", report)
 
+    def test_cloudflare_worker_xray_integration(self):
+        worker_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "cloudflare",
+            "worker.js",
+        )
+        with open(worker_path, "r", encoding="utf-8") as f:
+            worker_src = f.read()
+
+        # 1. handleMessage receives env from handleTelegramWebhook
+        self.assertIn("await handleMessage(update.message, token, kv, env);", worker_src)
+        self.assertIn("async function handleMessage(msg, token, kv, env)", worker_src)
+
+        # 2. awaiting_price and awaiting_area state handlers precede handleXRayQuery
+        idx_price = worker_src.find('user.state === "awaiting_price"')
+        idx_area = worker_src.find('user.state === "awaiting_area"')
+        idx_xray = worker_src.find("await handleXRayQuery(text, env)")
+        self.assertGreater(idx_price, 0)
+        self.assertGreater(idx_area, idx_price)
+        self.assertGreater(idx_xray, idx_area)
+
+        # 3. Core X-Ray functions defined in cloudflare/worker.js
+        self.assertIn("function parseXRayInput(text)", worker_src)
+        self.assertIn("async function fetchLiveStatementDetails(", worker_src)
+        self.assertIn("async function handleXRayQuery(text, env)", worker_src)
+
+        # 4. Uses indexed phone_number IN (?, ?) and never unindexed LIKE '%...'
+        self.assertIn("phone_number IN (?, ?)", worker_src)
+        self.assertNotIn("phone_number LIKE '%", worker_src)
+
+        # 5. Balanced braces check
+        self.assertEqual(worker_src.count("{"), worker_src.count("}"))
+
 
 if __name__ == "__main__":
     unittest.main()
