@@ -349,7 +349,9 @@ class RealEstateOrchestrator:
             elif listing.source == "ss_ge":
                 ss_scraper = next((s for s in self.scrapers if s.name == "SS.ge"), None)
                 if ss_scraper and hasattr(ss_scraper, "fetch_statement_details"):
-                    details = await ss_scraper.fetch_statement_details(listing.source_id)
+                    details = await ss_scraper.fetch_statement_details(
+                        listing.url or listing.source_id
+                    )
                     if details:
                         live_usd = details.get("price_usd")
                         live_gel = details.get("price_gel")
@@ -364,6 +366,10 @@ class RealEstateOrchestrator:
                             listing.is_owner = bool(details["is_owner"])
                         elif details.get("agency_id") or details.get("agency_name"):
                             listing.is_owner = False
+                        if listing.is_owner is False and not listing.user_type:
+                            listing.user_type = str(details.get("user_entity_type") or "agent")
+                        elif listing.is_owner is True and not listing.user_type:
+                            listing.user_type = "physical"
                         if not listing.condition_id and details.get("condition_id"):
                             listing.condition_id = details.get("condition_id")
                             cond_obj = details.get("condition")

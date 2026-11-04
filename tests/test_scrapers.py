@@ -416,6 +416,108 @@ class TestScrapers(unittest.TestCase):
         self.assertEqual(ss_item.author_id, "u_8899")
         self.assertEqual(ss_item.author_listings_count, 5)
 
+    def test_ss_ge_build_api_payload(self):
+        scraper = SSGeScraper()
+        f_sale = SearchFilters(
+            deal_type="sale",
+            price_min_usd=45000,
+            price_max_usd=75000,
+            area_min_m2=40,
+            area_max_m2=65,
+            rooms_min=1,
+            owner_type="owner",
+            whitelist_districts=["დიდუბე", "ნაძალადევი"],
+        )
+        payload_1 = scraper._build_api_payload(f_sale, page=1)
+        self.assertEqual(payload_1["realEstateType"], 5)
+        self.assertEqual(payload_1["realEstateDealType"], 4)
+        self.assertEqual(payload_1["cityIdList"], [95])
+        self.assertEqual(payload_1["currencyId"], 2)
+        self.assertEqual(payload_1["priceType"], 1)
+        self.assertEqual(payload_1["priceFrom"], 45000)
+        self.assertEqual(payload_1["priceTo"], 75000)
+        self.assertEqual(payload_1["areaFrom"], 40)
+        self.assertEqual(payload_1["areaTo"], 65)
+        self.assertNotIn("rooms", payload_1)
+        self.assertEqual(payload_1["subdistrictIds"], [1, 37, 39, 41, 42])
+        self.assertEqual(payload_1["advancedSearch"], {"individualEntityOnly": True})
+        self.assertEqual(payload_1["page"], 1)
+        self.assertEqual(payload_1["order"], 1)
+
+        f_rent = SearchFilters(
+            deal_type="rent",
+            rent_price_min_usd=500,
+            rent_price_max_usd=1000,
+            rooms_min=2,
+            owner_type="all",
+        )
+        payload_2 = scraper._build_api_payload(f_rent, page=2)
+        self.assertEqual(payload_2["realEstateDealType"], 1)
+        self.assertEqual(payload_2["priceFrom"], 500)
+        self.assertEqual(payload_2["priceTo"], 1000)
+        self.assertEqual(payload_2["rooms"], [2, 3, 4, 5])
+        self.assertNotIn("advancedSearch", payload_2)
+        self.assertEqual(payload_2["page"], 2)
+
+    def test_ss_ge_parse_statement_details_data(self):
+        scraper = SSGeScraper()
+        api_details = {
+            "applicationId": 37161305,
+            "price": {"priceUsd": 75000, "priceGeo": 204000},
+            "applicationPhones": [{"phoneNumber": "571045829"}],
+            "userEntityType": "Broker",
+            "userId": "u-123",
+            "userApplicationCount": 16,
+            "state": "ახალი გარემონტებული",
+            "realEstateStatusId": 2,
+            "priceLevel": "საშუალო ფასი",
+            "description": {"ka": "იყიდება ბინა დიდუბეში"},
+        }
+        parsed = scraper._parse_statement_details_data(api_details)
+        self.assertIsNotNone(parsed)
+        self.assertFalse(parsed["is_owner"])
+        self.assertEqual(parsed["phone_number"], "+995 571 04 58 29")
+        self.assertEqual(parsed["condition_id"], 1)
+        self.assertEqual(parsed["condition_name"], "ახალი გარემონტებული")
+        self.assertEqual(parsed["status_id"], 2)
+        self.assertEqual(parsed["price_label"], "საშუალო ფასი")
+        self.assertEqual(parsed["comment"], "იყიდება ბინა დიდუბეში")
+        self.assertEqual(parsed["price_usd"], 75000.0)
+        self.assertEqual(parsed["price_gel"], 204000.0)
+        self.assertEqual(parsed["author_id"], "u-123")
+        self.assertEqual(parsed["author_listings_count"], 16)
+
+    def test_ss_ge_fetch_listings_uses_api_gateway_first(self):
+        scraper = SSGeScraper(max_pages=1)
+        html_called = False
+
+        async def mock_fetch_api(filters, page=1):
+            return [
+                {
+                    "applicationId": 37161305,
+                    "title": "იყიდება 2 ოთახიანი ბინა დიდუბეში",
+                    "price": {"priceUsd": 75000, "priceGeo": 204000},
+                    "totalArea": 54,
+                    "address": {"cityTitle": "თბილისი", "subdistrictTitle": "დიდუბე"},
+                    "type": 5,
+                    "dealType": 4,
+                    "detailUrl": "iyideba-2-otaxiani-bina-didubeshi-37161305",
+                }
+            ]
+
+        async def mock_fetch_html(url):
+            nonlocal html_called
+            html_called = True
+            return None
+
+        scraper._fetch_api_listings = mock_fetch_api
+        scraper.fetch_html = mock_fetch_html
+
+        results = asyncio.run(scraper.fetch_listings(self.filters))
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].id, "ss_ge_37161305")
+        self.assertFalse(html_called)
+
 
 if __name__ == "__main__":
     unittest.main()

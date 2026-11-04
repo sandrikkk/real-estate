@@ -27,6 +27,13 @@ DISTRICT_KEYWORDS: List[tuple[str, str]] = [
     ("ავლაბარ", "ავლაბარი"),
     ("ავლაბრ", "ავლაბარი"),
     ("დიდუბ", "დიდუბე"),
+    ("წერეთელ", "წერეთელი"),
+    ("წერეთლ", "წერეთელი"),
+    ("თემქ", "თემქა"),
+    ("ვაშლიჯვარ", "ვაშლიჯვარი"),
+    ("ნუცუბიძ", "ნუცუბიძე"),
+    ("ვაზისუბან", "ვაზისუბანი"),
+    ("ვაზისუბნ", "ვაზისუბანი"),
     ("ბაგებ", "ბაგები"),
     ("ლის", "ლისი"),
 ]
@@ -213,25 +220,27 @@ def evaluate_broker_verdict(
     max_author_count = 0
     any_non_owner = False
     any_agent_type = False
+    any_verified_owner = False
+    agent_tokens = (
+        "agent",
+        "agency",
+        "broker",
+        "developer",
+        "company",
+        "აგენტ",
+        "მაკლერ",
+        "სააგენტო",
+    )
 
-    if target:
-        if target.get("is_owner") in (0, False):
+    def _inspect_row(r: Dict[str, Any]) -> None:
+        nonlocal any_non_owner, any_agent_type, any_verified_owner, max_author_count
+        is_own = r.get("is_owner")
+        if is_own is False or (isinstance(is_own, int) and not isinstance(is_own, bool) and is_own == 0):
             any_non_owner = True
-        ut = str(target.get("user_type") or "").lower()
-        if ut in ("agent", "agency", "broker", "developer"):
-            any_agent_type = True
-        cnt = target.get("author_listings_count")
-        if cnt is not None:
-            try:
-                max_author_count = max(max_author_count, int(cnt))
-            except (ValueError, TypeError):
-                pass
-
-    for r in all_rows:
-        if r.get("is_owner") in (0, False):
-            any_non_owner = True
+        elif is_own is True or (isinstance(is_own, int) and not isinstance(is_own, bool) and is_own == 1):
+            any_verified_owner = True
         ut = str(r.get("user_type") or "").lower()
-        if ut in ("agent", "agency", "broker", "developer"):
+        if any(tok in ut for tok in agent_tokens):
             any_agent_type = True
         cnt = r.get("author_listings_count")
         if cnt is not None:
@@ -239,6 +248,12 @@ def evaluate_broker_verdict(
                 max_author_count = max(max_author_count, int(cnt))
             except (ValueError, TypeError):
                 pass
+
+    if target:
+        _inspect_row(target)
+
+    for r in all_rows:
+        _inspect_row(r)
         dist = (r.get("district") or "").strip()
         area = r.get("area_m2") or 0.0
         try:
@@ -272,6 +287,15 @@ def evaluate_broker_verdict(
             "reason": " • ".join(reasons) if reasons else "დაფიქსირდა სააგენტოს ნიშნები",
             "unique_apartments": unique_apartments,
             "total_listings": total_listings,
+        }
+
+    if not any_verified_owner:
+        return {
+            "is_broker": False,
+            "badge": "⚠️ სტატუსი დაუზუსტებელია (გადაუმოწმებელი)",
+            "reason": "ბაზაში ფიქსირდება 1 განცხადება, თუმცა პორტალზე მესაკუთრის სტატუსი დადასტურებული არ არის",
+            "unique_apartments": max(1, unique_apartments),
+            "total_listings": max(1, total_listings),
         }
 
     return {
@@ -402,6 +426,33 @@ def _query_by_phone_or_author(
     return list(seen.values())
 
 
+def _merge_live_into_row(
+    row: Dict[str, Any], live: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    if not live:
+        return row
+    merged = dict(row)
+    live_own = live.get("is_owner")
+    if live_own is False or (isinstance(live_own, int) and not isinstance(live_own, bool) and live_own == 0):
+        merged["is_owner"] = 0
+    elif merged.get("is_owner") is None and live_own is not None:
+        merged["is_owner"] = 1 if live_own else 0
+    if live.get("user_type") and (merged.get("is_owner") == 0 or not merged.get("user_type")):
+        merged["user_type"] = live["user_type"]
+    if not merged.get("phone_number") and live.get("phone_number"):
+        merged["phone_number"] = live["phone_number"]
+    if not merged.get("author_id") and live.get("author_id"):
+        merged["author_id"] = str(live["author_id"])
+    if live.get("author_listings_count") is not None:
+        try:
+            prev_cnt = int(merged.get("author_listings_count") or 0)
+            live_cnt = int(live["author_listings_count"])
+            merged["author_listings_count"] = max(prev_cnt, live_cnt)
+        except (ValueError, TypeError):
+            pass
+    return merged
+
+
 def run_xray_on_db(
     db: DatabaseEngine, text: str, live_details: Optional[Dict[str, Any]] = None
 ) -> Optional[str]:
@@ -424,6 +475,18 @@ def run_xray_on_db(
                     f"🔎 <b>ტელეფონის რენტგენი:</b> <code>{fmt_phone}</code>\n\n"
                     "ℹ️ ჩვენს ბაზაში ამ ნომერზე განცხადებები ჯერ არ ფიქსირდება."
                 )
+            if live_details:
+                related[0] = _merge_live_into_row(related[0], live_details)
+            discovered_author = related[0].get("author_id")
+            if discovered_author:
+                by_author = _query_by_phone_or_author(
+                    conn, phone_9=phone_9, formatted_phone=fmt_phone, author_id=discovered_author
+                )
+                seen_r = {r["id"]: r for r in related}
+                for ar in by_author:
+                    if ar["id"] not in seen_r:
+                        related.append(ar)
+                        seen_r[ar["id"]] = ar
             verdict = evaluate_broker_verdict(related[0], related)
             lines = [
                 f"🔎 <b>ტელეფონის რენტგენი:</b> <code>{fmt_phone}</code>",
@@ -448,7 +511,7 @@ def run_xray_on_db(
             cur.execute("SELECT * FROM properties WHERE id = ?", (parsed["listing_id"],))
             row = cur.fetchone()
             if row:
-                target = dict(row)
+                target = _merge_live_into_row(dict(row), live_details)
             elif live_details:
                 target = dict(live_details)
                 target.setdefault("id", parsed["listing_id"])

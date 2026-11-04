@@ -163,7 +163,7 @@ export default {
 
     // 1. Scraper Proxy Route (Backward Compatibility for MyHome/SS.ge)
     const targetUrl = url.searchParams.get("url");
-    if (targetUrl && request.method === "GET") {
+    if (targetUrl && ["GET", "POST", "PUT"].includes(request.method)) {
       return handleProxy(targetUrl, request);
     }
 
@@ -229,7 +229,7 @@ async function handleProxy(targetUrl, request) {
   try {
     const parsed = new URL(targetUrl);
     const headers = new Headers();
-    headers.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+    headers.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
     headers.set("Accept-Language", "ka-GE,ka;q=0.9,en-US;q=0.8,en;q=0.7");
 
     // Detect tnet.ge JSON API requests and use appropriate headers
@@ -237,21 +237,40 @@ async function handleProxy(targetUrl, request) {
       headers.set("Accept", "application/json, text/plain, */*");
       headers.set("locale", "ka");
       headers.set("X-Website-Key", "myhome");
+    } else if (parsed.hostname.includes("api-gateway.ss.ge") || parsed.pathname.includes("/api/refresh_access_token")) {
+      headers.set("Accept", "application/json, text/plain, */*");
+      headers.set("Accept-Language", "ka");
+      headers.set("os", "web");
+      headers.set("Origin", "https://home.ss.ge");
+      headers.set("Referer", "https://home.ss.ge/");
+      const authHeader = request.headers.get("Authorization") || request.headers.get("authorization");
+      if (authHeader) headers.set("Authorization", authHeader);
+      const contentType = request.headers.get("Content-Type") || request.headers.get("content-type");
+      if (contentType) headers.set("Content-Type", contentType);
     } else {
       headers.set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
     }
 
-    const response = await fetch(parsed.toString(), {
-      method: "GET",
-      headers: headers
-    });
+    const method = request.method || "GET";
+    const fetchInit = { method, headers };
+    if (method !== "GET" && method !== "HEAD") {
+      fetchInit.body = await request.arrayBuffer();
+    }
+
+    const response = await fetch(parsed.toString(), fetchInit);
+    const outHeaders = {
+      "content-type": response.headers.get("content-type") || "text/html; charset=utf-8",
+      "Access-Control-Allow-Origin": "*"
+    };
+    const setCookie = response.headers.get("set-cookie") || "";
+    const tokenMatch = setCookie.match(/ss-session-token=([^;\s,]+)/);
+    if (tokenMatch) {
+      outHeaders["x-ss-session-token"] = tokenMatch[1];
+    }
 
     return new Response(response.body, {
       status: response.status,
-      headers: {
-        "content-type": response.headers.get("content-type") || "text/html; charset=utf-8",
-        "Access-Control-Allow-Origin": "*"
-      }
+      headers: outHeaders
     });
   } catch (err) {
     return new Response(`Proxy Error: ${err.message}`, { status: 502 });
@@ -996,6 +1015,13 @@ const XRAY_DISTRICT_KEYWORDS = [
   ["ავლაბარ", "ავლაბარი"],
   ["ავლაბრ", "ავლაბარი"],
   ["დიდუბ", "დიდუბე"],
+  ["წერეთელ", "წერეთელი"],
+  ["წერეთლ", "წერეთელი"],
+  ["თემქ", "თემქა"],
+  ["ვაშლიჯვარ", "ვაშლიჯვარი"],
+  ["ნუცუბიძ", "ნუცუბიძე"],
+  ["ვაზისუბან", "ვაზისუბანი"],
+  ["ვაზისუბნ", "ვაზისუბანი"],
   ["ბაგებ", "ბაგები"],
   ["ლის", "ლისი"]
 ];
@@ -1101,9 +1127,122 @@ function parseXRayInput(text) {
   return null;
 }
 
+function parseSsGeStatementDetails(st, agentInfo = {}, html = "", sourceId = "", pageUrl = "") {
+  const firstPhone = Array.isArray(st.applicationPhones) && st.applicationPhones.length > 0 ? st.applicationPhones[0] : null;
+  const rawPhone = (firstPhone && (firstPhone.phoneNumber || firstPhone)) || st.user_phone_number || st.phoneNumber || st.phone_number || "";
+  const rawDesc = typeof st.description === "object" && st.description !== null
+    ? (st.description.ka || st.description.text || "")
+    : String(st.comment || st.description || "");
+  const phone9 = extract9DigitPhone(`${rawPhone} ${rawDesc}`);
+
+  const agencyId = st.agencyId || st.externalCompanyId || agentInfo.companyId || null;
+  const agencyName = st.agencyName || st.companyName || agentInfo.companyName || null;
+  const htmlEntityMatch = html ? html.match(/"userEntityType"\s*:\s*"([^"]+)"/i) : null;
+  const uet = String(
+    st.userEntityType || st.userType || st.authorType || agentInfo.userEntityType || (htmlEntityMatch ? htmlEntityMatch[1] : "")
+  ).toLowerCase();
+  const appCount = Number(st.userApplicationCount || st.userStatementsCount || st.user_statements_count || agentInfo.applicationCount || 0) || 0;
+  const infoType = Number(agentInfo.infoType ?? st.infoType ?? 0);
+
+  const htmlHasAgentBadge = Boolean(
+    html && (/>[\s]*აგენტი[\s]*</.test(html) || />[\s]*სააგენტო[\s]*</.test(html) || />[\s]*მაკლერი[\s]*</.test(html))
+  );
+  const htmlHasOwnerBadge = Boolean(
+    html && (/>[\s]*მესაკუთრე[\s]*</.test(html) || />[\s]*ფიზიკური პირი[\s]*</.test(html))
+  );
+
+  const isBrokerSignal = Boolean(
+    agencyId ||
+    agencyName ||
+    st.isForAgency ||
+    st.isAgency === true ||
+    st.isOwner === false ||
+    st.commercialRealEstateType ||
+    st.userType === 2 ||
+    agentInfo.companyId != null ||
+    infoType === 2 ||
+    ["broker", "agent", "agency", "company", "developer", "აგენტ", "მაკლერ", "სააგენტო"].some(k => uet.includes(k)) ||
+    appCount >= 3 ||
+    htmlHasAgentBadge
+  );
+
+  const isVerifiedOwner = !isBrokerSignal && Boolean(
+    ["individual", "owner", "physical", "მესაკუთრე", "ფიზიკური"].some(k => uet.includes(k)) ||
+    st.isOwner === true ||
+    st.isAgency === false ||
+    htmlHasOwnerBadge
+  );
+
+  const isOwner = isBrokerSignal ? 0 : (isVerifiedOwner ? 1 : null);
+  const userType = isBrokerSignal ? (agencyId || agencyName ? "agency" : "agent") : (isVerifiedOwner ? "physical" : null);
+  const rawUid = st.userId || st.user_id || agencyId;
+
+  return {
+    id: `ss_ge_${sourceId}`,
+    source: "ss_ge",
+    source_id: String(sourceId),
+    url: pageUrl || `https://home.ss.ge/ka/udzravi-qoneba/${sourceId}`,
+    price_usd: Number(st.price?.priceUsd || st.priceUsd || st.price_usd || st.total_price || 0),
+    area_m2: Number(st.totalArea || st.area || 0),
+    floor: String(st.floorNumber ?? st.floor ?? ""),
+    rooms: Number(st.numberOfRooms || st.rooms || st.room || 0),
+    district: st.address?.subdistrictTitle || st.address?.districtTitle || st.district_name || "",
+    is_owner: isOwner,
+    user_type: userType,
+    phone_number: phone9 ? formatGeorgianPhone(phone9) : null,
+    author_id: rawUid ? String(rawUid) : null,
+    author_listings_count: appCount || null
+  };
+}
+
+function mergeLiveIntoRow(row, live) {
+  if (!live) return row;
+  if (!row) return live;
+  const merged = { ...row };
+  if (live.is_owner === 0 || live.is_owner === false) {
+    merged.is_owner = 0;
+  } else if ((merged.is_owner === null || merged.is_owner === undefined) && live.is_owner !== null && live.is_owner !== undefined) {
+    merged.is_owner = live.is_owner ? 1 : 0;
+  }
+  if (live.user_type && (merged.is_owner === 0 || !merged.user_type)) {
+    merged.user_type = live.user_type;
+  }
+  if (!merged.phone_number && live.phone_number) {
+    merged.phone_number = live.phone_number;
+  }
+  if (!merged.author_id && live.author_id) {
+    merged.author_id = String(live.author_id);
+  }
+  const prevCnt = parseInt(merged.author_listings_count, 10) || 0;
+  const liveCnt = parseInt(live.author_listings_count, 10) || 0;
+  if (liveCnt > 0 || prevCnt > 0) {
+    merged.author_listings_count = Math.max(prevCnt, liveCnt);
+  }
+  return merged;
+}
+
+async function persistLiveEnrichment(db, rowId, merged) {
+  if (!db || !rowId || !merged) return;
+  try {
+    await db
+      .prepare(
+        "UPDATE properties SET is_owner = COALESCE(?, is_owner), user_type = COALESCE(?, user_type), phone_number = COALESCE(?, phone_number), author_id = COALESCE(?, author_id), author_listings_count = COALESCE(?, author_listings_count) WHERE id = ?"
+      )
+      .bind(
+        merged.is_owner !== undefined ? merged.is_owner : null,
+        merged.user_type || null,
+        merged.phone_number || null,
+        merged.author_id || null,
+        merged.author_listings_count || null,
+        rowId
+      )
+      .run();
+  } catch (e) {}
+}
+
 async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
   const headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "ka,en-US;q=0.9,en;q=0.8"
   };
@@ -1117,7 +1256,9 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
         const st = json?.data?.statement || json?.data || {};
         const phone9 = extract9DigitPhone(st.user_phone_number || st.phone_number || st.comment || "");
         const ut = String(st.user_type?.type || st.user_type || "").toLowerCase();
-        const isOwner = ut === "physical" || ut === "owner" || st.is_owner === true ? 1 : (ut ? 0 : 1);
+        const stmtCnt = Number(st.user_statements_count || st.statements_count || 0) || 0;
+        const isBroker = st.is_owner === false || ["agent", "agency", "broker", "developer", "company"].some(k => ut.includes(k)) || stmtCnt >= 3;
+        const isOwner = isBroker ? 0 : (ut === "physical" || ut === "owner" || st.is_owner === true ? 1 : null);
         return {
           id: `myhome_${sourceId}`,
           source: "myhome",
@@ -1129,11 +1270,54 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
           rooms: Number(st.room_type_id || st.rooms || 0),
           district: st.district_name || st.urban_name || "",
           is_owner: isOwner,
-          user_type: ut || null,
+          user_type: ut || (isBroker ? "agent" : null),
           phone_number: phone9 ? formatGeorgianPhone(phone9) : null,
           author_id: st.user_id ? String(st.user_id) : null,
-          author_listings_count: Number(st.user_statements_count || st.statements_count || 0) || null
+          author_listings_count: stmtCnt || null
         };
+      }
+    }
+
+    if (source === "ss_ge") {
+      try {
+        const tokenRes = await fetch("https://home.ss.ge/api/refresh_access_token", {
+          method: "POST",
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://home.ss.ge",
+            "Referer": "https://home.ss.ge/"
+          }
+        });
+        const setCookie = tokenRes.headers.get("set-cookie") || "";
+        const tokenMatch = setCookie.match(/ss-session-token=([^;\s,]+)/);
+        const token = tokenMatch ? tokenMatch[1] : (tokenRes.headers.get("x-ss-session-token") || null);
+        if (token) {
+          const detailsUrl = `https://api-gateway.ss.ge/v1/RealEstate/details?applicationId=${encodeURIComponent(sourceId)}&currencyId=2&updateViewCount=false`;
+          const detailsRes = await fetch(detailsUrl, {
+            method: "PUT",
+            headers: {
+              "Authorization": `Bearer ${token}`,
+              "Accept": "application/json, text/plain, */*",
+              "Accept-Language": "ka",
+              "os": "web",
+              "Origin": "https://home.ss.ge",
+              "Referer": "https://home.ss.ge/",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            }
+          });
+          if (detailsRes.ok) {
+            const st = await detailsRes.json();
+            if (st && Number(st.applicationId || sourceId) === Number(sourceId)) {
+              const parsedApi = parseSsGeStatementDetails(st, st.initialAgentInfoData || {}, "", sourceId, rawUrl);
+              if (parsedApi.is_owner !== null) {
+                return parsedApi;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // Fall through to HTML fallback
       }
     }
 
@@ -1144,10 +1328,15 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
     if (!res.ok) return null;
     const html = await res.text();
     const nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-    if (!nextMatch) return null;
-    const nextData = JSON.parse(nextMatch[1]);
+    const nextData = nextMatch ? JSON.parse(nextMatch[1]) : {};
     const pp = nextData?.props?.pageProps || {};
     const st = pp?.dehydratedState?.queries?.[0]?.state?.data?.data?.statement || pp?.applicationData || pp?.statement || {};
+    const agentInfo = pp?.initialAgentInfoData || {};
+
+    if (source === "ss_ge") {
+      return parseSsGeStatementDetails(st, agentInfo, html, sourceId, pageUrl);
+    }
+
     const phone9 = extract9DigitPhone(st.user_phone_number || st.phoneNumber || st.phone_number || st.description || "");
     const isAgency = Boolean(st.isForAgency || st.agencyId || st.commercialRealEstateType);
     return {
@@ -1160,8 +1349,8 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
       floor: String(st.floor || ""),
       rooms: Number(st.rooms || 0),
       district: st.address?.districtTitle || st.district_name || "",
-      is_owner: isAgency ? 0 : 1,
-      user_type: isAgency ? "agency" : "physical",
+      is_owner: isAgency ? 0 : (st.isOwner === true ? 1 : null),
+      user_type: isAgency ? "agency" : (st.isOwner === true ? "physical" : null),
       phone_number: phone9 ? formatGeorgianPhone(phone9) : null,
       author_id: st.userId || st.user_id ? String(st.userId || st.user_id) : null,
       author_listings_count: Number(st.userApplicationCount || st.user_statements_count || 0) || null
@@ -1189,11 +1378,17 @@ function evaluateWorkerBrokerVerdict(target, relatedRows) {
   let maxAuthorCount = 0;
   let anyNonOwner = false;
   let anyAgentType = false;
+  let anyVerifiedOwner = false;
+  const agentTokens = ["agent", "agency", "broker", "developer", "company", "აგენტ", "მაკლერ", "სააგენტო"];
 
   for (const r of allRows) {
-    if (r.is_owner === 0 || r.is_owner === false) anyNonOwner = true;
+    if (r.is_owner === 0 || r.is_owner === false) {
+      anyNonOwner = true;
+    } else if (r.is_owner === 1 || r.is_owner === true) {
+      anyVerifiedOwner = true;
+    }
     const ut = String(r.user_type || "").toLowerCase();
-    if (["agent", "agency", "broker", "developer"].includes(ut)) anyAgentType = true;
+    if (agentTokens.some(tok => ut.includes(tok))) anyAgentType = true;
     const cnt = parseInt(r.author_listings_count, 10);
     if (!isNaN(cnt) && cnt > maxAuthorCount) maxAuthorCount = cnt;
     const dist = String(r.district || "").trim();
@@ -1218,6 +1413,14 @@ function evaluateWorkerBrokerVerdict(target, relatedRows) {
       isBroker: true,
       badge: "🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო",
       reason: reasons.length ? reasons.join(" • ") : "დაფიქსირდა სააგენტოს ნიშნები"
+    };
+  }
+
+  if (!anyVerifiedOwner) {
+    return {
+      isBroker: false,
+      badge: "⚠️ სტატუსი დაუზუსტებელია (გადაუმოწმებელი)",
+      reason: "ბაზაში ფიქსირდება 1 განცხადება, თუმცა პორტალზე მესაკუთრის სტატუსი დადასტურებული არ არის"
     };
   }
 
@@ -1264,6 +1467,37 @@ async function handleXRayQuery(text, env) {
           `ℹ️ ჩვენს ბაზაში ამ ნომერზე განცხადებები ჯერ არ ფიქსირდება.`
         );
       }
+
+      if (
+        rows.length <= 2 &&
+        (rows[0].is_owner === null ||
+          rows[0].is_owner === undefined ||
+          !rows[0].author_id ||
+          rows[0].author_listings_count === null ||
+          rows[0].author_listings_count === undefined ||
+          rows[0].source === "ss_ge")
+      ) {
+        const live = await fetchLiveStatementDetails(rows[0].source, rows[0].source_id, rows[0].url);
+        if (live) {
+          rows[0] = mergeLiveIntoRow(rows[0], live);
+          await persistLiveEnrichment(db, rows[0].id, rows[0]);
+        }
+      }
+
+      if (rows[0].author_id) {
+        const { results: authorRows } = await db
+          .prepare("SELECT * FROM properties WHERE author_id = ? ORDER BY scraped_at DESC LIMIT 30")
+          .bind(String(rows[0].author_id))
+          .all();
+        const seenIds = new Set(rows.map(r => r.id));
+        for (const ar of authorRows || []) {
+          if (ar && ar.id && !seenIds.has(ar.id)) {
+            rows.push(ar);
+            seenIds.add(ar.id);
+          }
+        }
+      }
+
       const verdict = evaluateWorkerBrokerVerdict(rows[0], rows);
       const lines = [
         `🔎 <b>ტელეფონის რენტგენი:</b> <code>${parsed.formattedPhone}</code>`,
@@ -1291,10 +1525,22 @@ async function handleXRayQuery(text, env) {
       if (row) {
         target = row;
       }
-      if (!target || (!target.phone_number && !target.author_id)) {
-        const live = await fetchLiveStatementDetails(parsed.source, parsed.sourceId, parsed.url);
+      if (
+        !target ||
+        target.is_owner === null ||
+        target.is_owner === undefined ||
+        !target.phone_number ||
+        !target.author_id ||
+        target.author_listings_count === null ||
+        target.author_listings_count === undefined ||
+        target.source === "ss_ge"
+      ) {
+        const live = await fetchLiveStatementDetails(parsed.source, parsed.sourceId, parsed.url || target?.url);
         if (live) {
-          target = target ? { ...live, ...target, phone_number: target.phone_number || live.phone_number, author_id: target.author_id || live.author_id, author_listings_count: target.author_listings_count || live.author_listings_count } : live;
+          target = target ? mergeLiveIntoRow(target, live) : live;
+          if (row && target.id) {
+            await persistLiveEnrichment(db, target.id, target);
+          }
         }
       }
     } else if (parsed.kind === "fb_text") {

@@ -240,6 +240,58 @@ class TestXRayEngine(unittest.TestCase):
         self.assertIn("$78,000", report)
         self.assertIn("-$5,000", report)
 
+    def test_ss_ge_36062395_agent_not_reported_as_owner(self):
+        # Reproduces the exact production bug:
+        # SS.ge listing 36062395 ($57,000, 40 m², თემქა, phone +995 577 95 49 66)
+        # saved from search page with is_owner=None, user_type=None, author_id=None
+        unverified_ss = _make_listing(
+            "36062395",
+            source="ss_ge",
+            price_usd=57000.0,
+            area_m2=40.0,
+            district="თემქა",
+            floor="4",
+            rooms=1,
+            is_owner=None,
+            user_type=None,
+            phone_number="+995 577 95 49 66",
+            author_id=None,
+            author_listings_count=None,
+        )
+        unverified_ss.url = (
+            "https://home.ss.ge/ka/udzravi-qoneba/iyideba-1-otaxiani-bina-temqaze-36062395"
+        )
+        self.db.save_listings_batch([unverified_ss])
+
+        # 1. Even without live_details, an unverified (is_owner=None) row must NOT claim "✅ რეალური მესაკუთრე (Owner)"
+        report_unverified = run_xray_on_db(self.db, "+995 577 95 49 66")
+        self.assertIsNotNone(report_unverified)
+        self.assertNotIn("✅ რეალური მესაკუთრე (Owner)", report_unverified)
+        self.assertIn("დაუზუსტებელია", report_unverified)
+
+        # 2. When live_details from SS.ge reveals "აგენტი" (is_owner=False, user_type="agent"),
+        # both phone X-Ray and URL X-Ray must flag it as a broker!
+        live_ss_agent = {
+            "is_owner": False,
+            "user_type": "agent",
+            "author_id": "ss_agent_77",
+            "author_listings_count": 1,
+            "phone_number": "+995 577 95 49 66",
+        }
+        report_phone_enriched = run_xray_on_db(
+            self.db, "+995 577 95 49 66", live_details=live_ss_agent
+        )
+        self.assertIn("🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო", report_phone_enriched)
+        self.assertNotIn("✅ რეალური მესაკუთრე (Owner)", report_phone_enriched)
+
+        report_url_enriched = run_xray_on_db(
+            self.db,
+            "https://home.ss.ge/ka/udzravi-qoneba/iyideba-1-otaxiani-bina-temqaze-36062395",
+            live_details=live_ss_agent,
+        )
+        self.assertIn("🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო", report_url_enriched)
+        self.assertNotIn("✅ რეალური მესაკუთრე (Owner)", report_url_enriched)
+
     def test_cloudflare_worker_xray_integration(self):
         worker_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -270,7 +322,13 @@ class TestXRayEngine(unittest.TestCase):
         self.assertIn("phone_number IN (?, ?)", worker_src)
         self.assertNotIn("phone_number LIKE '%", worker_src)
 
-        # 5. Balanced braces check
+        # 5. SS.ge agent detection checks userEntityType, initialAgentInfoData, applicationPhones, and api-gateway.ss.ge
+        self.assertIn("userEntityType", worker_src)
+        self.assertIn("initialAgentInfoData", worker_src)
+        self.assertIn("applicationPhones", worker_src)
+        self.assertIn("api-gateway.ss.ge/v1/RealEstate/details", worker_src)
+
+        # 6. Balanced braces check
         self.assertEqual(worker_src.count("{"), worker_src.count("}"))
 
 

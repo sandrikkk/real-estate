@@ -53,6 +53,16 @@ class BaseScraper(ABC):
                     direct_resp = await session.get(url, headers=self.headers, timeout=self.timeout)
                     if direct_resp.status_code == 200:
                         return direct_resp.text
+                    if settings.SCRAPER_API_KEY and "api.scraperapi.com" not in target_url:
+                        scraper_api_url = (
+                            f"https://api.scraperapi.com?api_key={settings.SCRAPER_API_KEY}"
+                            f"&url={urllib.parse.quote_plus(url)}"
+                        )
+                        sapi_resp = await session.get(
+                            scraper_api_url, timeout=max(self.timeout, 45)
+                        )
+                        if sapi_resp.status_code == 200:
+                            return sapi_resp.text
                 print(f"[{self.name} HTTP Error]: Status {response.status_code} for {url}")
         except Exception as e:
             if target_url != url:

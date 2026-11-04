@@ -753,12 +753,16 @@ class DatabaseEngine:
                 price_gel = COALESCE(excluded.price_gel, properties.price_gel),
                 price_per_m2 = excluded.price_per_m2,
                 phone_number = COALESCE(excluded.phone_number, properties.phone_number),
+                is_owner = COALESCE(excluded.is_owner, properties.is_owner),
+                user_type = COALESCE(excluded.user_type, properties.user_type),
                 author_id = COALESCE(excluded.author_id, properties.author_id),
                 author_listings_count = COALESCE(excluded.author_listings_count, properties.author_listings_count)
             WHERE excluded.price_usd > 0
               AND (properties.price_usd IS NOT excluded.price_usd
+                   OR properties.is_owner IS NOT excluded.is_owner
                    OR properties.phone_number IS NOT excluded.phone_number
-                   OR properties.author_id IS NOT excluded.author_id)
+                   OR properties.author_id IS NOT excluded.author_id
+                   OR properties.author_listings_count IS NOT excluded.author_listings_count)
         """
 
         params_list = []
