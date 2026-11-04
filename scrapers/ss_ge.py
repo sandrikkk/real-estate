@@ -1,5 +1,6 @@
 import json
 import re
+import socket
 import time
 import urllib.parse
 from typing import Dict, List, Optional, Tuple
@@ -99,6 +100,7 @@ SS_GE_SUBDISTRICT_MAP: Dict[str, List[int]] = {
 class SSGeScraper(BaseScraper):
     API_BASE_URL = "https://api-gateway.ss.ge"
     TOKEN_REFRESH_URL = "https://home.ss.ge/api/refresh_access_token"
+    ORIGIN_FALLBACK_IP = "217.147.225.165"
     BROWSER_UA = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -109,6 +111,52 @@ class SSGeScraper(BaseScraper):
         self.max_pages = max_pages
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0.0
+
+    @classmethod
+    def _resolve_origin_ip(cls) -> str:
+        """Resolves SS.ge direct origin IP (ss.ge / account.ss.ge) to bypass Cloudflare geo-blocks."""
+        for host in ("ss.ge", "account.ss.ge"):
+            try:
+                ip = socket.gethostbyname(host)
+                if ip and not ip.startswith(("104.", "172.6", "127.")):
+                    return ip
+            except Exception:
+                continue
+        return cls.ORIGIN_FALLBACK_IP
+
+    @classmethod
+    def _build_origin_resolve_list(cls) -> List[str]:
+        origin_ip = cls._resolve_origin_ip()
+        return [
+            f"home.ss.ge:443:{origin_ip}",
+            f"api-gateway.ss.ge:443:{origin_ip}",
+        ]
+
+    def _create_session(self, use_origin_resolve: bool = True) -> AsyncSession:
+        if use_origin_resolve:
+            try:
+                from curl_cffi import CurlOpt
+
+                resolve_entries = self._build_origin_resolve_list()
+                if resolve_entries and hasattr(CurlOpt, "RESOLVE"):
+                    return AsyncSession(
+                        impersonate="chrome124",
+                        curl_options={CurlOpt.RESOLVE: resolve_entries},
+                    )
+            except Exception:
+                pass
+        return AsyncSession(impersonate="chrome124")
+
+    async def fetch_html(self, url: str) -> Optional[str]:
+        if "ss.ge" in url:
+            try:
+                async with self._create_session(use_origin_resolve=True) as session:
+                    resp = await session.get(url, headers=self.headers, timeout=self.timeout)
+                    if resp.status_code == 200 and resp.text:
+                        return resp.text
+            except Exception:
+                pass
+        return await super().fetch_html(url)
 
     @staticmethod
     def _resolve_subdistrict_ids(filters: SearchFilters) -> List[int]:
@@ -310,47 +358,51 @@ class SSGeScraper(BaseScraper):
         payload = self._build_api_payload(filters, page=page)
         body_str = json.dumps(payload)
 
-        try:
-            async with AsyncSession(impersonate="chrome124") as session:
-                token = await self._get_access_token(session)
-                if not token:
-                    return None
-
-                targets = [api_url]
-                if settings.CLOUDFLARE_PROXY_URL:
-                    proxy_base = settings.CLOUDFLARE_PROXY_URL.rstrip("/")
-                    targets.append(f"{proxy_base}/?url={urllib.parse.quote_plus(api_url)}")
-
-                for target in targets:
-                    try:
-                        headers = self._build_api_headers(token)
-                        resp = await session.post(
-                            target, data=body_str, headers=headers, timeout=self.timeout
-                        )
-                        if resp.status_code == 401:
-                            token = await self._get_access_token(session, force_refresh=True)
-                            if token:
-                                headers = self._build_api_headers(token)
-                                resp = await session.post(
-                                    target, data=body_str, headers=headers, timeout=self.timeout
-                                )
-
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            if isinstance(data, dict):
-                                items = (
-                                    data.get("realStateItemModel")
-                                    or data.get("applications")
-                                    or []
-                                )
-                                if isinstance(items, list):
-                                    return items
-                            elif isinstance(data, list):
-                                return data
-                    except Exception:
+        for use_origin in (True, False):
+            try:
+                async with self._create_session(use_origin_resolve=use_origin) as session:
+                    token = await self._get_access_token(session)
+                    if not token:
                         continue
-        except Exception as e:
-            print(f"[SS.ge API Error]: {e}")
+
+                    targets = [api_url]
+                    if settings.CLOUDFLARE_PROXY_URL:
+                        proxy_base = settings.CLOUDFLARE_PROXY_URL.rstrip("/")
+                        targets.append(f"{proxy_base}/?url={urllib.parse.quote_plus(api_url)}")
+
+                    for target in targets:
+                        try:
+                            headers = self._build_api_headers(token)
+                            resp = await session.post(
+                                target, data=body_str, headers=headers, timeout=self.timeout
+                            )
+                            if resp.status_code == 401:
+                                token = await self._get_access_token(session, force_refresh=True)
+                                if token:
+                                    headers = self._build_api_headers(token)
+                                    resp = await session.post(
+                                        target,
+                                        data=body_str,
+                                        headers=headers,
+                                        timeout=self.timeout,
+                                    )
+
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                if isinstance(data, dict):
+                                    items = (
+                                        data.get("realStateItemModel")
+                                        or data.get("applications")
+                                        or []
+                                    )
+                                    if isinstance(items, list):
+                                        return items
+                                elif isinstance(data, list):
+                                    return data
+                        except Exception:
+                            continue
+            except Exception as e:
+                print(f"[SS.ge API Error]: {e}")
 
         return None
 
@@ -385,6 +437,7 @@ class SSGeScraper(BaseScraper):
         agency_id = (
             app_data.get("agencyId")
             or app_data.get("externalCompanyId")
+            or app_data.get("companyId")
             or agent_info.get("companyId")
         )
         agency_name = (
@@ -392,8 +445,16 @@ class SSGeScraper(BaseScraper):
             or app_data.get("companyName")
             or agent_info.get("companyName")
         )
-        user_entity_type = str(app_data.get("userEntityType") or "").lower()
-        app_count = app_data.get("userApplicationCount") or 0
+        user_entity_type = str(
+            app_data.get("userEntityType")
+            or agent_info.get("userEntityType")
+            or ""
+        ).lower()
+        app_count = (
+            app_data.get("userApplicationCount")
+            or agent_info.get("applicationCount")
+            or 0
+        )
 
         is_owner = None
         if (
@@ -404,8 +465,10 @@ class SSGeScraper(BaseScraper):
             or "agency" in user_entity_type
             or "company" in user_entity_type
             or (agent_info.get("companyId") is not None)
+            or (agent_info.get("companyType") == 2)
             or (agent_info.get("infoType") == 2)
-            or (isinstance(app_count, int) and app_count > 10)
+            or bool(agent_info.get("agentContactName"))
+            or (isinstance(app_count, int) and app_count >= 3)
         ):
             is_owner = False
         elif "individual" in user_entity_type and not agency_id and not agency_name:
@@ -487,43 +550,44 @@ class SSGeScraper(BaseScraper):
                 f"{self.API_BASE_URL}/v1/RealEstate/details"
                 f"?applicationId={stmt_id}&currencyId=2&updateViewCount=false"
             )
-            try:
-                async with AsyncSession(impersonate="chrome124") as session:
-                    token = await self._get_access_token(session)
-                    if token:
-                        targets = [api_url]
-                        if settings.CLOUDFLARE_PROXY_URL:
-                            proxy_base = settings.CLOUDFLARE_PROXY_URL.rstrip("/")
-                            targets.append(
-                                f"{proxy_base}/?url={urllib.parse.quote_plus(api_url)}"
-                            )
-                        for target in targets:
-                            try:
-                                headers = self._build_api_headers(token)
-                                resp = await session.put(
-                                    target, headers=headers, timeout=self.timeout
+            for use_origin in (True, False):
+                try:
+                    async with self._create_session(use_origin_resolve=use_origin) as session:
+                        token = await self._get_access_token(session)
+                        if token:
+                            targets = [api_url]
+                            if settings.CLOUDFLARE_PROXY_URL:
+                                proxy_base = settings.CLOUDFLARE_PROXY_URL.rstrip("/")
+                                targets.append(
+                                    f"{proxy_base}/?url={urllib.parse.quote_plus(api_url)}"
                                 )
-                                if resp.status_code == 401:
-                                    token = await self._get_access_token(
-                                        session, force_refresh=True
+                            for target in targets:
+                                try:
+                                    headers = self._build_api_headers(token)
+                                    resp = await session.put(
+                                        target, headers=headers, timeout=self.timeout
                                     )
-                                    if token:
-                                        headers = self._build_api_headers(token)
-                                        resp = await session.put(
-                                            target, headers=headers, timeout=self.timeout
+                                    if resp.status_code == 401:
+                                        token = await self._get_access_token(
+                                            session, force_refresh=True
                                         )
-                                if resp.status_code == 200:
-                                    app_data = resp.json()
-                                    if isinstance(app_data, dict) and str(
-                                        app_data.get("applicationId") or stmt_id
-                                    ) == str(stmt_id):
-                                        parsed = self._parse_statement_details_data(app_data)
-                                        if parsed:
-                                            return parsed
-                            except Exception:
-                                continue
-            except Exception as e:
-                print(f"[SS.ge API Detail Error for {source_id_or_url}]: {e}")
+                                        if token:
+                                            headers = self._build_api_headers(token)
+                                            resp = await session.put(
+                                                target, headers=headers, timeout=self.timeout
+                                            )
+                                    if resp.status_code == 200:
+                                        app_data = resp.json()
+                                        if isinstance(app_data, dict) and str(
+                                            app_data.get("applicationId") or stmt_id
+                                        ) == str(stmt_id):
+                                            parsed = self._parse_statement_details_data(app_data)
+                                            if parsed:
+                                                return parsed
+                                except Exception:
+                                    continue
+                except Exception as e:
+                    print(f"[SS.ge API Detail Error for {source_id_or_url}]: {e}")
 
         # 2. Fallback: HTML __NEXT_DATA__
         try:

@@ -292,6 +292,125 @@ class TestXRayEngine(unittest.TestCase):
         self.assertIn("🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო", report_url_enriched)
         self.assertNotIn("✅ რეალური მესაკუთრე (Owner)", report_url_enriched)
 
+    def test_myhome_masked_phone_xray_and_owner_duplicate_discovery(self):
+        # Reproduces the exact production Bug 2 reported by the user:
+        # MyHome masks phone numbers as "579882***" for +995 579 88 21 47.
+        # In D1, agent has 3 listings with phone_number="579882***", and
+        # myhome_26573206 is a duplicate of owner listing myhome_26444531 ($73,000, is_owner=True).
+        mh_agent_1 = _make_listing(
+            "26573206",
+            source="myhome",
+            price_usd=72500.0,
+            area_m2=51.0,
+            district="გლდანი",
+            floor="5",
+            rooms=2,
+            is_owner=False,
+            user_type="agent",
+            phone_number="579882***",
+            author_id=None,
+            author_listings_count=None,
+            group_id="myhome_26444531",
+        )
+        mh_agent_2 = _make_listing(
+            "26544171",
+            source="myhome",
+            price_usd=75000.0,
+            area_m2=42.0,
+            district="გლდანი",
+            floor="6",
+            rooms=2,
+            is_owner=False,
+            user_type="agent",
+            phone_number="579882***",
+            author_id=None,
+            author_listings_count=None,
+            group_id="myhome_25735194",
+        )
+        mh_agent_3 = _make_listing(
+            "26571202",
+            source="myhome",
+            price_usd=74000.0,
+            area_m2=52.0,
+            district="თემქა",
+            floor="3",
+            rooms=3,
+            is_owner=False,
+            user_type="agent",
+            phone_number="579882***",
+            author_id=None,
+            author_listings_count=None,
+            group_id="myhome_26520053",
+        )
+        mh_real_owner = _make_listing(
+            "26444531",
+            source="myhome",
+            price_usd=73000.0,
+            area_m2=51.0,
+            district="გლდანი",
+            floor="5",
+            rooms=2,
+            is_owner=True,
+            user_type="physical",
+            phone_number=None,
+            author_id=None,
+            author_listings_count=None,
+            group_id="myhome_26444531",
+        )
+        self.db.save_listings_batch([mh_agent_1, mh_agent_2, mh_agent_3, mh_real_owner])
+
+        # 1. Querying by full unmasked phone (+995 579 88 21 47) must match "579882***"
+        report_full = run_xray_on_db(self.db, "+995 579 88 21 47")
+        self.assertIsNotNone(report_full)
+        self.assertNotIn("არ ფიქსირდება", report_full)
+        self.assertIn("🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო", report_full)
+        self.assertIn("$72,500", report_full)
+        self.assertIn("$75,000", report_full)
+        self.assertIn("$74,000", report_full)
+        # Must also surface the real owner duplicate (myhome_26444531 at $73,000)
+        self.assertIn("$73,000", report_full)
+        self.assertIn("მესაკუთრე ✅", report_full)
+
+        # 2. Querying by masked phone ("579882***" copied directly from bot alert) must also work
+        report_masked = run_xray_on_db(self.db, "579882***")
+        self.assertIsNotNone(report_masked)
+        self.assertNotIn("არ ფიქსირდება", report_masked)
+        self.assertIn("🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო", report_masked)
+        self.assertIn("$72,500", report_masked)
+
+    def test_exact_phone_takes_precedence_over_masked_prefix_collision(self):
+        # Unrelated agent has "579882***" (e.g. 579 88 21 47)
+        agent_masked = _make_listing(
+            "9001",
+            source="myhome",
+            price_usd=72500.0,
+            area_m2=51.0,
+            district="გლდანი",
+            is_owner=False,
+            user_type="agent",
+            phone_number="579882***",
+        )
+        # Verified physical owner has exact phone "+995 579 88 29 99" (same 579882 prefix!)
+        exact_owner = _make_listing(
+            "9002",
+            source="ss_ge",
+            price_usd=65000.0,
+            area_m2=48.0,
+            district="ვაკე",
+            is_owner=True,
+            user_type="physical",
+            phone_number="+995 579 88 29 99",
+            author_id="real_owner_99",
+            author_listings_count=1,
+        )
+        self.db.save_listings_batch([agent_masked, exact_owner])
+
+        report = run_xray_on_db(self.db, "+995 579 88 29 99")
+        self.assertIsNotNone(report)
+        self.assertIn("✅ რეალური მესაკუთრე (Owner)", report)
+        self.assertIn("$65,000", report)
+        self.assertNotIn("$72,500", report)
+
     def test_cloudflare_worker_xray_integration(self):
         worker_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -318,18 +437,51 @@ class TestXRayEngine(unittest.TestCase):
         self.assertIn("async function fetchLiveStatementDetails(", worker_src)
         self.assertIn("async function handleXRayQuery(text, env)", worker_src)
 
-        # 4. Uses indexed phone_number IN (?, ?) and never unindexed LIKE '%...'
-        self.assertIn("phone_number IN (?, ?)", worker_src)
+        # 4. Uses indexed phone_number IN (?, ?, ?) with maskedPhone and never unindexed LIKE '%...'
+        self.assertIn("phone_number IN (?, ?, ?)", worker_src)
+        self.assertIn("maskedPhone", worker_src)
         self.assertNotIn("phone_number LIKE '%", worker_src)
 
-        # 5. SS.ge agent detection checks userEntityType, initialAgentInfoData, applicationPhones, and api-gateway.ss.ge
+        # 5. MyHome dehydratedState searches all queries (not hardcoded queries?.[0])
+        self.assertNotIn("queries?.[0]?.state?.data?.data?.statement", worker_src)
+        self.assertIn("function parseMyHomeStatementDetails(", worker_src)
+        self.assertIn("function extractMaskedPhone(", worker_src)
+        self.assertIn("phoneDupMap", worker_src)
+
+        # 6. SS.ge agent detection checks userEntityType, initialAgentInfoData, applicationPhones, and api-gateway.ss.ge
         self.assertIn("userEntityType", worker_src)
         self.assertIn("initialAgentInfoData", worker_src)
         self.assertIn("applicationPhones", worker_src)
         self.assertIn("api-gateway.ss.ge/v1/RealEstate/details", worker_src)
 
-        # 6. Balanced braces check
+        # 7. Balanced braces check
         self.assertEqual(worker_src.count("{"), worker_src.count("}"))
+
+    def test_ss_ge_scraper_statement_details_parses_broker_signals(self):
+        from scrapers.ss_ge import SSGeScraper
+
+        scraper = SSGeScraper()
+        exact_36062395_payload = {
+            "applicationId": 36062395,
+            "userId": "d44c353e-7ebe-4bcf-ac38-4de1f259bf6f",
+            "userEntityType": "Broker",
+            "userApplicationCount": 474,
+            "companyName": "city home",
+            "companyId": 2201,
+            "applicationPhones": [{"phoneNumber": "+995-577-95-49-66"}],
+            "price": {"priceUsd": 57000, "priceGeo": 155000},
+            "totalArea": 40,
+            "floorNumber": "4",
+            "numberOfRooms": 1,
+        }
+        parsed = scraper._parse_statement_details_data(
+            exact_36062395_payload,
+            {"companyId": 2201, "companyType": 2, "agentContactName": "ლიკა"},
+        )
+        self.assertIsNotNone(parsed)
+        self.assertIs(parsed["is_owner"], False)
+        self.assertEqual(parsed["author_listings_count"], 474)
+        self.assertEqual(parsed["phone_number"], "+995 577 95 49 66")
 
 
 if __name__ == "__main__":

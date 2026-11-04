@@ -1039,6 +1039,15 @@ function extract9DigitPhone(text) {
   return (digits.length === 9 && digits.startsWith("5")) ? digits : null;
 }
 
+function extractMaskedPhone(text) {
+  if (!text) return null;
+  const cleaned = String(text).replace(/https?:\/\/\S+/g, " ");
+  const m = cleaned.match(/(?:\+?995[\s\-.]*)?(5\d{2}[\s\-.]*\d{2}[\s\-.]*\d)\*{2,4}/);
+  if (!m) return null;
+  const digits = m[1].replace(/\D/g, "");
+  return (digits.length === 6 && digits.startsWith("5")) ? `${digits}***` : null;
+}
+
 function parseXRayInput(text) {
   if (!text || typeof text !== "string") return null;
   const stripped = text.trim();
@@ -1102,12 +1111,14 @@ function parseXRayInput(text) {
   }
 
   const phone9 = extract9DigitPhone(stripped);
+  const maskedPhone = phone9 ? `${phone9.slice(0, 6)}***` : extractMaskedPhone(stripped);
   const hasFbSignal = areaM2 !== null && (district !== null || priceUsd !== null || floor !== null || rooms !== null);
   if (hasFbSignal) {
     return {
       kind: "fb_text",
       phone9,
-      formattedPhone: phone9 ? formatGeorgianPhone(phone9) : null,
+      formattedPhone: phone9 ? formatGeorgianPhone(phone9) : maskedPhone,
+      maskedPhone,
       area_m2: areaM2,
       floor,
       rooms,
@@ -1116,11 +1127,12 @@ function parseXRayInput(text) {
     };
   }
 
-  if (phone9) {
+  if (phone9 || maskedPhone) {
     return {
       kind: "phone",
       phone9,
-      formattedPhone: formatGeorgianPhone(phone9)
+      formattedPhone: phone9 ? formatGeorgianPhone(phone9) : maskedPhone,
+      maskedPhone
     };
   }
 
@@ -1240,6 +1252,36 @@ async function persistLiveEnrichment(db, rowId, merged) {
   } catch (e) {}
 }
 
+function parseMyHomeStatementDetails(st, sourceId, pageUrl) {
+  const rawPhone = st.user_phone_number || st.phone_number || st.phoneNumber || "";
+  const phone9 = extract9DigitPhone(`${rawPhone} ${st.comment || st.description || ""}`);
+  const maskedPhone = phone9 ? null : extractMaskedPhone(rawPhone);
+  const ut = String(st.user_type?.type || st.user_type || "").toLowerCase();
+  const stmtCnt = Number(st.user_statements_count || st.statements_count || st.userApplicationCount || 0) || 0;
+  const isBroker = Boolean(
+    st.is_owner === false ||
+    ["agent", "agency", "broker", "developer", "company", "აგენტ", "მაკლერ", "სააგენტო"].some(k => ut.includes(k)) ||
+    stmtCnt >= 3
+  );
+  const isOwner = isBroker ? 0 : (ut === "physical" || ut === "owner" || st.is_owner === true ? 1 : null);
+  return {
+    id: `myhome_${sourceId}`,
+    source: "myhome",
+    source_id: String(sourceId),
+    url: pageUrl || `https://www.myhome.ge/ka/pr/${sourceId}/`,
+    price_usd: Number(st.price?.[2]?.price_total || st.price?.["2"]?.price_total || st.price_usd || st.total_price || 0),
+    area_m2: Number(st.area || st.totalArea || 0),
+    floor: String(st.floor ?? ""),
+    rooms: Number(st.room_type_id || st.rooms || 0),
+    district: st.district_name || st.urban_name || st.address?.districtTitle || "",
+    is_owner: isOwner,
+    user_type: ut || (isBroker ? "agent" : (isOwner === 1 ? "physical" : null)),
+    phone_number: phone9 ? formatGeorgianPhone(phone9) : (maskedPhone || null),
+    author_id: st.user_id ? String(st.user_id) : null,
+    author_listings_count: stmtCnt || null
+  };
+}
+
 async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
   const headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -1254,27 +1296,7 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
       if (res.ok) {
         const json = await res.json();
         const st = json?.data?.statement || json?.data || {};
-        const phone9 = extract9DigitPhone(st.user_phone_number || st.phone_number || st.comment || "");
-        const ut = String(st.user_type?.type || st.user_type || "").toLowerCase();
-        const stmtCnt = Number(st.user_statements_count || st.statements_count || 0) || 0;
-        const isBroker = st.is_owner === false || ["agent", "agency", "broker", "developer", "company"].some(k => ut.includes(k)) || stmtCnt >= 3;
-        const isOwner = isBroker ? 0 : (ut === "physical" || ut === "owner" || st.is_owner === true ? 1 : null);
-        return {
-          id: `myhome_${sourceId}`,
-          source: "myhome",
-          source_id: String(sourceId),
-          url: rawUrl || `https://www.myhome.ge/ka/pr/${sourceId}/`,
-          price_usd: Number(st.price?.[2]?.price_total || st.price_usd || st.total_price || 0),
-          area_m2: Number(st.area || 0),
-          floor: String(st.floor || ""),
-          rooms: Number(st.room_type_id || st.rooms || 0),
-          district: st.district_name || st.urban_name || "",
-          is_owner: isOwner,
-          user_type: ut || (isBroker ? "agent" : null),
-          phone_number: phone9 ? formatGeorgianPhone(phone9) : null,
-          author_id: st.user_id ? String(st.user_id) : null,
-          author_listings_count: stmtCnt || null
-        };
+        return parseMyHomeStatementDetails(st, sourceId, rawUrl);
       }
     }
 
@@ -1330,31 +1352,25 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
     const nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
     const nextData = nextMatch ? JSON.parse(nextMatch[1]) : {};
     const pp = nextData?.props?.pageProps || {};
-    const st = pp?.dehydratedState?.queries?.[0]?.state?.data?.data?.statement || pp?.applicationData || pp?.statement || {};
+    let dehydratedStmt = null;
+    const queries = pp?.dehydratedState?.queries;
+    if (Array.isArray(queries)) {
+      for (const q of queries) {
+        const cand = q?.state?.data?.data?.statement || q?.state?.data?.statement;
+        if (cand && typeof cand === "object") {
+          dehydratedStmt = cand;
+          break;
+        }
+      }
+    }
+    const st = dehydratedStmt || pp?.applicationData || pp?.statement || {};
     const agentInfo = pp?.initialAgentInfoData || {};
 
     if (source === "ss_ge") {
       return parseSsGeStatementDetails(st, agentInfo, html, sourceId, pageUrl);
     }
 
-    const phone9 = extract9DigitPhone(st.user_phone_number || st.phoneNumber || st.phone_number || st.description || "");
-    const isAgency = Boolean(st.isForAgency || st.agencyId || st.commercialRealEstateType);
-    return {
-      id: `${source}_${sourceId}`,
-      source,
-      source_id: String(sourceId),
-      url: pageUrl,
-      price_usd: Number(st.price?.priceUsd || st.price_usd || st.total_price || 0),
-      area_m2: Number(st.totalArea || st.area || 0),
-      floor: String(st.floor || ""),
-      rooms: Number(st.rooms || 0),
-      district: st.address?.districtTitle || st.district_name || "",
-      is_owner: isAgency ? 0 : (st.isOwner === true ? 1 : null),
-      user_type: isAgency ? "agency" : (st.isOwner === true ? "physical" : null),
-      phone_number: phone9 ? formatGeorgianPhone(phone9) : null,
-      author_id: st.userId || st.user_id ? String(st.userId || st.user_id) : null,
-      author_listings_count: Number(st.userApplicationCount || st.user_statements_count || 0) || null
-    };
+    return parseMyHomeStatementDetails(st, sourceId, pageUrl);
   } catch (e) {
     return null;
   }
@@ -1456,11 +1472,21 @@ async function handleXRayQuery(text, env) {
 
   try {
     if (parsed.kind === "phone") {
+      const fmtParam = parsed.formattedPhone || parsed.maskedPhone || "";
+      const p9Param = parsed.phone9 || fmtParam;
+      const maskParam = parsed.maskedPhone || fmtParam;
       const { results } = await db
-        .prepare("SELECT * FROM properties WHERE phone_number IN (?, ?) ORDER BY scraped_at DESC LIMIT 30")
-        .bind(parsed.formattedPhone, parsed.phone9)
+        .prepare("SELECT * FROM properties WHERE phone_number IN (?, ?, ?) ORDER BY scraped_at DESC LIMIT 30")
+        .bind(fmtParam, p9Param, maskParam)
         .all();
-      const rows = results || [];
+      const fetched = results || [];
+      let rows = fetched;
+      if (parsed.phone9) {
+        const exactRows = fetched.filter(
+          r => r.phone_number === parsed.formattedPhone || r.phone_number === parsed.phone9
+        );
+        if (exactRows.length > 0) rows = exactRows;
+      }
       if (rows.length === 0) {
         return (
           `🔎 <b>ტელეფონის რენტგენი:</b> <code>${parsed.formattedPhone}</code>\n\n` +
@@ -1469,7 +1495,7 @@ async function handleXRayQuery(text, env) {
       }
 
       if (
-        rows.length <= 2 &&
+        rows.length <= 5 &&
         (rows[0].is_owner === null ||
           rows[0].is_owner === undefined ||
           !rows[0].author_id ||
@@ -1477,7 +1503,8 @@ async function handleXRayQuery(text, env) {
           rows[0].author_listings_count === undefined ||
           rows[0].source === "ss_ge")
       ) {
-        const live = await fetchLiveStatementDetails(rows[0].source, rows[0].source_id, rows[0].url);
+        const srcId = rows[0].source_id || String(rows[0].id || "").replace(/^(?:myhome|ss_ge)_/, "");
+        const live = await fetchLiveStatementDetails(rows[0].source, srcId, rows[0].url);
         if (live) {
           rows[0] = mergeLiveIntoRow(rows[0], live);
           await persistLiveEnrichment(db, rows[0].id, rows[0]);
@@ -1513,6 +1540,58 @@ async function handleXRayQuery(text, env) {
         const src = r.source === "myhome" ? "MyHome" : "SS.ge";
         lines.push(`• <a href="${r.url || "#"}">${src}</a> — <b>$${p}</b> | ${area} მ² | ${dist}`);
       }
+
+      // Surface same-apartment duplicates (e.g. real owner listing) for matched listings
+      const relatedIds = new Set(rows.map(r => r.id));
+      const phoneDupMap = new Map();
+      for (const r of rows.slice(0, 5)) {
+        const refPrice = Number(r.price_usd) || 0;
+        if (r.group_id) {
+          const { results: gRows } = await db
+            .prepare("SELECT * FROM properties WHERE group_id = ? AND id != ?")
+            .bind(r.group_id, r.id || "")
+            .all();
+          for (const d of gRows || []) {
+            if (d && d.id && !relatedIds.has(d.id) && !phoneDupMap.has(d.id)) {
+              phoneDupMap.set(d.id, { dup: d, refPrice });
+            }
+          }
+        }
+        if (r.district && Number(r.area_m2) > 0) {
+          const area = Number(r.area_m2);
+          const { results: dRows } = await db
+            .prepare("SELECT * FROM properties WHERE district = ? AND area_m2 BETWEEN ? AND ? AND id != ? ORDER BY price_usd ASC LIMIT 15")
+            .bind(r.district, area - 1.5, area + 1.5, r.id || "")
+            .all();
+          for (const d of dRows || []) {
+            if (!d || !d.id || relatedIds.has(d.id) || phoneDupMap.has(d.id)) continue;
+            if (!workerFloorsMatch(r.floor, d.floor)) continue;
+            if (!workerRoomsMatch(r.rooms, d.rooms)) continue;
+            phoneDupMap.set(d.id, { dup: d, refPrice });
+          }
+        }
+      }
+      if (phoneDupMap.size > 0) {
+        const sortedPhoneDups = Array.from(phoneDupMap.values()).sort(
+          (a, b) => (Number(a.dup.price_usd) || 0) - (Number(b.dup.price_usd) || 0)
+        );
+        lines.push("");
+        lines.push("🎯 <b>იგივე ბინა სხვაგან:</b>");
+        for (const { dup, refPrice } of sortedPhoneDups.slice(0, 4)) {
+          const dPrice = Math.round(Number(dup.price_usd) || 0);
+          const dSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
+          const dOwner = dup.is_owner ? "მესაკუთრე ✅" : "სააგენტო 🕵️‍♂️";
+          let diffStr = "";
+          if (refPrice > 0 && dPrice > 0) {
+            const delta = Math.round(dPrice - refPrice);
+            if (delta < 0) diffStr = ` (<b>-$${Math.abs(delta).toLocaleString()} უფრო იაფად!</b>)`;
+            else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
+            else diffStr = " (იგივე ფასი)";
+          }
+          lines.push(`• <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}`);
+        }
+      }
+
       return lines.join("\n");
     }
 
@@ -1566,14 +1645,23 @@ async function handleXRayQuery(text, env) {
     }
 
     const phone9 = parsed.phone9 || extract9DigitPhone(target.phone_number || "");
+    const maskedPhone = parsed.maskedPhone || (phone9 ? `${phone9.slice(0, 6)}***` : extractMaskedPhone(target.phone_number || ""));
     const relatedMap = new Map();
-    if (phone9) {
-      const fmt = formatGeorgianPhone(phone9);
+    if (phone9 || maskedPhone) {
+      const fmt = phone9 ? formatGeorgianPhone(phone9) : maskedPhone;
+      const p9Param = phone9 || fmt;
+      const maskParam = maskedPhone || fmt;
       const { results } = await db
-        .prepare("SELECT * FROM properties WHERE phone_number IN (?, ?) ORDER BY scraped_at DESC LIMIT 30")
-        .bind(fmt, phone9)
+        .prepare("SELECT * FROM properties WHERE phone_number IN (?, ?, ?) ORDER BY scraped_at DESC LIMIT 30")
+        .bind(fmt, p9Param, maskParam)
         .all();
-      for (const r of results || []) relatedMap.set(r.id, r);
+      const fetched = results || [];
+      let chosen = fetched;
+      if (phone9) {
+        const exactRows = fetched.filter(r => r.phone_number === fmt || r.phone_number === phone9);
+        if (exactRows.length > 0) chosen = exactRows;
+      }
+      for (const r of chosen) relatedMap.set(r.id, r);
     }
     if (target.author_id) {
       const { results } = await db

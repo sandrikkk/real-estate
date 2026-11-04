@@ -518,6 +518,15 @@ class TestScrapers(unittest.TestCase):
         self.assertEqual(results[0].id, "ss_ge_37161305")
         self.assertFalse(html_called)
 
+    def test_ss_ge_resolve_origin_ip_bypasses_cloudflare(self):
+        scraper = SSGeScraper(max_pages=1)
+        origin_ip = scraper._resolve_origin_ip()
+        self.assertIsNotNone(origin_ip)
+        self.assertFalse(origin_ip.startswith(("104.", "172.6")))
+        resolve_list = scraper._build_origin_resolve_list()
+        self.assertIn(f"home.ss.ge:443:{origin_ip}", resolve_list)
+        self.assertIn(f"api-gateway.ss.ge:443:{origin_ip}", resolve_list)
+
 
 if __name__ == "__main__":
     unittest.main()

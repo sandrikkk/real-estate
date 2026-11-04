@@ -60,6 +60,22 @@ def _extract_9digit_phone(text: str) -> Optional[str]:
     return None
 
 
+def _extract_masked_phone(text: str) -> Optional[str]:
+    if not text:
+        return None
+    cleaned = re.sub(r"https?://\S+", " ", text)
+    match = re.search(
+        r"(?:\+?995[\s\-\.]*)?(5\d{2}[\s\-\.]*\d{2}[\s\-\.]*\d)\*{2,4}",
+        cleaned,
+    )
+    if not match:
+        return None
+    digits = re.sub(r"\D", "", match.group(1))
+    if len(digits) == 6 and digits.startswith("5"):
+        return f"{digits}***"
+    return None
+
+
 def _extract_fb_attributes(text: str) -> Dict[str, Any]:
     area_m2: Optional[float] = None
     floor: Optional[str] = None
@@ -173,6 +189,7 @@ def parse_xray_input(text: str) -> Optional[Dict[str, Any]]:
     # 3. Extract FB text attributes and phone
     fb_attrs = _extract_fb_attributes(stripped)
     phone_9 = _extract_9digit_phone(stripped)
+    masked_phone = f"{phone_9[:6]}***" if phone_9 else _extract_masked_phone(stripped)
     has_fb_signal = bool(
         fb_attrs["area_m2"] is not None
         and (
@@ -187,15 +204,17 @@ def parse_xray_input(text: str) -> Optional[Dict[str, Any]]:
         return {
             "kind": "fb_text",
             "phone_9": phone_9,
-            "formatted_phone": _format_georgian_phone(phone_9) if phone_9 else None,
+            "formatted_phone": _format_georgian_phone(phone_9) if phone_9 else masked_phone,
+            "masked_phone": masked_phone,
             **fb_attrs,
         }
 
-    if phone_9:
+    if phone_9 or masked_phone:
         return {
             "kind": "phone",
             "phone_9": phone_9,
-            "formatted_phone": _format_georgian_phone(phone_9),
+            "formatted_phone": _format_georgian_phone(phone_9) if phone_9 else masked_phone,
+            "masked_phone": masked_phone,
         }
 
     return None
@@ -399,19 +418,27 @@ def _query_by_phone_or_author(
     phone_9: Optional[str] = None,
     formatted_phone: Optional[str] = None,
     author_id: Optional[str] = None,
+    masked_phone: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     seen: Dict[str, Dict[str, Any]] = {}
 
-    if phone_9:
-        fmt = formatted_phone or _format_georgian_phone(phone_9)
+    if phone_9 or masked_phone:
+        fmt = formatted_phone or (_format_georgian_phone(phone_9) if phone_9 else masked_phone)
+        mp = masked_phone or (f"{phone_9[:6]}***" if phone_9 and len(phone_9) >= 6 else fmt)
+        p9 = phone_9 or fmt
         cur.execute(
-            "SELECT * FROM properties WHERE phone_number IN (?, ?) ORDER BY scraped_at DESC LIMIT 30",
-            (fmt, phone_9),
+            "SELECT * FROM properties WHERE phone_number IN (?, ?, ?) ORDER BY scraped_at DESC LIMIT 30",
+            (fmt, p9, mp),
         )
-        for row in cur.fetchall():
-            d = dict(row)
+        fetched = [dict(row) for row in cur.fetchall()]
+        if phone_9:
+            exact_rows = [d for d in fetched if d.get("phone_number") in (fmt, phone_9)]
+            chosen = exact_rows if exact_rows else fetched
+        else:
+            chosen = fetched
+        for d in chosen:
             seen[d["id"]] = d
 
     if author_id:
@@ -467,9 +494,15 @@ def run_xray_on_db(
         kind = parsed["kind"]
 
         if kind == "phone":
-            phone_9 = parsed["phone_9"]
+            phone_9 = parsed.get("phone_9")
             fmt_phone = parsed["formatted_phone"]
-            related = _query_by_phone_or_author(conn, phone_9=phone_9, formatted_phone=fmt_phone)
+            masked_phone = parsed.get("masked_phone")
+            related = _query_by_phone_or_author(
+                conn,
+                phone_9=phone_9,
+                formatted_phone=fmt_phone,
+                masked_phone=masked_phone,
+            )
             if not related:
                 return (
                     f"🔎 <b>ტელეფონის რენტგენი:</b> <code>{fmt_phone}</code>\n\n"
@@ -480,7 +513,11 @@ def run_xray_on_db(
             discovered_author = related[0].get("author_id")
             if discovered_author:
                 by_author = _query_by_phone_or_author(
-                    conn, phone_9=phone_9, formatted_phone=fmt_phone, author_id=discovered_author
+                    conn,
+                    phone_9=phone_9,
+                    formatted_phone=fmt_phone,
+                    author_id=discovered_author,
+                    masked_phone=masked_phone,
                 )
                 seen_r = {r["id"]: r for r in related}
                 for ar in by_author:
@@ -504,6 +541,40 @@ def run_xray_on_db(
                 lines.append(
                     f"• <a href=\"{url}\">{src}</a> — <b>${p_usd:,}</b> | {area:g} მ² | {dist}"
                 )
+
+            dup_by_id: Dict[str, tuple[Dict[str, Any], float]] = {}
+            related_ids = {r["id"] for r in related if r.get("id")}
+            for r in related[:5]:
+                r_price = float(r.get("price_usd") or 0.0)
+                for dup in find_exact_duplicates(conn, r):
+                    did = dup.get("id")
+                    if did and did not in related_ids and did not in dup_by_id:
+                        dup_by_id[did] = (dup, r_price)
+            if dup_by_id:
+                lines.append("")
+                lines.append("🎯 <b>იგივე ბინა სხვაგან:</b>")
+                sorted_dups = sorted(
+                    dup_by_id.values(),
+                    key=lambda item: float(item[0].get("price_usd") or 0.0),
+                )
+                for dup, ref_price in sorted_dups[:4]:
+                    dup_price = float(dup.get("price_usd") or 0.0)
+                    dup_src = "MyHome.ge" if dup.get("source") == "myhome" else "SS.ge"
+                    dup_owner = "მესაკუთრე ✅" if dup.get("is_owner") else "სააგენტო 🕵️‍♂️"
+                    dup_url = dup.get("url") or "#"
+                    diff_str = ""
+                    if ref_price > 0 and dup_price > 0:
+                        delta = round(dup_price - ref_price)
+                        if delta < 0:
+                            diff_str = f" (<b>-${abs(delta):,} უფრო იაფად!</b>)"
+                        elif delta > 0:
+                            diff_str = f" (+${delta:,} უფრო ძვირად)"
+                        else:
+                            diff_str = " (იგივე ფასი)"
+                    lines.append(
+                        f"• <a href=\"{dup_url}\">{dup_src}</a> — <b>${int(dup_price):,}</b>{diff_str} | {dup_owner}"
+                    )
+
             return "\n".join(lines)
 
         target: Optional[Dict[str, Any]] = None
@@ -538,12 +609,18 @@ def run_xray_on_db(
             )
 
         phone_9 = parsed.get("phone_9") or _extract_9digit_phone(str(target.get("phone_number") or ""))
+        masked_phone = (
+            parsed.get("masked_phone")
+            or (f"{phone_9[:6]}***" if phone_9 else None)
+            or _extract_masked_phone(str(target.get("phone_number") or ""))
+        )
         author_id = target.get("author_id")
         related = _query_by_phone_or_author(
             conn,
             phone_9=phone_9,
-            formatted_phone=_format_georgian_phone(phone_9) if phone_9 else None,
+            formatted_phone=_format_georgian_phone(phone_9) if phone_9 else masked_phone,
             author_id=author_id,
+            masked_phone=masked_phone,
         )
         verdict = evaluate_broker_verdict(target, related)
         duplicates = find_exact_duplicates(conn, target)
