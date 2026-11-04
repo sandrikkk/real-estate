@@ -193,8 +193,16 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(info2)
         self.assertTrue(info2.get("is_strictly_lower"))
         self.assertEqual(info2.get("best_price_usd"), 65000.0)
+        self.assertEqual(info2.get("previous_best_price_usd"), 70000.0)
+        self.assertEqual(info2.get("price_drop_usd"), 5000.0)
         # Owner phone should be listing 2's phone (+995 577 22 22 22) because is_owner=True
         self.assertEqual(info2.get("probable_owner_phone"), "+995 577 22 22 22")
+
+        notifier = TelegramNotifier()
+        msg2 = notifier.format_message(l2, dup_info=info2)
+        self.assertIn("ახალი ყველაზე დაბალი ფასი!", msg2)
+        self.assertIn("წინა ფასი: <b>$70,000</b>", msg2)
+        self.assertIn("დაკლებულია: <b>-$5,000</b>", msg2)
 
         # Now listing 3 arrives: also $65,000, from another Agent
         l3 = PropertyListing(
@@ -229,6 +237,33 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ყველაზე იაფი: <b>$65,000</b> (<a", msg3)
         # Should display probable owner phone as +995 577 22 22 22 (from l2), NOT +995 599 33 33 33
         self.assertIn("+995 577 22 22 22", msg3)
+
+        # Listing 4 arrives at $64,999 ($1 difference from $65,000)
+        l4 = PropertyListing(
+            id="prop_4",
+            source="ss_ge",
+            source_id="4",
+            title="Apt 4",
+            price_usd=64999.0,
+            area_m2=50.0,
+            price_per_m2=1299.98,
+            district="საბურთალო",
+            rooms=2,
+            url="https://ss.ge/4",
+            phone_number="+995 599 44 44 44",
+            is_owner=False,
+            user_type="agent",
+        )
+        self.db.save_listing(l4)
+        info4 = await detector.check_listing(l4)
+        self.assertIsNotNone(info4)
+        self.assertTrue(info4.get("is_strictly_lower"))
+        self.assertEqual(info4.get("previous_best_price_usd"), 65000.0)
+        self.assertEqual(info4.get("price_drop_usd"), 1.0)
+        msg4 = notifier.format_message(l4, dup_info=info4)
+        self.assertIn("ახალი ყველაზე დაბალი ფასი!", msg4)
+        self.assertIn("წინა ფასი: <b>$65,000</b>", msg4)
+        self.assertIn("დაკლებულია: <b>-$1</b>", msg4)
 
     async def test_duplicate_first_owner_higher_price_shows_cheaper_link(self):
         """Verify that when a verified owner posts at a higher price than an agent's listing,

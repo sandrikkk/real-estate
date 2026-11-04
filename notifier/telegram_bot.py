@@ -176,6 +176,22 @@ class TelegramNotifier:
                 lines.append(
                     f"🔻 <b>ახალი ყველაზე დაბალი ფასი!</b> ({dup_count} განცხადება იგივე ბინაზე)"
                 )
+                prev_price = dup_info.get("previous_best_price_usd")
+                if prev_price is not None and prev_price > listing.price_usd:
+                    price_drop = dup_info.get("price_drop_usd") or (prev_price - listing.price_usd)
+                    prev_str = (
+                        f"${prev_price:,.0f}"
+                        if prev_price == int(prev_price)
+                        else f"${prev_price:,.2f}"
+                    )
+                    drop_str = (
+                        f"${price_drop:,.0f}"
+                        if price_drop == int(price_drop)
+                        else f"${price_drop:,.2f}"
+                    )
+                    lines.append(
+                        f"📉 წინა ფასი: <b>{prev_str}</b> | დაკლებულია: <b>-{drop_str}</b>"
+                    )
             elif dup_info.get("is_first_owner"):
                 lines.append(
                     f"🔑 <b>მესაკუთრის განცხადება!</b> ({dup_count} განცხადება იგივე ბინაზე)"

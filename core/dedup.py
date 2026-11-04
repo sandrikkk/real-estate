@@ -276,8 +276,16 @@ class DuplicateDetector:
         # Is the current listing the new strictly lowest price or first owner listing?
         other_prices = [r["price_usd"] for r in rows if r["id"] != current_listing_id]
         current_price = next((r["price_usd"] for r in rows if r["id"] == current_listing_id), None)
+        previous_best_price = min(other_prices) if other_prices else None
         is_strictly_lower = (
-            current_price is not None and bool(other_prices) and current_price < min(other_prices)
+            current_price is not None
+            and previous_best_price is not None
+            and current_price < previous_best_price
+        )
+        price_drop_usd = (
+            float(previous_best_price - current_price)
+            if (is_strictly_lower and previous_best_price is not None and current_price is not None)
+            else 0.0
         )
 
         def _is_verified_owner(val) -> bool:
@@ -347,6 +355,8 @@ class DuplicateDetector:
             "duplicate_count": len(rows),
             "best_price_usd": best["price_usd"],
             "best_price_url": best["url"],
+            "previous_best_price_usd": previous_best_price,
+            "price_drop_usd": price_drop_usd,
             "probable_owner_phone": owner_phone,
             "price_spread": max(prices) - min(prices),
             "is_new_best_price": is_new_best,
