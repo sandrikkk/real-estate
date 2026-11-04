@@ -606,8 +606,17 @@ class MyHomeScraper(BaseScraper):
             elif user_type_str in ["agency", "developer", "agent", "broker"]:
                 is_owner = False
 
-            # Phone Number
+            # Phone Number & Author Metadata
             phone_number = _extract_phone_number(item.get("user_phone_number"), description)
+            user_obj = item.get("user") if isinstance(item.get("user"), dict) else {}
+            raw_uid = item.get("user_id") or user_obj.get("id")
+            author_id = str(raw_uid) if raw_uid is not None else None
+            raw_cnt = (
+                item.get("user_statements_count")
+                or item.get("statements_count")
+                or user_obj.get("statements_count")
+            )
+            author_listings_count = _safe_int(raw_cnt)
 
             return PropertyListing(
                 id=f"myhome_{source_id}",
@@ -638,6 +647,8 @@ class MyHomeScraper(BaseScraper):
                 user_type=user_type_str,
                 is_owner=is_owner,
                 phone_number=phone_number,
+                author_id=author_id,
+                author_listings_count=author_listings_count,
             )
         except Exception as e:
             print(f"[MyHome Normalization Error for item {item.get('id')}]: {e}")

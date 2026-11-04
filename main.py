@@ -329,6 +329,23 @@ class RealEstateOrchestrator:
                             )
                         if details.get("price_label"):
                             myhome_label = details.get("price_label")
+                        if not listing.author_id:
+                            raw_uid = details.get("user_id") or (
+                                details.get("user") or {}
+                            ).get("id")
+                            if raw_uid is not None:
+                                listing.author_id = str(raw_uid)
+                        if listing.author_listings_count is None:
+                            raw_cnt = (
+                                details.get("user_statements_count")
+                                or details.get("statements_count")
+                                or (details.get("user") or {}).get("statements_count")
+                            )
+                            if raw_cnt is not None:
+                                try:
+                                    listing.author_listings_count = int(raw_cnt)
+                                except (ValueError, TypeError):
+                                    pass
             elif listing.source == "ss_ge":
                 ss_scraper = next((s for s in self.scrapers if s.name == "SS.ge"), None)
                 if ss_scraper and hasattr(ss_scraper, "fetch_statement_details"):
@@ -373,6 +390,13 @@ class RealEstateOrchestrator:
                             )
                         if details.get("price_label"):
                             myhome_label = details.get("price_label")
+                        if not listing.author_id and details.get("author_id"):
+                            listing.author_id = str(details["author_id"])
+                        if (
+                            listing.author_listings_count is None
+                            and details.get("author_listings_count") is not None
+                        ):
+                            listing.author_listings_count = int(details["author_listings_count"])
 
             # Re-verify in-place price drop after live statement detail enrichment
             if listing.id in price_drops:

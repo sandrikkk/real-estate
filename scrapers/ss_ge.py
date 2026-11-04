@@ -268,6 +268,7 @@ class SSGeScraper(BaseScraper):
                                     break
 
                         p_usd, p_gel = self._extract_prices(app_data)
+                        raw_uid = app_data.get("userId") or agency_id
                         return {
                             "is_owner": is_owner,
                             "agency_id": agency_id,
@@ -282,6 +283,8 @@ class SSGeScraper(BaseScraper):
                             "comment": comment,
                             "price_usd": p_usd,
                             "price_gel": p_gel,
+                            "author_id": str(raw_uid) if raw_uid is not None else None,
+                            "author_listings_count": _safe_int(app_count),
                         }
         except Exception as e:
             print(f"[SS.ge Statement Detail Error for {source_id_or_url}]: {e}")
@@ -548,8 +551,12 @@ class SSGeScraper(BaseScraper):
             ):
                 is_owner = False
 
-            # Phone extraction
+            # Phone extraction & Author Metadata
             phone_number = _extract_phone_number(item.get("user_phone_number"), description)
+            raw_uid = item.get("userId") or item.get("user_id") or item.get("agencyId")
+            author_id = str(raw_uid) if raw_uid is not None else None
+            raw_cnt = item.get("userApplicationCount") or item.get("user_statements_count")
+            author_listings_count = _safe_int(raw_cnt)
 
             return PropertyListing(
                 id=f"ss_ge_{source_id}",
@@ -580,6 +587,8 @@ class SSGeScraper(BaseScraper):
                 user_type=user_type_str,
                 is_owner=is_owner,
                 phone_number=phone_number,
+                author_id=author_id,
+                author_listings_count=author_listings_count,
             )
         except Exception as e:
             print(

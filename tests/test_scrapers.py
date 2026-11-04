@@ -383,6 +383,39 @@ class TestScrapers(unittest.TestCase):
         self.assertEqual((envelopes[1].price_min_usd, envelopes[1].price_max_usd), (90000, 115000))
         self.assertEqual((envelopes[1].area_min_m2, envelopes[1].area_max_m2), (40, 120))
 
+    def test_scrapers_extract_author_id_and_listings_count(self):
+        mh = MyHomeScraper()
+        mh_item = mh._normalize_item(
+            {
+                "id": 990011,
+                "dynamic_title": "იყიდება ბინა საბურთალოზე",
+                "price": {"2": {"price_total": 85000}},
+                "area": 62,
+                "urban_name": "საბურთალო",
+                "user_id": 12345,
+                "user_statements_count": 7,
+            }
+        )
+        self.assertIsNotNone(mh_item)
+        self.assertEqual(mh_item.author_id, "12345")
+        self.assertEqual(mh_item.author_listings_count, 7)
+
+        ss = SSGeScraper()
+        ss_item = ss._normalize_item(
+            {
+                "applicationId": 554433,
+                "title": "იყიდება ბინა ვაკეში",
+                "price": {"priceUsd": 110000},
+                "totalArea": 70,
+                "address": {"districtTitle": "ვაკე"},
+                "userId": "u_8899",
+                "userApplicationCount": 5,
+            }
+        )
+        self.assertIsNotNone(ss_item)
+        self.assertEqual(ss_item.author_id, "u_8899")
+        self.assertEqual(ss_item.author_listings_count, 5)
+
 
 if __name__ == "__main__":
     unittest.main()
