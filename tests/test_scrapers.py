@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+import urllib.parse
 from core.models import SearchFilters
 from scrapers.myhome import MyHomeScraper
 from scrapers.ss_ge import SSGeScraper
@@ -440,7 +441,11 @@ class TestScrapers(unittest.TestCase):
         self.assertEqual(payload_1["areaTo"], 65)
         self.assertNotIn("rooms", payload_1)
         self.assertEqual(payload_1["subdistrictIds"], [1, 37, 39, 41, 42])
-        self.assertEqual(payload_1["advancedSearch"], {"individualEntityOnly": True})
+        self.assertEqual(payload_1["realEstateStatuses"], [2, 453])
+        self.assertEqual(
+            payload_1["advancedSearch"],
+            {"individualEntityOnly": True, "realEstateStates": [9, 11, 12, 15, 16]},
+        )
         self.assertEqual(payload_1["page"], 1)
         self.assertEqual(payload_1["order"], 1)
 
@@ -456,8 +461,22 @@ class TestScrapers(unittest.TestCase):
         self.assertEqual(payload_2["priceFrom"], 500)
         self.assertEqual(payload_2["priceTo"], 1000)
         self.assertEqual(payload_2["rooms"], [2, 3, 4, 5])
+        self.assertEqual(payload_2["realEstateStatuses"], [2, 453])
         self.assertNotIn("advancedSearch", payload_2)
         self.assertEqual(payload_2["page"], 2)
+
+    def test_ss_ge_search_url_mirrors_myhome_status_and_condition_filters(self):
+        scraper = SSGeScraper()
+        url_sale = scraper._build_search_url(SearchFilters(deal_type="sale"), page=1)
+        self.assertIn("realEstateStatuses=2,453", url_sale)
+        self.assertIn(
+            "advancedSearch=" + urllib.parse.quote('{"realEstateStates":[9,11,12,15,16]}'),
+            url_sale,
+        )
+
+        url_rent = scraper._build_search_url(SearchFilters(deal_type="rent"), page=1)
+        self.assertIn("realEstateStatuses=2,453", url_rent)
+        self.assertNotIn("advancedSearch=", url_rent)
 
     def test_ss_ge_parse_statement_details_data(self):
         scraper = SSGeScraper()

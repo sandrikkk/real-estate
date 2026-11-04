@@ -96,6 +96,13 @@ SS_GE_SUBDISTRICT_MAP: Dict[str, List[int]] = {
     "ძველი თბილისი": [20, 21, 22, 23, 51, 52],
 }
 
+# Mirrors MyHome `statuses=1,2`: 2=ახალი აშენებული, 453=ძველი აშენებული (excludes 3=მშენებარე)
+SS_GE_BUILDING_STATUSES: List[int] = [2, 453]
+# Mirrors MyHome sale `conditions=1,2,3,5,8`: 9=თეთრი კარკასი, 11=მიმდინარე რემონტი,
+# 12=ძველი რემონტით, 15=გარემონტებული, 16=ახალი რემონტით
+# (excludes 8=შავი კარკასი, 10=სარემონტო, 35=მწვანე კარკასი)
+SS_GE_SALE_REAL_ESTATE_STATES: List[int] = [9, 11, 12, 15, 16]
+
 
 class SSGeScraper(BaseScraper):
     API_BASE_URL = "https://api-gateway.ss.ge"
@@ -171,6 +178,7 @@ class SSGeScraper(BaseScraper):
             "realEstateDealType": deal_type_id,
             "cityIdList": [95],
             "currencyId": 2,
+            "realEstateStatuses": SS_GE_BUILDING_STATUSES,
             "page": page,
             "pageSize": 16,
             "order": 1,
@@ -199,10 +207,15 @@ class SSGeScraper(BaseScraper):
         if filters.rooms_min is not None and int(filters.rooms_min) > 1:
             r_min = int(filters.rooms_min)
             payload["rooms"] = list(range(r_min, 6)) if r_min <= 5 else [r_min]
+        advanced_search: dict = {}
         if filters.owner_type:
             ot = str(filters.owner_type).lower().strip()
             if ot in ["owner", "physical", "მესაკუთრე"]:
-                payload["advancedSearch"] = {"individualEntityOnly": True}
+                advanced_search["individualEntityOnly"] = True
+        if filters.deal_type != "rent":
+            advanced_search["realEstateStates"] = SS_GE_SALE_REAL_ESTATE_STATES
+        if advanced_search:
+            payload["advancedSearch"] = advanced_search
 
         sub_ids = self._resolve_subdistrict_ids(filters)
         if sub_ids:
@@ -214,7 +227,12 @@ class SSGeScraper(BaseScraper):
         deal_path = "iyideba" if filters.deal_type == "sale" else "qiravdeba"
         url = f"https://home.ss.ge/ka/udzravi-qoneba/l/bina/{deal_path}?cityIdList=95&currencyId=2&order=1&page={page}"
 
-        params = []
+        params = [f"realEstateStatuses={','.join(str(s) for s in SS_GE_BUILDING_STATUSES)}"]
+        if filters.deal_type != "rent":
+            states_json = json.dumps(
+                {"realEstateStates": SS_GE_SALE_REAL_ESTATE_STATES}, separators=(",", ":")
+            )
+            params.append(f"advancedSearch={urllib.parse.quote(states_json)}")
         min_p = (
             filters.rent_price_min_usd
             if filters.deal_type == "rent" and filters.rent_price_min_usd is not None
