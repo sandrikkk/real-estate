@@ -127,7 +127,7 @@ def fetch_bindings_via_wrangler_cli() -> dict[str, str]:
     resolved: dict[str, str] = {}
     try:
         kv_proc = subprocess.run(
-            ["npx", "--yes", "wrangler@3", "kv", "namespace", "list"],
+            ["npx", "--yes", "wrangler@4", "kv", "namespace", "list"],
             cwd=str(CLOUDFLARE_DIR),
             capture_output=True,
             text=True,
@@ -147,7 +147,7 @@ def fetch_bindings_via_wrangler_cli() -> dict[str, str]:
 
     try:
         d1_proc = subprocess.run(
-            ["npx", "--yes", "wrangler@3", "d1", "list", "--json"],
+            ["npx", "--yes", "wrangler@4", "d1", "list", "--json"],
             cwd=str(CLOUDFLARE_DIR),
             capture_output=True,
             text=True,
@@ -202,7 +202,7 @@ def render_wrangler_toml(
     return (
         f'name = "{w_name}"\n'
         f'main = "worker.js"\n'
-        f'compatibility_date = "2024-11-01"\n'
+        f'compatibility_date = "2026-08-22"\n'
         f"keep_vars = true\n\n"
         f"[[kv_namespaces]]\n"
         f'binding = "USERS_KV"\n'
@@ -255,7 +255,7 @@ def main() -> int:
 
     try:
         WRANGLER_TOML_PATH.write_text(toml_content, encoding="utf-8")
-        cmd = ["npx", "--yes", "wrangler@3", "deploy"]
+        cmd = ["npx", "--yes", "wrangler@4", "deploy"]
         result = subprocess.run(cmd, cwd=str(CLOUDFLARE_DIR), check=False)
         return result.returncode
     finally:

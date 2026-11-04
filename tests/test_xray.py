@@ -536,6 +536,14 @@ class TestXRayEngine(unittest.TestCase):
         self.assertIn("keep_vars = true", toml_text)
         self.assertIn('binding = "USERS_KV"', toml_text)
         self.assertIn('binding = "DB"', toml_text)
+        self.assertIn('compatibility_date = "2026-08-22"', toml_text)
+
+        # wrangler@3 exits silently with code 1 locally, so discovery and deploy must use v4
+        deploy_src = (
+            Path(__file__).resolve().parent.parent / "scripts" / "deploy_worker.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("wrangler@3", deploy_src)
+        self.assertIn("wrangler@4", deploy_src)
 
         # 5. Repository hygiene: wrangler.toml is gitignored and no live wrangler.toml exists on disk
         repo_root = Path(__file__).resolve().parent.parent
