@@ -137,6 +137,9 @@ class PropertyListing(BaseModel):
     duplicate_group_id: Optional[str] = None
     previous_price_usd: Optional[float] = None
     price_drop_usd: Optional[float] = None
+    initial_price_usd: Optional[float] = None
+    author_id: Optional[str] = None
+    author_listings_count: Optional[int] = None
 
     @model_validator(mode="after")
     def compute_fields(self):

@@ -287,6 +287,9 @@ class DatabaseEngine:
                         ("is_hot_deal", "INTEGER DEFAULT 0"),
                         ("phone_number", "TEXT"),
                         ("group_id", "TEXT"),
+                        ("initial_price_usd", "REAL"),
+                        ("author_id", "TEXT"),
+                        ("author_listings_count", "INTEGER"),
                     ]:
                         if col_name not in cols:
                             try:
@@ -297,6 +300,12 @@ class DatabaseEngine:
                                 pass
                     cursor.execute(
                         "CREATE INDEX IF NOT EXISTS idx_properties_district_area ON properties(district, area_m2)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_properties_phone ON properties(phone_number)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_properties_author_id ON properties(author_id)"
                     )
                 except Exception as e:
                     print(f"[D1 Migration Warning]: {e}")
@@ -331,7 +340,10 @@ class DatabaseEngine:
                         deal_type TEXT DEFAULT 'sale',
                         phone_number TEXT,
                         is_owner INTEGER,
-                        user_type TEXT
+                        user_type TEXT,
+                        initial_price_usd REAL,
+                        author_id TEXT,
+                        author_listings_count INTEGER
                     )
                 """)
                 cursor.execute(
@@ -380,8 +392,22 @@ class DatabaseEngine:
                     cursor.execute("ALTER TABLE properties ADD COLUMN is_owner INTEGER")
                 if "user_type" not in cols:
                     cursor.execute("ALTER TABLE properties ADD COLUMN user_type TEXT")
+                if "initial_price_usd" not in cols:
+                    cursor.execute("ALTER TABLE properties ADD COLUMN initial_price_usd REAL")
+                if "author_id" not in cols:
+                    cursor.execute("ALTER TABLE properties ADD COLUMN author_id TEXT")
+                if "author_listings_count" not in cols:
+                    cursor.execute(
+                        "ALTER TABLE properties ADD COLUMN author_listings_count INTEGER"
+                    )
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_properties_deal_type ON properties(deal_type)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_properties_phone ON properties(phone_number)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_properties_author_id ON properties(author_id)"
                 )
 
                 # Duplicate detection tables
@@ -629,9 +655,10 @@ class DatabaseEngine:
                         url, images_json, published_at, scraped_at,
                         is_bargain, is_notified,
                         metro_station_id, condition_id, is_hot_deal, phone_number,
-                        is_owner, user_type
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_owner, user_type, initial_price_usd, author_id, author_listings_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
+                        initial_price_usd = COALESCE(properties.initial_price_usd, properties.price_usd, excluded.price_usd),
                         price_usd = excluded.price_usd,
                         price_gel = COALESCE(excluded.price_gel, properties.price_gel),
                         price_per_m2 = excluded.price_per_m2,
@@ -640,12 +667,16 @@ class DatabaseEngine:
                         phone_number = COALESCE(excluded.phone_number, properties.phone_number),
                         is_owner = COALESCE(excluded.is_owner, properties.is_owner),
                         user_type = COALESCE(excluded.user_type, properties.user_type),
+                        author_id = COALESCE(excluded.author_id, properties.author_id),
+                        author_listings_count = COALESCE(excluded.author_listings_count, properties.author_listings_count),
                         is_bargain = excluded.is_bargain,
                         is_hot_deal = excluded.is_hot_deal
                     WHERE properties.price_usd IS NOT excluded.price_usd
                        OR properties.is_owner IS NOT excluded.is_owner
                        OR properties.condition_id IS NOT excluded.condition_id
                        OR properties.phone_number IS NOT excluded.phone_number
+                       OR properties.author_id IS NOT excluded.author_id
+                       OR properties.author_listings_count IS NOT excluded.author_listings_count
                        OR properties.is_bargain IS NOT excluded.is_bargain
                        OR properties.is_hot_deal IS NOT excluded.is_hot_deal
                 """,
@@ -682,6 +713,9 @@ class DatabaseEngine:
                         if listing.is_owner is True
                         else (0 if listing.is_owner is False else None),
                         listing.user_type,
+                        listing.initial_price_usd if listing.initial_price_usd is not None else listing.price_usd,
+                        listing.author_id,
+                        listing.author_listings_count,
                     ),
                 )
                 conn.commit()
@@ -700,9 +734,7 @@ class DatabaseEngine:
         for item in listings:
             self._append_seen_id(item.id)
             if item.id and item.price_usd and item.price_usd > 0:
-                prev = self._seen_prices.get(item.id)
-                if prev is None or float(item.price_usd) < prev:
-                    self._seen_prices[item.id] = float(item.price_usd)
+                self._seen_prices[item.id] = float(item.price_usd)
 
         sql = """
             INSERT INTO properties (
@@ -713,13 +745,20 @@ class DatabaseEngine:
                 url, images_json, published_at, scraped_at,
                 is_bargain, is_notified,
                 metro_station_id, condition_id, is_hot_deal, phone_number,
-                is_owner, user_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                is_owner, user_type, initial_price_usd, author_id, author_listings_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
+                initial_price_usd = COALESCE(properties.initial_price_usd, properties.price_usd, excluded.price_usd),
                 price_usd = excluded.price_usd,
                 price_gel = COALESCE(excluded.price_gel, properties.price_gel),
-                price_per_m2 = excluded.price_per_m2
-            WHERE excluded.price_usd > 0 AND excluded.price_usd < properties.price_usd
+                price_per_m2 = excluded.price_per_m2,
+                phone_number = COALESCE(excluded.phone_number, properties.phone_number),
+                author_id = COALESCE(excluded.author_id, properties.author_id),
+                author_listings_count = COALESCE(excluded.author_listings_count, properties.author_listings_count)
+            WHERE excluded.price_usd > 0
+              AND (properties.price_usd IS NOT excluded.price_usd
+                   OR properties.phone_number IS NOT excluded.phone_number
+                   OR properties.author_id IS NOT excluded.author_id)
         """
 
         params_list = []
@@ -761,6 +800,9 @@ class DatabaseEngine:
                     listing.phone_number,
                     1 if listing.is_owner is True else (0 if listing.is_owner is False else None),
                     listing.user_type,
+                    listing.initial_price_usd if listing.initial_price_usd is not None else listing.price_usd,
+                    listing.author_id,
+                    listing.author_listings_count,
                 )
             )
 

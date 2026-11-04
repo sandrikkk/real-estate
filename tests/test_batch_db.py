@@ -256,6 +256,63 @@ class TestBatchDatabaseOperations(unittest.TestCase):
         self.assertEqual(l1_dropped.price_drop_usd, 1.0)
         self.assertIsNone(l3_new.previous_price_usd)
 
+    def test_initial_price_preserved_across_price_drop_and_increase(self):
+        l1 = self._create_sample_listing("myhome_init_1", price=95000.0)
+        l1.author_id = "user_777"
+        l1.author_listings_count = 4
+        self.db.save_listings_batch([l1])
+
+        # Drop price to 88000
+        l1_drop = self._create_sample_listing("myhome_init_1", price=88000.0)
+        self.db.save_listings_batch([l1_drop])
+
+        with self.db._connection() as conn:
+            row = conn.cursor().execute(
+                "SELECT price_usd, initial_price_usd, author_id, author_listings_count FROM properties WHERE id = ?",
+                ("myhome_init_1",),
+            ).fetchone()
+            self.assertEqual(float(row["price_usd"]), 88000.0)
+            self.assertEqual(float(row["initial_price_usd"]), 95000.0)
+            self.assertEqual(row["author_id"], "user_777")
+            self.assertEqual(int(row["author_listings_count"]), 4)
+
+        # Increase price to 99000 -> price_usd updates, initial_price_usd stays 95000, no sniper drop alert
+        l1_inc = self._create_sample_listing("myhome_init_1", price=99000.0)
+        candidates, drops = self.db.classify_scraped_listings([l1_inc])
+        self.assertEqual(len(candidates), 0)
+        self.assertEqual(drops, {})
+        self.db.save_listings_batch([l1_inc])
+
+        with self.db._connection() as conn:
+            row = conn.cursor().execute(
+                "SELECT price_usd, initial_price_usd FROM properties WHERE id = ?",
+                ("myhome_init_1",),
+            ).fetchone()
+            self.assertEqual(float(row["price_usd"]), 99000.0)
+            self.assertEqual(float(row["initial_price_usd"]), 95000.0)
+
+    def test_legacy_null_initial_price_backfilled_on_update(self):
+        l1 = self._create_sample_listing("myhome_legacy_1", price=100000.0)
+        self.db.save_listing(l1)
+        # Simulate legacy row with initial_price_usd = NULL
+        with self.db._connection() as conn:
+            conn.cursor().execute(
+                "UPDATE properties SET initial_price_usd = NULL WHERE id = ?",
+                ("myhome_legacy_1",),
+            )
+            conn.commit()
+
+        l1_updated = self._create_sample_listing("myhome_legacy_1", price=92000.0)
+        self.db.save_listing(l1_updated)
+
+        with self.db._connection() as conn:
+            row = conn.cursor().execute(
+                "SELECT price_usd, initial_price_usd FROM properties WHERE id = ?",
+                ("myhome_legacy_1",),
+            ).fetchone()
+            self.assertEqual(float(row["price_usd"]), 92000.0)
+            self.assertEqual(float(row["initial_price_usd"]), 100000.0)
+
 
 if __name__ == "__main__":
     unittest.main()
