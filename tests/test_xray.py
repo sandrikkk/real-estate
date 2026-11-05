@@ -784,6 +784,23 @@ class TestXRayEngine(unittest.TestCase):
         self.assertTrue(verdict_diff_rooms["is_broker"])
         self.assertEqual(verdict_diff_rooms["unique_apartments"], 2)
 
+    def test_worker_webhook_secret_stack_scrubbing_and_scheduled_trigger(self):
+        from pathlib import Path
+
+        worker_path = Path(__file__).resolve().parent.parent / "cloudflare" / "worker.js"
+        worker_src = worker_path.read_text(encoding="utf-8")
+
+        # 1. Webhook verifies X-Telegram-Bot-Api-Secret-Token when TELEGRAM_WEBHOOK_SECRET is configured
+        self.assertIn("X-Telegram-Bot-Api-Secret-Token", worker_src)
+        self.assertIn("TELEGRAM_WEBHOOK_SECRET", worker_src)
+
+        # 2. handleApiUsers must not leak fatalErr.stack in JSON responses
+        self.assertNotIn("fatalErr.stack", worker_src)
+
+        # 3. Worker exports scheduled() handler to trigger GitHub workflow_dispatch when configured
+        self.assertIn("async scheduled(", worker_src)
+        self.assertIn("dispatches", worker_src)
+
 
 if __name__ == "__main__":
     unittest.main()

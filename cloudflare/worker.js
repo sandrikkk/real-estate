@@ -221,6 +221,31 @@ export default {
       }, null, 2),
       { headers: { "content-type": "application/json; charset=utf-8" } }
     );
+  },
+
+  async scheduled(event, env, ctx) {
+    const ghToken = env && (env.GITHUB_PAT || env.GITHUB_TOKEN);
+    if (!ghToken) return;
+    const repo = (env && env.GITHUB_REPO) || "sandrikkk/real-estate";
+    const workflow = (env && env.GITHUB_WORKFLOW) || "scrape.yml";
+    const ref = (env && env.GITHUB_REF) || "master";
+    const dispatchUrl = `https://api.github.com/repos/${repo}/actions/workflows/${workflow}/dispatches`;
+    const task = fetch(dispatchUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${ghToken}`,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "tbilisi-real-estate-worker",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ ref })
+    }).catch(err => console.error("GitHub workflow_dispatch error:", err));
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(task);
+    } else {
+      await task;
+    }
   }
 };
 
@@ -370,7 +395,7 @@ async function handleApiUsers(request, env) {
       }
     });
   } catch (fatalErr) {
-    return new Response(JSON.stringify({ error: fatalErr.message, stack: fatalErr.stack }), {
+    return new Response(JSON.stringify({ error: fatalErr.message || "Internal Server Error" }), {
       status: 500,
       headers: { "content-type": "application/json; charset=utf-8" }
     });
@@ -444,6 +469,13 @@ async function handleDbRequest(request, env) {
  * Handles incoming Telegram Webhook payloads
  */
 async function handleTelegramWebhook(request, env) {
+  if (env && env.TELEGRAM_WEBHOOK_SECRET) {
+    const providedSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
+    if (!timingSafeEqualStr(providedSecret, String(env.TELEGRAM_WEBHOOK_SECRET))) {
+      return unauthorizedResponse();
+    }
+  }
+
   const token = env.TELEGRAM_BOT_TOKEN;
   if (!token) {
     return new Response(JSON.stringify({ error: "TELEGRAM_BOT_TOKEN not configured" }), { status: 500 });

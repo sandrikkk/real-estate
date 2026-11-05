@@ -15,6 +15,7 @@ last_run_stats = {
 }
 orchestrator = None
 is_running = True
+_scan_lock = threading.Lock()
 
 def add_log(message: str):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -40,13 +41,14 @@ def run_worker_loop():
 
     while is_running:
         try:
-            add_log("🔍 Scanning MyHome.ge and SS.ge for new properties...")
-            stats = loop.run_until_complete(orchestrator.run_cycle())
-            last_run_stats = {
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "stats": f"Fetched: {stats.get('total_fetched', 0)} | New: {stats.get('new_listings', 0)} | Matched: {stats.get('matched_filters', 0)} | Alerts: {stats.get('notifications_sent', 0)}"
-            }
-            add_log(f"✅ Cycle completed: {last_run_stats['stats']}")
+            with _scan_lock:
+                add_log("🔍 Scanning MyHome.ge and SS.ge for new properties...")
+                stats = loop.run_until_complete(orchestrator.run_cycle())
+                last_run_stats = {
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "stats": f"Fetched: {stats.get('total_fetched', 0)} | New: {stats.get('new_listings', 0)} | Matched: {stats.get('matched_filters', 0)} | Alerts: {stats.get('notifications_sent', 0)}"
+                }
+                add_log(f"✅ Cycle completed: {last_run_stats['stats']}")
         except Exception as e:
             add_log(f"⚠️ Error during cycle: {e}")
         
@@ -71,13 +73,20 @@ def get_live_status():
 def manual_scan():
     add_log("⚡ Manual Instant Scan Triggered by User!")
     if orchestrator:
+        if not _scan_lock.acquire(blocking=False):
+            add_log("⏳ Scan already in progress; skipping concurrent manual trigger.")
+            return get_live_status()
         try:
             loop = asyncio.new_event_loop()
-            stats = loop.run_until_complete(orchestrator.run_cycle())
-            loop.close()
+            try:
+                stats = loop.run_until_complete(orchestrator.run_cycle())
+            finally:
+                loop.close()
             add_log(f"⚡ Manual Scan Finished: Fetched: {stats.get('total_fetched', 0)}, Alerts: {stats.get('notifications_sent', 0)}")
         except Exception as e:
             add_log(f"❌ Manual Scan Error: {e}")
+        finally:
+            _scan_lock.release()
     return get_live_status()
 
 # Simple Gradio UI

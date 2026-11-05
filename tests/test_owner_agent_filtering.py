@@ -386,6 +386,63 @@ class TestOwnerAgentFiltering(unittest.TestCase):
         self.assertIn("სააგენტო (Agent)", msg)
         self.assertNotIn("მესაკუთრე (Owner)", msg)
 
+    def test_physical_user_type_without_explicit_is_owner_remains_unverified(self):
+        """
+        user_type='physical' without explicit is_owner is NOT proof of an owner.
+        1. Scrapers must normalize bare user_type='physical' to is_owner=None (unless text declares owner).
+        2. matches_hygiene must keep is_owner=None so tentative=True allows enrichment for both owner and agent users.
+        3. If detail enrichment fails (is_owner stays None), strict matches_user(tentative=False) rejects it for owner-only users.
+        """
+        from scrapers.myhome import MyHomeScraper
+
+        scraper = MyHomeScraper()
+        raw_myhome = {
+            "id": 26999111,
+            "deal_type_id": 1,
+            "real_estate_type_id": 1,
+            "price": {"2": {"price_total": 60000}},
+            "area": 55,
+            "urban_name": "საბურთალო",
+            "room": 2,
+            "bedroom": 1,
+            "images": [{"large": "https://static-statements.tnet.ge/uploads/test.webp"}],
+            "user_type": {"type": "physical"},
+        }
+        listing = scraper._normalize_item(raw_myhome)
+        self.assertIsNotNone(listing)
+        self.assertEqual(listing.user_type, "physical")
+        self.assertIsNone(listing.is_owner)
+
+        self.assertTrue(self.filter_engine.matches_hygiene(listing))
+        self.assertIsNone(listing.is_owner)
+
+        owner_user = UserSubscription(
+            chat_id="owner_only_1",
+            deal_type="sale",
+            price_min_usd=50000,
+            price_max_usd=70000,
+            districts=["საბურთალო"],
+            owner_type="owner",
+            is_active=True,
+        )
+        agent_user = UserSubscription(
+            chat_id="agent_only_1",
+            deal_type="sale",
+            price_min_usd=50000,
+            price_max_usd=70000,
+            districts=["საბურთალო"],
+            owner_type="agent",
+            is_active=True,
+        )
+
+        # Tentative check passes for BOTH owner and agent subscribers so detail enrichment runs
+        self.assertTrue(self.filter_engine.matches_user(owner_user, listing, tentative=True))
+        self.assertTrue(self.filter_engine.matches_user(agent_user, listing, tentative=True))
+
+        # Without detail enrichment verifying is_owner, strict check MUST reject both
+        self.assertFalse(self.filter_engine.matches_user(owner_user, listing, tentative=False))
+        self.assertFalse(self.filter_engine.matches_user(agent_user, listing, tentative=False))
+
 
 if __name__ == "__main__":
     unittest.main()

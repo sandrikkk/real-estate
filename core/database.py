@@ -254,6 +254,19 @@ class DatabaseEngine:
             except Exception as e:
                 print(f"[Warning]: Failed to append to seen_ids.txt: {e}")
 
+    def _remove_seen_id(self, listing_id: str):
+        self._seen_ids.discard(listing_id)
+        if not self.seen_ids_path.exists():
+            return
+        try:
+            tmp_path = self.seen_ids_path.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                for sid in sorted(self._seen_ids):
+                    f.write(f"{sid}\n")
+            tmp_path.replace(self.seen_ids_path)
+        except Exception as e:
+            print(f"[Warning]: Failed to update seen_ids.txt: {e}")
+
     @contextmanager
     def _connection(self):
         if self.use_d1 and self.d1_client:
@@ -858,7 +871,7 @@ class DatabaseEngine:
                         (listing_id,),
                     )
                     conn.commit()
-                    self._seen_ids.discard(listing_id)
+                    self._remove_seen_id(listing_id)
                     self._seen_prices.pop(listing_id, None)
             except DatabaseUnavailableError:
                 raise

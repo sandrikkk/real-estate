@@ -1188,6 +1188,35 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(sent_captions[-1]), 1024)
         mock_bot.send_message.assert_not_called()
 
+    def test_rollback_unsent_listing_removes_id_from_seen_ids_file_on_disk(self):
+        """rollback_unsent_listing must also remove the ID from seen_ids.txt on disk so restarts do not suppress it."""
+        l1 = PropertyListing(
+            id="myhome_rollback_disk_1",
+            source="myhome",
+            source_id="rollback_disk_1",
+            title="Apt Rollback Disk",
+            price_usd=60000.0,
+            area_m2=55.0,
+            price_per_m2=1090.91,
+            district="საბურთალო",
+            rooms=2,
+            url="https://myhome.ge/rollback_disk_1",
+        )
+        self.db.save_listing(l1)
+        self.assertTrue(self.db.is_seen("myhome_rollback_disk_1"))
+        with open(self.db.seen_ids_path, "r", encoding="utf-8") as f:
+            self.assertIn("myhome_rollback_disk_1", f.read().splitlines())
+
+        self.db.rollback_unsent_listing("myhome_rollback_disk_1")
+        self.assertFalse(self.db.is_seen("myhome_rollback_disk_1"))
+
+        with open(self.db.seen_ids_path, "r", encoding="utf-8") as f:
+            self.assertNotIn("myhome_rollback_disk_1", f.read().splitlines())
+
+        # Simulate process restart reloading seen_ids.txt
+        restarted_db = DatabaseEngine(db_path=self.db_path, use_d1=False)
+        self.assertFalse(restarted_db.is_seen("myhome_rollback_disk_1"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -865,7 +865,14 @@ class SSGeScraper(BaseScraper):
             condition_name = CONDITIONS.get(condition_id) if condition_id else None
             status_id = _safe_int(item.get("status_id"))
 
-            # User Type & Ownership
+            # Phone extraction & Author Metadata
+            phone_number = _extract_phone_number(item.get("user_phone_number"), description)
+            raw_uid = item.get("userId") or item.get("user_id") or item.get("agencyId")
+            author_id = str(raw_uid) if raw_uid is not None else None
+            raw_cnt = item.get("userApplicationCount") or item.get("user_statements_count")
+            author_listings_count = _safe_int(raw_cnt)
+
+            # User Type & Ownership (user_type='physical' alone is not proof of an owner)
             raw_user_type = item.get("user_type")
             user_type_str = None
             if isinstance(raw_user_type, dict):
@@ -874,34 +881,41 @@ class SSGeScraper(BaseScraper):
                 user_type_str = raw_user_type
 
             is_owner = None
-            if "is_owner" in item and item["is_owner"] is not None:
-                is_owner = bool(item["is_owner"])
-            elif user_type_str == "physical":
-                is_owner = True
-            elif user_type_str in ["agency", "developer", "agent", "broker", "company"]:
-                is_owner = False
-            elif item.get("isAgency") is not None:
-                is_owner = not bool(item.get("isAgency"))
-            elif item.get("userType"):
-                ut = str(item.get("userType")).lower()
-                if "physic" in ut or "owner" in ut:
-                    is_owner = True
-                elif "agent" in ut or "agency" in ut or "company" in ut:
-                    is_owner = False
-            elif (
-                item.get("agency")
+            if (
+                user_type_str in ["agency", "developer", "agent", "broker", "company"]
+                or (author_listings_count is not None and author_listings_count >= 3)
+                or item.get("agency")
                 or item.get("agent")
                 or item.get("agencyId")
                 or item.get("companyName")
             ):
                 is_owner = False
+            elif "is_owner" in item and item["is_owner"] is not None:
+                is_owner = bool(item["is_owner"])
+            elif user_type_str == "owner":
+                is_owner = True
+            elif item.get("isAgency") is not None:
+                is_owner = not bool(item.get("isAgency"))
+            elif item.get("userType"):
+                ut = str(item.get("userType")).lower()
+                if "agent" in ut or "agency" in ut or "company" in ut or "broker" in ut:
+                    is_owner = False
+                elif "owner" in ut:
+                    is_owner = True
 
-            # Phone extraction & Author Metadata
-            phone_number = _extract_phone_number(item.get("user_phone_number"), description)
-            raw_uid = item.get("userId") or item.get("user_id") or item.get("agencyId")
-            author_id = str(raw_uid) if raw_uid is not None else None
-            raw_cnt = item.get("userApplicationCount") or item.get("user_statements_count")
-            author_listings_count = _safe_int(raw_cnt)
+            if is_owner is None and description:
+                if re.search(
+                    r"(?:ვარ\s+(?:აგენტი|მაკლერი)|სააგენტოდან|ჩვენი\s+სააგენტო|დაგვიკავშირდით\s+სააგენტო)",
+                    description,
+                    re.IGNORECASE,
+                ):
+                    is_owner = False
+                elif re.search(
+                    r"(?:ვარ\s+(?:მეპატრონე|მესაკუთრე)|მესაკუთრისგან|სააგენტოებთან არ ვთანამშრომლობ|სააგენტოები ნუ|მაკლერები ნუ)",
+                    description,
+                    re.IGNORECASE,
+                ):
+                    is_owner = True
 
             return PropertyListing(
                 id=f"ss_ge_{source_id}",

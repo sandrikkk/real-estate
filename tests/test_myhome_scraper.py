@@ -88,7 +88,7 @@ class TestMyHomeScraper(unittest.TestCase):
         self.assertEqual(listing.metro_station_name, "ისანი")
         self.assertEqual(listing.rooms, 2)
         self.assertEqual(listing.bedrooms, 1)
-        self.assertTrue(listing.is_owner)
+        self.assertIsNone(listing.is_owner)
         self.assertEqual(listing.phone_number, "+995 599 18 01 18")
         self.assertEqual(len(listing.images), 1)
 

@@ -313,23 +313,12 @@ class DuplicateDetector:
             return val is False or val == 0 or val == "0"
 
         has_previous_owner = any(
-            (
-                _is_verified_owner(r.get("is_owner"))
-                or (
-                    not _is_explicitly_not_owner(r.get("is_owner"))
-                    and r.get("is_owner") is None
-                    and str(r.get("user_type") or "").lower() == "physical"
-                )
-            )
+            _is_verified_owner(r.get("is_owner"))
             for r in rows
             if r["id"] != current_listing_id
         )
         curr_row = next((r for r in rows if r["id"] == current_listing_id), {})
-        is_curr_owner = _is_verified_owner(curr_row.get("is_owner")) or (
-            not _is_explicitly_not_owner(curr_row.get("is_owner"))
-            and curr_row.get("is_owner") is None
-            and str(curr_row.get("user_type") or "").lower() == "physical"
-        )
+        is_curr_owner = _is_verified_owner(curr_row.get("is_owner"))
         is_first_owner = not has_previous_owner and is_curr_owner
         is_new_best = is_strictly_lower or not other_prices or is_first_owner
 

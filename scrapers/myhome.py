@@ -594,22 +594,6 @@ class MyHomeScraper(BaseScraper):
             condition_name = CONDITIONS.get(condition_id) if condition_id else None
             status_id = _safe_int(item.get("status_id"))
 
-            # User Type & Ownership
-            raw_user_type = item.get("user_type")
-            user_type_str = None
-            if isinstance(raw_user_type, dict):
-                user_type_str = raw_user_type.get("type")
-            elif isinstance(raw_user_type, str):
-                user_type_str = raw_user_type
-
-            is_owner = None
-            if "is_owner" in item and item["is_owner"] is not None:
-                is_owner = bool(item["is_owner"])
-            elif user_type_str == "physical":
-                is_owner = True
-            elif user_type_str in ["agency", "developer", "agent", "broker"]:
-                is_owner = False
-
             # Phone Number & Author Metadata
             phone_number = _extract_phone_number(item.get("user_phone_number"), description)
             user_obj = item.get("user") if isinstance(item.get("user"), dict) else {}
@@ -621,6 +605,37 @@ class MyHomeScraper(BaseScraper):
                 or user_obj.get("statements_count")
             )
             author_listings_count = _safe_int(raw_cnt)
+
+            # User Type & Ownership (user_type='physical' alone is not proof of an owner)
+            raw_user_type = item.get("user_type")
+            user_type_str = None
+            if isinstance(raw_user_type, dict):
+                user_type_str = raw_user_type.get("type")
+            elif isinstance(raw_user_type, str):
+                user_type_str = raw_user_type
+
+            is_owner = None
+            if user_type_str in ["agency", "developer", "agent", "broker", "company"] or (
+                author_listings_count is not None and author_listings_count >= 3
+            ):
+                is_owner = False
+            elif "is_owner" in item and item["is_owner"] is not None:
+                is_owner = bool(item["is_owner"])
+            elif user_type_str == "owner":
+                is_owner = True
+            elif description:
+                if re.search(
+                    r"(?:ვარ\s+(?:აგენტი|მაკლერი)|სააგენტოდან|ჩვენი\s+სააგენტო|დაგვიკავშირდით\s+სააგენტო)",
+                    description,
+                    re.IGNORECASE,
+                ):
+                    is_owner = False
+                elif re.search(
+                    r"(?:ვარ\s+(?:მეპატრონე|მესაკუთრე)|მესაკუთრისგან|სააგენტოებთან არ ვთანამშრომლობ|სააგენტოები ნუ|მაკლერები ნუ)",
+                    description,
+                    re.IGNORECASE,
+                ):
+                    is_owner = True
 
             return PropertyListing(
                 id=f"myhome_{source_id}",

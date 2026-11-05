@@ -156,7 +156,7 @@ class TestRentalFlow(unittest.TestCase):
         self.assertIsNotNone(listing)
         self.assertEqual(listing.deal_type, "rent")
         self.assertEqual(listing.price_usd, 550.0)
-        self.assertTrue(listing.is_owner)
+        self.assertIsNone(listing.is_owner)
 
     def test_ss_ge_owner_filter_recognition(self):
         from scrapers.ss_ge import SSGeScraper
