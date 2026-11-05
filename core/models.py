@@ -25,7 +25,7 @@ class SearchFilters(BaseModel):
     owner_type: Optional[str] = None
     myhome_url: Optional[str] = None
     target_metro_ids: List[int] = Field(
-        default_factory=lambda: [1, 7, 9, 10, 16, 17, 18, 19, 21, 22, 24, 25]
+        default_factory=lambda: [1, 7, 9, 10, 16, 17, 18, 19, 21, 22]
     )
     whitelist_districts: List[str] = Field(
         default_factory=lambda: ["დიდუბე", "ნაძალადევი", "ჩუღურეთი", "ისანი", "გლდანი"]

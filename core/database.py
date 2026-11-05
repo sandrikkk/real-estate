@@ -134,8 +134,7 @@ class D1Client:
         if self.sync_key:
             headers["X-Sync-Key"] = self.sync_key
 
-        url = f"{self.url}?key={self.sync_key}" if self.sync_key else self.url
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        req = urllib.request.Request(self.url, data=data, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 res_body = resp.read().decode("utf-8")
@@ -585,8 +584,6 @@ class DatabaseEngine:
     def mark_user_notified(self, chat_id: str, listing_id: str):
         cid = str(chat_id)
         if listing_id not in self._user_seen[cid]:
-            self._user_seen[cid].add(listing_id)
-            self._save_user_seen()
             with self._connection() as conn:
                 try:
                     cursor = conn.cursor()
@@ -598,8 +595,13 @@ class DatabaseEngine:
                         (cid, listing_id),
                     )
                     conn.commit()
+                except DatabaseUnavailableError:
+                    raise
                 except Exception as e:
                     print(f"[Warning]: Failed to insert into user_notifications: {e}")
+                    return
+            self._user_seen[cid].add(listing_id)
+            self._save_user_seen()
 
     def is_seen(self, listing_id: str, listing: Optional[PropertyListing] = None) -> bool:
         # 1. Fast in-memory / persistent set check
@@ -833,6 +835,35 @@ class DatabaseEngine:
             cursor = conn.cursor()
             cursor.execute("UPDATE properties SET is_notified = 1 WHERE id = ?", (listing_id,))
             conn.commit()
+
+    def rollback_unsent_listing(
+        self, listing_id: str, previous_price_usd: Optional[float] = None
+    ):
+        """Rolls back a listing whose Telegram notification failed so the next cycle retries it."""
+        if not listing_id:
+            return
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            try:
+                if previous_price_usd is not None and previous_price_usd > 0:
+                    cursor.execute(
+                        "UPDATE properties SET price_usd = ? WHERE id = ?",
+                        (float(previous_price_usd), listing_id),
+                    )
+                    conn.commit()
+                    self._seen_prices[listing_id] = float(previous_price_usd)
+                else:
+                    cursor.execute(
+                        "DELETE FROM properties WHERE id = ? AND is_notified = 0",
+                        (listing_id,),
+                    )
+                    conn.commit()
+                    self._seen_ids.discard(listing_id)
+                    self._seen_prices.pop(listing_id, None)
+            except DatabaseUnavailableError:
+                raise
+            except Exception as e:
+                print(f"[Database Warning]: Failed to roll back unsent listing {listing_id}: {e}")
 
     def get_district_stats(self, district: str) -> Optional[DistrictPriceStats]:
         if not district:

@@ -467,6 +467,186 @@ class TestXRayEngine(unittest.TestCase):
         self.assertNotIn("if (!expectedKey) return true;", worker_src)
         self.assertEqual(worker_src.count("isSyncKeyValid(request, env)"), 5)
 
+        # 9. MyHome API headers and numeric is_owner === 0 handling in Worker
+        self.assertIn('"X-Website-Key": "myhome"', worker_src)
+        self.assertIn("isOwnerExplicitFalse", worker_src)
+        self.assertIn("st.urban_name || st.district_name", worker_src)
+        self.assertIn("formatOwnerBadge(", worker_src)
+        self.assertNotIn('ut === "physical" || ut === "owner" || isOwnerExplicitTrue', worker_src)
+
+    def test_owner_with_60m2_and_61m2_cross_portal_listings_not_flagged_as_broker(self):
+        # Real owner listed the same apartment on MyHome as 60 m² and on SS.ge as 61 m²
+        mh_owner = _make_listing(
+            "8201",
+            source="myhome",
+            price_usd=80000.0,
+            area_m2=60.0,
+            district="საბურთალო",
+            floor="7",
+            rooms=3,
+            is_owner=True,
+            user_type="physical",
+            phone_number="+995 599 44 55 66",
+            author_id="owner_same_apt",
+            author_listings_count=1,
+        )
+        ss_owner = _make_listing(
+            "8202",
+            source="ss_ge",
+            price_usd=79500.0,
+            area_m2=61.0,
+            district="ნუცუბიძე",
+            floor="7",
+            rooms=3,
+            is_owner=True,
+            user_type="physical",
+            phone_number="+995 599 44 55 66",
+            author_id="ss_owner_same_apt",
+            author_listings_count=1,
+        )
+        self.db.save_listings_batch([mh_owner, ss_owner])
+
+        report = run_xray_on_db(self.db, "+995 599 44 55 66")
+        self.assertIsNotNone(report)
+        self.assertIn("✅ რეალური მესაკუთრე (Owner)", report)
+        self.assertNotIn("🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო", report)
+
+    def test_phoneless_fb_post_subdistrict_alias_limit_bypass_and_phone_recovery(self):
+        # 30 cheap rent/other-floor 60 m² listings in "საბურთალო" that previously exhausted LIMIT 25
+        noise_listings = [
+            _make_listing(
+                f"rent_{i}",
+                source="ss_ge",
+                price_usd=500.0 + i * 10,
+                area_m2=60.0,
+                district="საბურთალო",
+                floor="2",
+                rooms=2,
+                is_owner=True,
+                phone_number=f"+995 555 10 10 {i:02d}",
+            )
+            for i in range(30)
+        ]
+        # Real owner listing on MyHome saved under parent district "საბურთალო" on floor 7
+        owner_listing = _make_listing(
+            "7001",
+            source="myhome",
+            price_usd=78000.0,
+            area_m2=60.0,
+            district="საბურთალო",
+            floor="7",
+            rooms=3,
+            is_owner=True,
+            user_type="physical",
+            phone_number="+995 599 55 44 33",
+            author_id="owner_7001",
+            author_listings_count=1,
+        )
+        self.db.save_listings_batch(noise_listings + [owner_listing])
+
+        # Phoneless FB post using subdistrict "ნუცუბიძეზე"
+        fb_post_no_phone = (
+            "იყიდება ბინა ნუცუბიძეზე! 60 კვ.მ, მე-7 სართული, 3 ოთახი. "
+            "სუფთა რემონტით, ფასი 83000$. მომწერეთ პირადში"
+        )
+        report = run_xray_on_db(self.db, fb_post_no_phone)
+        self.assertIsNotNone(report)
+        # Must match the MyHome listing in "საბურთალო" despite "ნუცუბიძე" vs "საბურთალო" and 30 cheaper rows
+        self.assertIn("$78,000", report)
+        self.assertIn("-$5,000", report)
+        # Must surface the recovered phone number from the portal duplicate
+        self.assertIn("+995 599 55 44 33", report)
+        # Verdict must reflect the matched owner listing rather than a bogus "1 განცხადება" on fb_input
+        self.assertIn("✅ რეალური მესაკუთრე (Owner)", report)
+
+    def test_phoneless_fb_post_with_no_match_reports_missing_phone_honestly(self):
+        fb_post_no_phone = (
+            "იყიდება ბინა ვარკეთილში, 64 კვ.მ, მე-9 სართული, 3 ოთახი, ფასი 71000$"
+        )
+        report = run_xray_on_db(self.db, fb_post_no_phone)
+        self.assertIsNotNone(report)
+        self.assertNotIn("ბაზაში ფიქსირდება 1 განცხადება", report)
+        self.assertIn("ტელეფონის ნომერი არ წერია", report)
+
+    def test_fb_post_without_floor_does_not_match_arbitrary_floors_at_different_prices(self):
+        # Different apartments of 60 m² in Saburtalo at very different prices/rooms
+        unrelated_floor_2 = _make_listing(
+            "8001",
+            source="ss_ge",
+            price_usd=62000.0,
+            area_m2=60.0,
+            district="საბურთალო",
+            floor="2",
+            rooms=2,
+            is_owner=True,
+            phone_number="+995 599 00 00 01",
+        )
+        unrelated_floor_14 = _make_listing(
+            "8002",
+            source="myhome",
+            price_usd=135000.0,
+            area_m2=60.0,
+            district="საბურთალო",
+            floor="14",
+            rooms=3,
+            is_owner=True,
+            phone_number="+995 599 00 00 02",
+        )
+        # Likely same apartment: 60 m², 3 rooms, $86,000 (within 15% of $88,000)
+        close_match = _make_listing(
+            "8003",
+            source="myhome",
+            price_usd=86000.0,
+            area_m2=60.0,
+            district="საბურთალო",
+            floor="5",
+            rooms=3,
+            is_owner=True,
+            phone_number="+995 599 00 00 03",
+        )
+        self.db.save_listings_batch([unrelated_floor_2, unrelated_floor_14, close_match])
+
+        # FB post omits floor
+        fb_post_no_floor = "იყიდება ბინა საბურთალოზე, 60 კვ.მ, 3 ოთახი, ფასი 88000$"
+        report = run_xray_on_db(self.db, fb_post_no_floor)
+        self.assertIsNotNone(report)
+        self.assertNotIn("$62,000", report)
+        self.assertNotIn("$135,000", report)
+        self.assertIn("$86,000", report)
+        self.assertIn("+995 599 00 00 03", report)
+
+    def test_unverified_duplicate_not_labeled_as_agency(self):
+        target_broker = _make_listing(
+            "8101",
+            source="myhome",
+            price_usd=90000.0,
+            area_m2=65.0,
+            district="ვაკე",
+            floor="4",
+            rooms=3,
+            is_owner=False,
+            user_type="agent",
+            phone_number="+995 555 12 12 12",
+        )
+        unverified_dup = _make_listing(
+            "8102",
+            source="ss_ge",
+            price_usd=87000.0,
+            area_m2=65.0,
+            district="ვაკე",
+            floor="4",
+            rooms=3,
+            is_owner=None,
+            user_type=None,
+            phone_number=None,
+        )
+        self.db.save_listings_batch([target_broker, unverified_dup])
+
+        report = run_xray_on_db(self.db, "https://www.myhome.ge/ka/pr/8101/iyideba-bina/")
+        self.assertIsNotNone(report)
+        self.assertIn("$87,000", report)
+        self.assertIn("გადაუმოწმებელი ⚠️", report)
+
     def test_ss_ge_scraper_statement_details_parses_broker_signals(self):
         from scrapers.ss_ge import SSGeScraper
 
@@ -563,6 +743,46 @@ class TestXRayEngine(unittest.TestCase):
         self.assertFalse((repo_root / "cloudflare" / "wrangler.toml").exists())
         self.assertTrue((repo_root / "cloudflare" / "wrangler.toml.example").exists())
         self.assertTrue((repo_root / ".github" / "workflows" / "deploy-worker.yml").exists())
+
+    def test_broker_verdict_clustering_respects_rooms_and_merges_60_61_m2(self):
+        from core.xray import evaluate_broker_verdict
+
+        # 1. Same owner posts on MyHome (60 m², floor 5, 2 rooms) and SS.ge (61 m², floor 5, 2 rooms)
+        r1 = {
+            "id": "mh_1",
+            "district": "საბურთალო",
+            "area_m2": 60.0,
+            "floor": "5/12",
+            "rooms": 2,
+            "is_owner": 1,
+            "user_type": "physical",
+        }
+        r2 = {
+            "id": "ss_1",
+            "district": "საბურთალო",
+            "area_m2": 61.0,
+            "floor": "5",
+            "rooms": 2,
+            "is_owner": 1,
+            "user_type": "physical",
+        }
+        verdict_same = evaluate_broker_verdict(r1, [r1, r2])
+        self.assertFalse(verdict_same["is_broker"])
+        self.assertEqual(verdict_same["unique_apartments"], 1)
+
+        # 2. Different room counts on same floor (e.g. 2 rooms vs 3 rooms, 60 m² vs 61 m²) -> 2 apartments (broker)
+        r3 = {
+            "id": "ss_2",
+            "district": "საბურთალო",
+            "area_m2": 61.0,
+            "floor": "5",
+            "rooms": 3,
+            "is_owner": 1,
+            "user_type": "physical",
+        }
+        verdict_diff_rooms = evaluate_broker_verdict(r1, [r1, r3])
+        self.assertTrue(verdict_diff_rooms["is_broker"])
+        self.assertEqual(verdict_diff_rooms["unique_apartments"], 2)
 
 
 if __name__ == "__main__":

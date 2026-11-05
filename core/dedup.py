@@ -9,6 +9,7 @@ Architecture:
 - Matching: ≥2 photo matches, or 1 photo + price/area confirmation
 """
 
+import asyncio
 import json
 from collections import defaultdict
 from io import BytesIO
@@ -17,11 +18,13 @@ from typing import Dict, List, Optional, Set
 from PIL import Image
 from curl_cffi.requests import AsyncSession
 
-from core.database import DatabaseEngine
+from core.database import DatabaseEngine, DatabaseUnavailableError
 from core.models import PropertyListing
 
 
 # --- dHash (Pillow only, 64-bit) ---
+
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 def dhash(img: Image.Image, size: int = 8) -> str:
@@ -33,6 +36,15 @@ def dhash(img: Image.Image, size: int = 8) -> str:
             i = r * (size + 1) + c
             bits = (bits << 1) | (px[i] > px[i + 1])
     return f"{bits:016x}"
+
+
+def _decode_dhash_sync(content: bytes, size: int = 8) -> Optional[str]:
+    """Decodes image bytes and computes dHash synchronously (offloaded to thread)."""
+    try:
+        with Image.open(BytesIO(content)) as img:
+            return dhash(img, size=size)
+    except Exception:
+        return None
 
 
 def hamming(a: str, b: str) -> int:
@@ -47,25 +59,27 @@ async def _download_and_hash(url: str, session: AsyncSession, timeout: int = 10)
     """Downloads image, returns dHash hex string or None."""
     try:
         resp = await session.get(url, timeout=timeout)
-        if resp.status_code == 200 and len(resp.content) > 1000:
-            return dhash(Image.open(BytesIO(resp.content)))
+        if resp.status_code == 200 and 1000 < len(resp.content) <= MAX_IMAGE_BYTES:
+            return await asyncio.to_thread(_decode_dhash_sync, resp.content)
     except Exception:
         pass
     return None
 
 
 async def _compute_hashes(image_urls: List[str], max_images: int = 3) -> List[str]:
-    """Downloads first N images via single session, returns list of dHash hex strings."""
-    hashes = []
+    """Downloads first N images concurrently via single session, returns list of dHash hex strings."""
+    targets = image_urls[:max_images]
+    if not targets:
+        return []
     try:
         async with AsyncSession(impersonate="chrome124") as session:
-            for url in image_urls[:max_images]:
-                h = await _download_and_hash(url, session)
-                if h:
-                    hashes.append(h)
+            results = await asyncio.gather(
+                *(_download_and_hash(url, session) for url in targets),
+                return_exceptions=True,
+            )
+            return [h for h in results if isinstance(h, str) and h]
     except Exception:
-        pass
-    return hashes
+        return []
 
 
 class DuplicateDetector:
@@ -201,11 +215,15 @@ class DuplicateDetector:
         listing_id: str,
         images: Optional[List[str]] = None,
         images_json: Optional[str] = None,
+        skip_db_check: bool = False,
     ) -> List[str]:
         """Load hashes from DB cache, or compute lazily and persist."""
-        hashes = self._get_hashes(listing_id)
-        if hashes:
-            return hashes
+        if not skip_db_check:
+            hashes = self._get_hashes(listing_id)
+            if hashes:
+                return hashes
+        else:
+            hashes = []
 
         urls = images or []
         if not urls and images_json:
@@ -383,6 +401,8 @@ class DuplicateDetector:
 
         try:
             return await self._check_listing_inner(listing)
+        except DatabaseUnavailableError:
+            raise
         except Exception as e:
             print(f"[Dedup]: Error checking {listing.id}: {e}")
             return None
@@ -400,13 +420,25 @@ class DuplicateDetector:
         # Cache lookups in 1 single batch query to avoid redundant D1 round-trips
         cand_hash_cache = self._get_hashes_batch([c["id"] for c in candidates])
         cands_with_hash = [c for c in candidates if cand_hash_cache[c["id"]]]
-        cands_without_hash = [c for c in candidates if not cand_hash_cache[c["id"]]]
-        ordered = cands_with_hash + cands_without_hash[: self.MAX_CANDIDATES_TO_HASH]
+        cands_without_hash = [c for c in candidates if not cand_hash_cache[c["id"]]][
+            : self.MAX_CANDIDATES_TO_HASH
+        ]
+
+        if cands_without_hash:
+            hash_sem = asyncio.Semaphore(3)
+
+            async def _warm_cand_hash(c: dict):
+                async with hash_sem:
+                    cand_hash_cache[c["id"]] = await self._ensure_hashes(
+                        c["id"], images_json=c.get("images_json"), skip_db_check=True
+                    )
+
+            await asyncio.gather(*(_warm_cand_hash(c) for c in cands_without_hash))
+
+        ordered = cands_with_hash + cands_without_hash
 
         for cand in ordered:
-            cand_hashes = cand_hash_cache.get(cand["id"]) or await self._ensure_hashes(
-                cand["id"], images_json=cand.get("images_json")
-            )
+            cand_hashes = cand_hash_cache.get(cand["id"])
 
             if not listing_hashes or not cand_hashes:
                 continue

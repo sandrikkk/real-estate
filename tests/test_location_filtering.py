@@ -204,6 +204,29 @@ class TestLocationFiltering(unittest.TestCase):
         self.assertTrue(self.engine.matches_user(
             _user(["გლდანი"]), _listing("d", "თბილისის ზღვა")))
 
+    def test_dighomi_matches_didi_dighomi_but_not_dighmis_masivi(self):
+        """
+        A bare portal district 'დიღომი' belongs to the 'დიდი დიღომი' button.
+        Its stem 'დიღომ' must not match 'დიღმის მასივი'.
+        """
+        user = UserSubscription(
+            chat_id="u", deal_type="sale", price_min_usd=10000, price_max_usd=200000,
+            districts=["დიდი დიღომი"], is_active=True
+        )
+
+        def _listing(lid, district=None, title="ბინა"):
+            return PropertyListing(
+                id=lid, source="myhome", source_id=lid, url="http://x",
+                title=title, price_usd=90000, area_m2=60, district=district
+            )
+
+        self.assertTrue(self.engine.matches_user(user, _listing("a", "დიღომი")))
+        self.assertTrue(self.engine.matches_user(user, _listing("b", "დიღომში")))
+        self.assertTrue(self.engine.matches_user(user, _listing("c", "დიღომი 1-9")))
+        self.assertTrue(self.engine.matches_user(user, _listing("d", "სოფ. დიღომი")))
+        self.assertTrue(self.engine.matches_user(user, _listing("e", title="იყიდება ბინა დიღომში")))
+        self.assertFalse(self.engine.matches_user(user, _listing("f", "დიღმის მასივი")))
+
     def test_myhome_scraper_does_not_poison_subdistrict(self):
         """
         Verifies that MyHome normalization sets district to urban_name and leaves subdistrict None

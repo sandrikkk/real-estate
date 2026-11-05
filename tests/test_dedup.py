@@ -702,6 +702,41 @@ def test_no_images_no_match():
         print("✅ test_no_images_no_match PASSED")
 
 
+def test_compute_hashes_downloads_images_concurrently():
+    """_compute_hashes must download the first N images concurrently rather than sequentially."""
+    from unittest.mock import patch
+    from core.dedup import _compute_hashes
+
+    active_downloads = 0
+    max_concurrent_downloads = 0
+
+    async def fake_download_and_hash(url, session, timeout=10):
+        nonlocal active_downloads, max_concurrent_downloads
+        active_downloads += 1
+        max_concurrent_downloads = max(max_concurrent_downloads, active_downloads)
+        await asyncio.sleep(0.03)
+        active_downloads -= 1
+        return "abcdef0123456789"
+
+    with patch("core.dedup._download_and_hash", side_effect=fake_download_and_hash):
+        hashes = _run(
+            _compute_hashes(
+                [
+                    "https://example.com/1.jpg",
+                    "https://example.com/2.jpg",
+                    "https://example.com/3.jpg",
+                ],
+                max_images=3,
+            )
+        )
+
+    assert len(hashes) == 3
+    assert max_concurrent_downloads >= 2, (
+        f"Expected concurrent image downloads (>=2), got max_concurrent={max_concurrent_downloads}"
+    )
+    print("✅ test_compute_hashes_downloads_images_concurrently PASSED")
+
+
 if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("  Running Duplicate Detector Tests (v2)")
@@ -724,7 +759,8 @@ if __name__ == "__main__":
     test_different_districts_no_match()
     test_duplicate_stats()
     test_no_images_no_match()
+    test_compute_hashes_downloads_images_concurrently()
 
     print("\n" + "=" * 60)
-    print("  ✅ All 17 tests PASSED")
+    print("  ✅ All 18 tests PASSED")
     print("=" * 60 + "\n")

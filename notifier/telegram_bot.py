@@ -249,6 +249,31 @@ class TelegramNotifier:
 
         return "\n".join(lines)
 
+    @staticmethod
+    def _truncate_caption(message_html: str, max_len: int = 1024) -> str:
+        """Truncates HTML caption to max_len characters without breaking HTML tags."""
+        if len(message_html) <= max_len:
+            return message_html
+        lines = message_html.split("\n")
+        while len(lines) > 1 and len("\n".join(lines)) > max_len - 4:
+            lines.pop()
+        candidate = "\n".join(lines).rstrip() + "\n..."
+        if len(candidate) <= max_len:
+            return candidate
+        plain = re.sub(r"<[^>]+>", "", message_html)
+        return plain[: max_len - 3] + "..."
+
+    async def _call_with_retry_after(self, coro_factory):
+        """Calls a Telegram API coroutine and retries once if rate-limited (429 RetryAfter)."""
+        try:
+            return await coro_factory()
+        except Exception as err:
+            retry_after = getattr(err, "retry_after", None)
+            if retry_after is not None:
+                await asyncio.sleep(float(retry_after))
+                return await coro_factory()
+            raise
+
     async def send_notification(
         self,
         listing: PropertyListing,
@@ -277,18 +302,21 @@ class TelegramNotifier:
 
         recipient_id = target_chat_id or self.chat_id
         if not self.bot or not recipient_id:
-            return True
+            return False
 
         try:
             # Send photo with caption if image is available
             if listing.images and len(listing.images) > 0:
                 first_image = listing.images[0]
+                caption_html = self._truncate_caption(message_html, max_len=1024)
                 try:
-                    await self.bot.send_photo(
-                        chat_id=recipient_id,
-                        photo=first_image,
-                        caption=message_html,
-                        parse_mode=ParseMode.HTML,
+                    await self._call_with_retry_after(
+                        lambda: self.bot.send_photo(
+                            chat_id=recipient_id,
+                            photo=first_image,
+                            caption=caption_html,
+                            parse_mode=ParseMode.HTML,
+                        )
                     )
                     await asyncio.sleep(0.2)
                     return True
@@ -296,11 +324,13 @@ class TelegramNotifier:
                     # Fallback to plain text message if image fails to load
                     print(f"[Telegram Image Send Error]: {img_err}, falling back to text...")
 
-            await self.bot.send_message(
-                chat_id=recipient_id,
-                text=message_html,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=False,
+            await self._call_with_retry_after(
+                lambda: self.bot.send_message(
+                    chat_id=recipient_id,
+                    text=message_html,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=False,
+                )
             )
             await asyncio.sleep(0.2)
             return True

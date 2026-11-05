@@ -38,6 +38,123 @@ DISTRICT_KEYWORDS: List[tuple[str, str]] = [
     ("ლის", "ლისი"),
 ]
 
+DISTRICT_ALIASES: Dict[str, List[str]] = {
+    "საბურთალო": [
+        "საბურთალო",
+        "ვაკე-საბურთალო",
+        "ნუცუბიძე",
+        "ნუცუბიძის ფერდობი",
+        "ვაშლიჯვარი",
+        "ვეძისი",
+        "დელისი",
+        "ლისი",
+        "ლისის მიმდებარედ",
+        "თხინვალი",
+    ],
+    "ვაკე": ["ვაკე", "ვაკე-საბურთალო", "ბაგები", "კუს ტბა", "ვერა", "წყნეთი"],
+    "დიდი დიღომი": [
+        "დიდი დიღომი",
+        "დიღომი",
+        "დიღომი 1-9",
+        "სოფ. დიღომი",
+        "სოფელი დიღომი",
+        "დიღმის ჭალა",
+        "ქოშიგორა",
+        "ვაკე-საბურთალო",
+    ],
+    "დიღმის მასივი": ["დიღმის მასივი", "დიღმის მას.", "დიდუბე-ჩუღურეთი"],
+    "დიღომი": [
+        "დიღომი",
+        "დიდი დიღომი",
+        "დიღომი 1-9",
+        "სოფ. დიღომი",
+        "სოფელი დიღომი",
+        "დიღმის ჭალა",
+        "ქოშიგორა",
+        "ვაკე-საბურთალო",
+    ],
+    "დიდუბე": ["დიდუბე", "წერეთელი", "წერეთლის გამზ.", "დიდუბე-ჩუღურეთი"],
+    "ჩუღურეთი": [
+        "ჩუღურეთი",
+        "კუკია",
+        "სვანეთის უბანი",
+        "ივერთუბანი",
+        "მარჯანიშვილი",
+        "ვორონცოვი",
+        "დიდუბე-ჩუღურეთი",
+    ],
+    "ნაძალადევი": [
+        "ნაძალადევი",
+        "სანზონა",
+        "სან. ზონა",
+        "სან.ზონა",
+        "თემქა",
+        "ლოტკინი",
+        "გლდანი-ნაძალადევი",
+    ],
+    "გლდანი": [
+        "გლდანი",
+        "მუხიანი",
+        "გლდანულა",
+        "ავჭალა",
+        "ზაჰესი",
+        "თბილისის ზღვა",
+        "კონიაკის დასახლება",
+        "კონიაკის დას.",
+        "გლდანი-ნაძალადევი",
+    ],
+    "ისანი": ["ისანი", "ავლაბარი", "ნავთლუღი", "მეტრომშენი", "300 არაგველი", "ისანი-სამგორი"],
+    "სამგორი": [
+        "სამგორი",
+        "ვარკეთილი",
+        "ვაზისუბანი",
+        "მესამე მასივი",
+        "მოსკოვის გამზირი",
+        "მოსკოვის გამზ.",
+        "აფრიკა",
+        "ლილო",
+        "ორხევი",
+        "ფონიჭალა",
+        "ისანი-სამგორი",
+    ],
+    "მთაწმინდა": ["მთაწმინდა", "სოლოლაკი", "რუსთაველი", "თავისუფლება", "ვერა", "ძველი თბილისი"],
+    "კრწანისი": ["კრწანისი", "ორთაჭალა", "აბანოთუბანი", "ელია", "ფონიჭალა", "ძველი თბილისი"],
+    "ნუცუბიძე": ["ნუცუბიძე", "ნუცუბიძის ფერდობი", "საბურთალო", "ვაკე-საბურთალო"],
+    "ნუცუბიძის ფერდობი": ["ნუცუბიძის ფერდობი", "ნუცუბიძე", "საბურთალო", "ვაკე-საბურთალო"],
+    "ვაშლიჯვარი": ["ვაშლიჯვარი", "საბურთალო", "ვაკე-საბურთალო"],
+    "ლისი": ["ლისი", "ლისის მიმდებარედ", "საბურთალო", "ვაკე-საბურთალო"],
+    "ბაგები": ["ბაგები", "ვაკე", "ვაკე-საბურთალო"],
+    "ვარკეთილი": ["ვარკეთილი", "სამგორი", "ისანი-სამგორი"],
+    "ვაზისუბანი": ["ვაზისუბანი", "სამგორი", "ისანი-სამგორი"],
+    "მუხიანი": ["მუხიანი", "გლდანი", "გლდანი-ნაძალადევი"],
+    "თემქა": ["თემქა", "ნაძალადევი", "გლდანი-ნაძალადევი"],
+    "სანზონა": ["სანზონა", "სან. ზონა", "სან.ზონა", "ნაძალადევი", "გლდანი-ნაძალადევი"],
+    "სოლოლაკი": ["სოლოლაკი", "მთაწმინდა", "ძველი თბილისი"],
+    "ორთაჭალა": ["ორთაჭალა", "კრწანისი", "ძველი თბილისი"],
+    "ავლაბარი": ["ავლაბარი", "ისანი", "ძველი თბილისი", "ისანი-სამგორი"],
+    "წერეთელი": ["წერეთელი", "წერეთლის გამზ.", "დიდუბე", "დიდუბე-ჩუღურეთი"],
+}
+
+
+def _expand_district_aliases(district: Optional[str]) -> List[str]:
+    if not district:
+        return []
+    d = district.strip()
+    if not d:
+        return []
+    aliases = DISTRICT_ALIASES.get(d)
+    if aliases:
+        return list(dict.fromkeys([d, *aliases]))
+    return [d]
+
+
+def _format_owner_badge(is_owner: Any) -> str:
+    if is_owner is True or (isinstance(is_owner, int) and not isinstance(is_owner, bool) and is_owner == 1):
+        return "მესაკუთრე ✅"
+    if is_owner is False or (isinstance(is_owner, int) and not isinstance(is_owner, bool) and is_owner == 0):
+        return "სააგენტო 🕵️‍♂️"
+    return "გადაუმოწმებელი ⚠️"
+
 
 def _format_georgian_phone(phone_9: str) -> str:
     return f"+995 {phone_9[0:3]} {phone_9[3:5]} {phone_9[5:7]} {phone_9[7:9]}"
@@ -225,7 +342,13 @@ def evaluate_broker_verdict(
 ) -> Dict[str, Any]:
     all_rows: List[Dict[str, Any]] = []
     seen_ids = set()
-    if target and target.get("id"):
+    is_phoneless_fb = bool(
+        target
+        and target.get("id") == "fb_input"
+        and not target.get("phone_number")
+        and not target.get("author_id")
+    )
+    if target and target.get("id") and not is_phoneless_fb:
         all_rows.append(target)
         seen_ids.add(target["id"])
     for r in related_rows:
@@ -233,6 +356,15 @@ def evaluate_broker_verdict(
         if rid and rid not in seen_ids:
             all_rows.append(r)
             seen_ids.add(rid)
+
+    if is_phoneless_fb and not all_rows:
+        return {
+            "is_broker": False,
+            "badge": "⚠️ სტატუსი დაუზუსტებელია (ნომერი არ არის მითითებული)",
+            "reason": "განცხადებაში ტელეფონის ნომერი არ წერია და ბაზაში იდენტური ბინა ჯერ არ იძებნება",
+            "unique_apartments": 0,
+            "total_listings": 0,
+        }
 
     # Count distinct apartments by (district, round(area_m2 / 2))
     apt_keys = set()
@@ -268,21 +400,58 @@ def evaluate_broker_verdict(
             except (ValueError, TypeError):
                 pass
 
-    if target:
+    if target and not is_phoneless_fb:
         _inspect_row(target)
 
+    clusters: List[Dict[str, Any]] = []
     for r in all_rows:
         _inspect_row(r)
-        dist = (r.get("district") or "").strip()
-        area = r.get("area_m2") or 0.0
+        r_gid = r.get("group_id")
+        r_dist = (r.get("district") or "").strip()
+        r_aliases = set(_expand_district_aliases(r_dist)) if r_dist else set()
+        r_floor = _clean_floor(r.get("floor"))
         try:
-            area_bucket = round(float(area) / 2.0)
+            r_area = float(r.get("area_m2") or 0.0)
         except (ValueError, TypeError):
-            area_bucket = 0
-        if dist or area_bucket:
-            apt_keys.add((dist, area_bucket))
+            r_area = 0.0
+        try:
+            r_rooms = int(r.get("rooms") or 0)
+        except (ValueError, TypeError):
+            r_rooms = 0
 
-    unique_apartments = max(len(apt_keys), len(all_rows) if not apt_keys else len(apt_keys))
+        matched_cluster = False
+        for c in clusters:
+            if r_gid and c["group_id"] and r_gid == c["group_id"]:
+                matched_cluster = True
+                break
+            dist_compat = (
+                not r_dist
+                or not c["district"]
+                or r_dist in c["aliases"]
+                or c["district"] in r_aliases
+            )
+            area_compat = (
+                r_area > 0 and c["area_m2"] > 0 and abs(r_area - c["area_m2"]) <= 2.0
+            )
+            floor_compat = not r_floor or not c["floor"] or r_floor == c["floor"]
+            rooms_compat = r_rooms <= 0 or c["rooms"] <= 0 or r_rooms == c["rooms"]
+            if dist_compat and area_compat and floor_compat and rooms_compat:
+                matched_cluster = True
+                break
+
+        if not matched_cluster:
+            clusters.append(
+                {
+                    "group_id": r_gid,
+                    "district": r_dist,
+                    "aliases": r_aliases,
+                    "area_m2": r_area,
+                    "floor": r_floor,
+                    "rooms": r_rooms,
+                }
+            )
+
+    unique_apartments = len(clusters)
     total_listings = max(len(all_rows), max_author_count, unique_apartments)
 
     is_broker = (
@@ -326,11 +495,15 @@ def evaluate_broker_verdict(
     }
 
 
+def _clean_floor(floor_val: Any) -> str:
+    return str(floor_val or "").strip().split("/")[0].strip()
+
+
 def _floors_match(target_floor: Any, cand_floor: Any) -> bool:
-    tf = str(target_floor or "").strip().split("/")[0].strip()
-    cf = str(cand_floor or "").strip().split("/")[0].strip()
+    tf = _clean_floor(target_floor)
+    cf = _clean_floor(cand_floor)
     if not tf or not cf:
-        return True
+        return False
     return tf == cf
 
 
@@ -343,6 +516,27 @@ def _rooms_match(target_rooms: Any, cand_rooms: Any) -> bool:
     if tr <= 0 or cr <= 0:
         return True
     return tr == cr
+
+
+def _candidate_matches_target(target: Dict[str, Any], cand: Dict[str, Any]) -> bool:
+    if not _rooms_match(target.get("rooms"), cand.get("rooms")):
+        return False
+    tf = _clean_floor(target.get("floor"))
+    cf = _clean_floor(cand.get("floor"))
+    if tf:
+        return cf == tf
+    # When floor is omitted on target (e.g. in an FB post), require explicit matching rooms
+    # AND price within ±10% so unrelated apartments on other floors do not match.
+    try:
+        tr = int(target.get("rooms") or 0)
+        cr = int(cand.get("rooms") or 0)
+        tp = float(target.get("price_usd") or 0.0)
+        cp = float(cand.get("price_usd") or 0.0)
+    except (ValueError, TypeError):
+        return False
+    if tr > 0 and cr > 0 and tr == cr and tp > 0 and cp > 0:
+        return abs(cp - tp) / tp <= 0.10
+    return False
 
 
 def find_exact_duplicates(
@@ -367,24 +561,48 @@ def find_exact_duplicates(
             candidates_by_id[d["id"]] = d
 
     if district and area_m2 and float(area_m2) > 0:
+        aliases = _expand_district_aliases(district)
+        placeholders = ", ".join("?" for _ in aliases)
         low_area = float(area_m2) - 1.5
         high_area = float(area_m2) + 1.5
-        cur.execute(
-            """
-            SELECT * FROM properties
-            WHERE district = ?
-              AND area_m2 BETWEEN ? AND ?
-              AND id != ?
-            ORDER BY price_usd ASC
-            LIMIT 25
-            """,
-            (district, low_area, high_area, target_id),
-        )
+        deal_type = target.get("deal_type") or "sale"
+        tf = _clean_floor(target.get("floor"))
+        try:
+            tr = int(target.get("rooms") or 0)
+        except (ValueError, TypeError):
+            tr = 0
+        try:
+            tp = float(target.get("price_usd") or 0.0)
+        except (ValueError, TypeError):
+            tp = 0.0
+
+        sql_parts = [
+            f"SELECT * FROM properties WHERE district IN ({placeholders})",
+            "AND area_m2 BETWEEN ? AND ?",
+            "AND id != ?",
+            "AND (deal_type IS NULL OR deal_type = ?)",
+        ]
+        params: List[Any] = [*aliases, low_area, high_area, target_id, deal_type]
+
+        if deal_type == "sale":
+            sql_parts.append("AND price_usd >= 10000")
+        if tr > 0:
+            sql_parts.append("AND (rooms IS NULL OR rooms <= 0 OR rooms = ?)")
+            params.append(tr)
+        if tf:
+            sql_parts.append("AND (floor = ? OR floor LIKE ?)")
+            params.extend([tf, f"{tf}/%"])
+            sql_parts.append("ORDER BY price_usd ASC LIMIT 25")
+        elif tp > 0:
+            sql_parts.append("ORDER BY ABS(price_usd - ?) ASC LIMIT 25")
+            params.append(tp)
+        else:
+            sql_parts.append("ORDER BY price_usd ASC LIMIT 25")
+
+        cur.execute(" ".join(sql_parts), tuple(params))
         for row in cur.fetchall():
             d = dict(row)
-            if not _floors_match(target.get("floor"), d.get("floor")):
-                continue
-            if not _rooms_match(target.get("rooms"), d.get("rooms")):
+            if not _candidate_matches_target(target, d):
                 continue
             candidates_by_id[d["id"]] = d
 
@@ -408,9 +626,24 @@ def get_district_avg_m2(
         (district,),
     )
     row = cur.fetchone()
-    if not row or not row[0] or int(row[1] or 0) < 1:
-        return None
-    return {"avg_m2": int(row[0]), "count": int(row[1])}
+    if row and row[0] and int(row[1] or 0) >= 1:
+        return {"avg_m2": int(row[0]), "count": int(row[1])}
+
+    aliases = _expand_district_aliases(district)
+    if len(aliases) > 1:
+        placeholders = ", ".join("?" for _ in aliases)
+        cur.execute(
+            f"""
+            SELECT ROUND(AVG(price_per_m2)), COUNT(*)
+            FROM properties
+            WHERE district IN ({placeholders}) AND price_per_m2 > 300 AND price_per_m2 < 6000
+            """,
+            tuple(aliases),
+        )
+        row = cur.fetchone()
+        if row and row[0] and int(row[1] or 0) >= 1:
+            return {"avg_m2": int(row[0]), "count": int(row[1])}
+    return None
 
 
 def _query_by_phone_or_author(
@@ -560,7 +793,9 @@ def run_xray_on_db(
                 for dup, ref_price in sorted_dups[:4]:
                     dup_price = float(dup.get("price_usd") or 0.0)
                     dup_src = "MyHome.ge" if dup.get("source") == "myhome" else "SS.ge"
-                    dup_owner = "მესაკუთრე ✅" if dup.get("is_owner") else "სააგენტო 🕵️‍♂️"
+                    dup_owner = _format_owner_badge(dup.get("is_owner"))
+                    dup_phone = dup.get("phone_number")
+                    phone_part = f" | 📞 <code>{dup_phone}</code>" if dup_phone else ""
                     dup_url = dup.get("url") or "#"
                     diff_str = ""
                     if ref_price > 0 and dup_price > 0:
@@ -572,7 +807,7 @@ def run_xray_on_db(
                         else:
                             diff_str = " (იგივე ფასი)"
                     lines.append(
-                        f"• <a href=\"{dup_url}\">{dup_src}</a> — <b>${int(dup_price):,}</b>{diff_str} | {dup_owner}"
+                        f"• <a href=\"{dup_url}\">{dup_src}</a> — <b>${int(dup_price):,}</b>{diff_str} | {dup_owner}{phone_part}"
                     )
 
             return "\n".join(lines)
@@ -608,6 +843,10 @@ def run_xray_on_db(
                 "ℹ️ ეს განცხადება ჩვენს ბაზაში ჯერ არ იძებნება და პორტალიდან მონაცემების წამოღება ვერ მოხერხდა."
             )
 
+        duplicates = find_exact_duplicates(conn, target)
+        if kind == "fb_text" and live_details and duplicates:
+            duplicates[0] = _merge_live_into_row(duplicates[0], live_details)
+
         phone_9 = parsed.get("phone_9") or _extract_9digit_phone(str(target.get("phone_number") or ""))
         masked_phone = (
             parsed.get("masked_phone")
@@ -615,6 +854,17 @@ def run_xray_on_db(
             or _extract_masked_phone(str(target.get("phone_number") or ""))
         )
         author_id = target.get("author_id")
+
+        verdict_target = target
+        if kind == "fb_text" and not phone_9 and not masked_phone and duplicates:
+            verdict_target = duplicates[0]
+            phone_9 = _extract_9digit_phone(str(verdict_target.get("phone_number") or ""))
+            masked_phone = (
+                (f"{phone_9[:6]}***" if phone_9 else None)
+                or _extract_masked_phone(str(verdict_target.get("phone_number") or ""))
+            )
+            author_id = verdict_target.get("author_id")
+
         related = _query_by_phone_or_author(
             conn,
             phone_9=phone_9,
@@ -622,8 +872,7 @@ def run_xray_on_db(
             author_id=author_id,
             masked_phone=masked_phone,
         )
-        verdict = evaluate_broker_verdict(target, related)
-        duplicates = find_exact_duplicates(conn, target)
+        verdict = evaluate_broker_verdict(verdict_target, related)
         bench = get_district_avg_m2(conn, target.get("district"))
 
         curr_price = float(target.get("price_usd") or 0.0)
@@ -641,6 +890,11 @@ def run_xray_on_db(
             f"👤 <b>გამყიდველი:</b> {verdict['badge']}",
             f"📌 {verdict['reason']}",
         ]
+        display_phone = target.get("phone_number") or next(
+            (d.get("phone_number") for d in duplicates if d.get("phone_number")), None
+        )
+        if display_phone:
+            lines.append(f"📞 <b>ტელეფონი:</b> <code>{display_phone}</code>")
 
         # Price history section
         if curr_price > 0:
@@ -674,7 +928,9 @@ def run_xray_on_db(
             for dup in duplicates[:4]:
                 dup_price = float(dup.get("price_usd") or 0.0)
                 dup_src = "MyHome.ge" if dup.get("source") == "myhome" else "SS.ge"
-                dup_owner = "მესაკუთრე ✅" if dup.get("is_owner") else "სააგენტო 🕵️‍♂️"
+                dup_owner = _format_owner_badge(dup.get("is_owner"))
+                dup_phone = dup.get("phone_number")
+                phone_part = f" | 📞 <code>{dup_phone}</code>" if dup_phone else ""
                 dup_url = dup.get("url") or "#"
                 diff_str = ""
                 if curr_price > 0 and dup_price > 0:
@@ -686,7 +942,7 @@ def run_xray_on_db(
                     else:
                         diff_str = " (იგივე ფასი)"
                 lines.append(
-                    f"• <a href=\"{dup_url}\">{dup_src}</a> — <b>${int(dup_price):,}</b>{diff_str} | {dup_owner}"
+                    f"• <a href=\"{dup_url}\">{dup_src}</a> — <b>${int(dup_price):,}</b>{diff_str} | {dup_owner}{phone_part}"
                 )
         else:
             lines.append("🎯 <b>იგივე ბინა სხვაგან:</b> დუბლიკატი სხვა პორტალზე არ იძებნება.")

@@ -926,6 +926,268 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
             stats4 = await orch.run_cycle()
         self.assertEqual(stats4["notifications_sent"], 0)
 
+    async def test_run_cycle_saves_unmatched_before_enrichment_and_enriches_concurrently(self):
+        """R-02: Unmatched listings must be batch-saved BEFORE slow detail enrichment starts,
+        and detail enrichment across multiple matched listings must run concurrently."""
+        import asyncio
+        from core.filters import ListingFilter
+        from core.models import SearchFilters
+        from main import RealEstateOrchestrator
+
+        orch = RealEstateOrchestrator.__new__(RealEstateOrchestrator)
+        orch.db = self.db
+        orch.filter_engine = ListingFilter(SearchFilters())
+        orch.analytics = MarketAnalytics()
+        orch.dedup = MagicMock()
+        orch.dedup.check_listing = AsyncMock(return_value=None)
+        orch.telegram_notifier = MagicMock()
+        orch.telegram_notifier.send_notification = AsyncMock(return_value=True)
+
+        user = UserSubscription(
+            chat_id="u_fast",
+            deal_type="sale",
+            price_min_usd=45000,
+            price_max_usd=75000,
+            area_min_m2=40,
+            area_max_m2=65,
+            rooms_min=1,
+            districts=["საბურთალო"],
+            owner_type="all",
+            is_active=True,
+        )
+
+        unmatched_item = PropertyListing(
+            id="myhome_unmatched_1",
+            source="myhome",
+            source_id="unmatched_1",
+            title="ძვირი ბინა",
+            price_usd=120000.0,
+            area_m2=50.0,
+            district="საბურთალო",
+            rooms=2,
+            url="https://myhome.ge/unmatched_1",
+        )
+        matched_1 = PropertyListing(
+            id="myhome_match_1",
+            source="myhome",
+            source_id="match_1",
+            title="ბინა 1",
+            price_usd=60000.0,
+            area_m2=50.0,
+            district="საბურთალო",
+            rooms=2,
+            url="https://myhome.ge/match_1",
+        )
+        matched_2 = PropertyListing(
+            id="myhome_match_2",
+            source="myhome",
+            source_id="match_2",
+            title="ბინა 2",
+            price_usd=62000.0,
+            area_m2=52.0,
+            district="საბურთალო",
+            rooms=2,
+            url="https://myhome.ge/match_2",
+        )
+
+        unmatched_saved_before_enrich = False
+        active_enrichments = 0
+        max_concurrent_enrichments = 0
+
+        async def mock_fetch_details(source_id):
+            nonlocal unmatched_saved_before_enrich, active_enrichments, max_concurrent_enrichments
+            if self.db.is_seen("myhome_unmatched_1"):
+                unmatched_saved_before_enrich = True
+            active_enrichments += 1
+            max_concurrent_enrichments = max(max_concurrent_enrichments, active_enrichments)
+            await asyncio.sleep(0.03)
+            active_enrichments -= 1
+            return {"price_usd": 60000.0, "is_owner": True, "condition_id": 1}
+
+        mock_scraper = MagicMock()
+        mock_scraper.name = "MyHome.ge"
+        mock_scraper.fetch_listings = AsyncMock(
+            return_value=[unmatched_item, matched_1, matched_2]
+        )
+        mock_scraper.fetch_statement_details = AsyncMock(side_effect=mock_fetch_details)
+        orch.scrapers = [mock_scraper]
+
+        with patch("main.fetch_active_users", return_value=[user]):
+            await orch.run_cycle()
+
+        self.assertTrue(
+            unmatched_saved_before_enrich,
+            "unmatched_to_save must be saved before detail enrichment starts",
+        )
+        self.assertGreaterEqual(
+            max_concurrent_enrichments,
+            2,
+            f"Expected concurrent detail enrichments (>=2), got {max_concurrent_enrichments}",
+        )
+
+    def test_mark_user_notified_propagates_d1_unavailable_error(self):
+        """R-03: mark_user_notified must propagate DatabaseUnavailableError (Fail-Closed) instead of swallowing it."""
+        from core.database import D1Client, DatabaseUnavailableError
+
+        mock_client = MagicMock(spec=D1Client)
+        mock_client.query.side_effect = DatabaseUnavailableError("D1 HTTP 503: Service Unavailable")
+
+        d1_db = DatabaseEngine(db_path=self.db_path, use_d1=False)
+        d1_db.use_d1 = True
+        d1_db.d1_client = mock_client
+
+        with self.assertRaises(DatabaseUnavailableError):
+            d1_db.mark_user_notified("chat_r03", "listing_r03")
+        self.assertNotIn("listing_r03", d1_db._user_seen["chat_r03"])
+
+    async def test_failed_telegram_send_rolls_back_listing_for_next_cycle_retry(self):
+        """R-03: If Telegram send_notification returns False on Cycle 1, the listing must not be
+        permanently marked seen at the new price and must be retried and delivered on Cycle 2."""
+        from core.filters import ListingFilter
+        from core.models import SearchFilters
+        from main import RealEstateOrchestrator
+
+        orch = RealEstateOrchestrator.__new__(RealEstateOrchestrator)
+        orch.db = self.db
+        orch.filter_engine = ListingFilter(SearchFilters())
+        orch.analytics = MarketAnalytics()
+        orch.dedup = MagicMock()
+        orch.dedup.check_listing = AsyncMock(return_value=None)
+        orch.telegram_notifier = MagicMock()
+
+        user = UserSubscription(
+            chat_id="u_retry",
+            deal_type="sale",
+            price_min_usd=45000,
+            price_max_usd=75000,
+            area_min_m2=40,
+            area_max_m2=65,
+            rooms_min=1,
+            districts=["საბურთალო"],
+            owner_type="all",
+            is_active=True,
+        )
+
+        item = PropertyListing(
+            id="myhome_retry_1",
+            source="myhome",
+            source_id="retry_1",
+            title="ბინა საბურთალოზე",
+            price_usd=60000.0,
+            area_m2=50.0,
+            district="საბურთალო",
+            rooms=2,
+            url="https://myhome.ge/retry_1",
+        )
+
+        mock_scraper = MagicMock()
+        mock_scraper.name = "MyHome.ge"
+        mock_scraper.fetch_listings = AsyncMock(side_effect=lambda f: [item.model_copy()])
+        mock_scraper.fetch_statement_details = AsyncMock(
+            return_value={"price_usd": 60000.0, "is_owner": True, "condition_id": 1}
+        )
+        orch.scrapers = [mock_scraper]
+
+        # Cycle 1: Telegram fails (returns False)
+        orch.telegram_notifier.send_notification = AsyncMock(return_value=False)
+        with patch("main.fetch_active_users", return_value=[user]):
+            stats1 = await orch.run_cycle()
+        self.assertEqual(stats1["notifications_sent"], 0)
+        self.assertFalse(self.db.is_seen("myhome_retry_1"))
+
+        # Cycle 2: Telegram recovers (returns True) -> listing is retried and sent!
+        orch.telegram_notifier.send_notification = AsyncMock(return_value=True)
+        with patch("main.fetch_active_users", return_value=[user]):
+            stats2 = await orch.run_cycle()
+        self.assertEqual(stats2["notifications_sent"], 1)
+        self.assertTrue(self.db.is_seen("myhome_retry_1"))
+
+    def test_sync_key_not_in_url_or_error_logs(self):
+        """Sync key must be sent only via X-Sync-Key header, never in URL query params or warning logs."""
+        import urllib.error
+        from core.database import D1Client, DatabaseUnavailableError
+        from core.user_sync import fetch_active_users
+
+        captured_urls = []
+        captured_headers = []
+
+        def fake_urlopen(req, timeout=10):
+            captured_urls.append(req.full_url)
+            captured_headers.append(dict(req.header_items()))
+            raise urllib.error.HTTPError(
+                req.full_url, 502, "Bad Gateway", {}, None
+            )
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen), self.assertLogs(
+            "core.user_sync", level="WARNING"
+        ) as cm:
+            fetch_active_users(worker_url="https://worker.dev", sync_key="super_secret_sync_key_99")
+
+        self.assertEqual(len(captured_urls), 1)
+        self.assertNotIn("super_secret_sync_key_99", captured_urls[0])
+        self.assertNotIn("key=", captured_urls[0])
+        log_output = "\n".join(cm.output)
+        self.assertNotIn("super_secret_sync_key_99", log_output)
+        self.assertNotIn("https://worker.dev", log_output)
+
+        # Same-class check: D1Client._send must also omit ?key= from URL
+        captured_urls.clear()
+        d1 = D1Client("https://worker.dev", "super_secret_sync_key_99")
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(DatabaseUnavailableError):
+                d1.query("SELECT 1")
+        self.assertEqual(len(captured_urls), 1)
+        self.assertNotIn("super_secret_sync_key_99", captured_urls[0])
+        self.assertNotIn("key=", captured_urls[0])
+
+    async def test_telegram_caption_truncation_and_retry_after_429(self):
+        """Telegram send_photo must truncate captions > 1024 chars and retry once after RetryAfter (429)."""
+        notifier = TelegramNotifier(bot_token="fake:token", chat_id="12345", enable_console=False)
+        mock_bot = MagicMock()
+
+        class FakeRetryAfter(Exception):
+            def __init__(self, retry_after):
+                super().__init__(f"Flood control exceeded. Retry in {retry_after} seconds")
+                self.retry_after = retry_after
+
+        call_count = 0
+        sent_captions = []
+
+        async def fake_send_photo(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            sent_captions.append(kwargs.get("caption", ""))
+            if call_count == 1:
+                raise FakeRetryAfter(0.01)
+            return True
+
+        mock_bot.send_photo = AsyncMock(side_effect=fake_send_photo)
+        mock_bot.send_message = AsyncMock(return_value=True)
+        notifier.bot = mock_bot
+
+        long_street = "ჭავჭავაძის გამზირი " * 60
+        listing = PropertyListing(
+            id="myhome_caption_test",
+            source="myhome",
+            source_id="caption_test",
+            title="იყიდება ბინა ვაკეში",
+            price_usd=65000.0,
+            area_m2=55.0,
+            district="ვაკე",
+            street=long_street,
+            rooms=2,
+            images=["https://example.com/photo1.jpg"],
+            url="https://myhome.ge/pr/1",
+        )
+        full_msg = notifier.format_message(listing)
+        self.assertGreater(len(full_msg), 1024)
+
+        ok = await notifier.send_notification(listing, target_chat_id="12345")
+        self.assertTrue(ok)
+        self.assertEqual(call_count, 2, "send_photo should be retried once after RetryAfter")
+        self.assertLessEqual(len(sent_captions[-1]), 1024)
+        mock_bot.send_message.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

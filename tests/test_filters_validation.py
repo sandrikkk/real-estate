@@ -149,14 +149,22 @@ class TestFiltersValidation(unittest.TestCase):
             self.assertFalse(self.filter_engine.matches(gldani_deep), f"Should reject {mr}")
 
     def test_target_metro_stations(self):
-        # Target metro IDs: [1, 7, 9, 10, 16, 17, 18, 19, 21, 22, 24, 25]
-        for mid in [1, 7, 9, 10, 16, 17, 18, 19, 21, 22, 24, 25]:
+        # Valid target metro IDs: [1, 7, 9, 10, 16, 17, 18, 19, 21, 22]
+        for mid in [1, 7, 9, 10, 16, 17, 18, 19, 21, 22]:
             listing = make_sample_listing(metro_station_id=mid, district="სხვა უბანი")
             self.assertTrue(self.filter_engine.matches(listing), f"Target metro {mid} should be accepted")
 
         # Non-target metro: Varketili (23) -> Should be rejected
         listing_varketili = make_sample_listing(metro_station_id=23, district="ვარკეთილი")
         self.assertFalse(self.filter_engine.matches(listing_varketili))
+
+        # Unmapped metro IDs (24, 25) do not exist in METRO_STATIONS and must not bypass district filtering
+        for invalid_mid in [24, 25]:
+            listing_unmapped = make_sample_listing(metro_station_id=invalid_mid, district="სხვა უბანი")
+            self.assertFalse(
+                self.filter_engine.matches(listing_unmapped),
+                f"Unmapped metro {invalid_mid} in non-whitelisted district must be rejected",
+            )
 
     def test_district_whitelist_fallback(self):
         # No metro station, but district is Didube -> Accepted
@@ -173,6 +181,18 @@ class TestFiltersValidation(unittest.TestCase):
         self.assertTrue(self.filter_engine.matches(listing_hot))
         self.assertTrue(listing_hot.is_hot_deal)
         self.assertEqual(listing_hot.deal_tag, "🚨 HOT DEAL (RENOVATED)")
+
+        # condition_id=3 ("მიმდინარე რემონტი") must NOT be tagged as renovated hot deal
+        listing_ongoing = make_sample_listing(
+            price_usd=65000.0,
+            area_m2=50.0,
+            condition_id=3,
+            condition_name="მიმდინარე რემონტი",
+            description="კარგი ბინა, ავეჯით",
+        )
+        self.assertTrue(self.filter_engine.matches(listing_ongoing))
+        self.assertFalse(listing_ongoing.is_hot_deal)
+        self.assertIsNone(listing_ongoing.deal_tag)
 
         # Price $71,000, 50m² -> $1420/m² > 1350, Renovated -> Passes filter but no deal tag
         listing_normal = make_sample_listing(price_usd=71000.0, area_m2=50.0, condition_id=1)

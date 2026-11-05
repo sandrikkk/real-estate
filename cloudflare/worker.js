@@ -1040,6 +1040,49 @@ const XRAY_DISTRICT_KEYWORDS = [
   ["ლის", "ლისი"]
 ];
 
+const XRAY_DISTRICT_ALIASES = {
+  "საბურთალო": ["საბურთალო", "ვაკე-საბურთალო", "ნუცუბიძე", "ნუცუბიძის ფერდობი", "ვაშლიჯვარი", "ვეძისი", "დელისი", "ლისი", "ლისის მიმდებარედ", "თხინვალი"],
+  "ვაკე": ["ვაკე", "ვაკე-საბურთალო", "ბაგები", "კუს ტბა", "ვერა", "წყნეთი"],
+  "დიდი დიღომი": ["დიდი დიღომი", "დიღომი", "დიღომი 1-9", "სოფ. დიღომი", "სოფელი დიღომი", "დიღმის ჭალა", "ქოშიგორა", "ვაკე-საბურთალო"],
+  "დიღმის მასივი": ["დიღმის მასივი", "დიღმის მას.", "დიდუბე-ჩუღურეთი"],
+  "დიღომი": ["დიღომი", "დიდი დიღომი", "დიღომი 1-9", "სოფ. დიღომი", "სოფელი დიღომი", "დიღმის ჭალა", "ქოშიგორა", "ვაკე-საბურთალო"],
+  "დიდუბე": ["დიდუბე", "წერეთელი", "წერეთლის გამზ.", "დიდუბე-ჩუღურეთი"],
+  "ჩუღურეთი": ["ჩუღურეთი", "კუკია", "სვანეთის უბანი", "ივერთუბანი", "მარჯანიშვილი", "ვორონცოვი", "დიდუბე-ჩუღურეთი"],
+  "ნაძალადევი": ["ნაძალადევი", "სანზონა", "სან. ზონა", "სან.ზონა", "თემქა", "ლოტკინი", "გლდანი-ნაძალადევი"],
+  "გლდანი": ["გლდანი", "მუხიანი", "გლდანულა", "ავჭალა", "ზაჰესი", "თბილისის ზღვა", "კონიაკის დასახლება", "კონიაკის დას.", "გლდანი-ნაძალადევი"],
+  "ისანი": ["ისანი", "ავლაბარი", "ნავთლუღი", "მეტრომშენი", "300 არაგველი", "ისანი-სამგორი"],
+  "სამგორი": ["სამგორი", "ვარკეთილი", "ვაზისუბანი", "მესამე მასივი", "მოსკოვის გამზირი", "მოსკოვის გამზ.", "აფრიკა", "ლილო", "ორხევი", "ფონიჭალა", "ისანი-სამგორი"],
+  "მთაწმინდა": ["მთაწმინდა", "სოლოლაკი", "რუსთაველი", "თავისუფლება", "ვერა", "ძველი თბილისი"],
+  "კრწანისი": ["კრწანისი", "ორთაჭალა", "აბანოთუბანი", "ელია", "ფონიჭალა", "ძველი თბილისი"],
+  "ნუცუბიძე": ["ნუცუბიძე", "ნუცუბიძის ფერდობი", "საბურთალო", "ვაკე-საბურთალო"],
+  "ნუცუბიძის ფერდობი": ["ნუცუბიძის ფერდობი", "ნუცუბიძე", "საბურთალო", "ვაკე-საბურთალო"],
+  "ვაშლიჯვარი": ["ვაშლიჯვარი", "საბურთალო", "ვაკე-საბურთალო"],
+  "ლისი": ["ლისი", "ლისის მიმდებარედ", "საბურთალო", "ვაკე-საბურთალო"],
+  "ბაგები": ["ბაგები", "ვაკე", "ვაკე-საბურთალო"],
+  "ვარკეთილი": ["ვარკეთილი", "სამგორი", "ისანი-სამგორი"],
+  "ვაზისუბანი": ["ვაზისუბანი", "სამგორი", "ისანი-სამგორი"],
+  "მუხიანი": ["მუხიანი", "გლდანი", "გლდანი-ნაძალადევი"],
+  "თემქა": ["თემქა", "ნაძალადევი", "გლდანი-ნაძალადევი"],
+  "სანზონა": ["სანზონა", "სან. ზონა", "სან.ზონა", "ნაძალადევი", "გლდანი-ნაძალადევი"],
+  "სოლოლაკი": ["სოლოლაკი", "მთაწმინდა", "ძველი თბილისი"],
+  "ორთაჭალა": ["ორთაჭალა", "კრწანისი", "ძველი თბილისი"],
+  "ავლაბარი": ["ავლაბარი", "ისანი", "ძველი თბილისი", "ისანი-სამგორი"],
+  "წერეთელი": ["წერეთელი", "წერეთლის გამზ.", "დიდუბე", "დიდუბე-ჩუღურეთი"]
+};
+
+function expandDistrictAliases(district) {
+  const d = String(district || "").trim();
+  if (!d) return [];
+  const aliases = XRAY_DISTRICT_ALIASES[d];
+  return aliases ? Array.from(new Set([d, ...aliases])) : [d];
+}
+
+function formatOwnerBadge(isOwner) {
+  if (isOwner === true || isOwner === 1 || isOwner === "1") return "მესაკუთრე ✅";
+  if (isOwner === false || isOwner === 0 || isOwner === "0") return "სააგენტო 🕵️‍♂️";
+  return "გადაუმოწმებელი ⚠️";
+}
+
 function formatGeorgianPhone(phone9) {
   return `+995 ${phone9.slice(0, 3)} ${phone9.slice(3, 5)} ${phone9.slice(5, 7)} ${phone9.slice(7, 9)}`;
 }
@@ -1174,7 +1217,7 @@ function parseSsGeStatementDetails(st, agentInfo = {}, html = "", sourceId = "",
     html && (/>[\s]*აგენტი[\s]*</.test(html) || />[\s]*სააგენტო[\s]*</.test(html) || />[\s]*მაკლერი[\s]*</.test(html))
   );
   const htmlHasOwnerBadge = Boolean(
-    html && (/>[\s]*მესაკუთრე[\s]*</.test(html) || />[\s]*ფიზიკური პირი[\s]*</.test(html))
+    html && />[\s]*მესაკუთრე[\s]*</.test(html)
   );
 
   const isBrokerSignal = Boolean(
@@ -1183,6 +1226,8 @@ function parseSsGeStatementDetails(st, agentInfo = {}, html = "", sourceId = "",
     st.isForAgency ||
     st.isAgency === true ||
     st.isOwner === false ||
+    st.isOwner === 0 ||
+    st.isOwner === "0" ||
     st.commercialRealEstateType ||
     st.userType === 2 ||
     agentInfo.companyId != null ||
@@ -1193,8 +1238,10 @@ function parseSsGeStatementDetails(st, agentInfo = {}, html = "", sourceId = "",
   );
 
   const isVerifiedOwner = !isBrokerSignal && Boolean(
-    ["individual", "owner", "physical", "მესაკუთრე", "ფიზიკური"].some(k => uet.includes(k)) ||
+    ["individual", "owner", "მესაკუთრე"].some(k => uet.includes(k)) ||
     st.isOwner === true ||
+    st.isOwner === 1 ||
+    st.isOwner === "1" ||
     st.isAgency === false ||
     htmlHasOwnerBadge
   );
@@ -1271,13 +1318,19 @@ function parseMyHomeStatementDetails(st, sourceId, pageUrl) {
   const phone9 = extract9DigitPhone(`${rawPhone} ${st.comment || st.description || ""}`);
   const maskedPhone = phone9 ? null : extractMaskedPhone(rawPhone);
   const ut = String(st.user_type?.type || st.user_type || "").toLowerCase();
-  const stmtCnt = Number(st.user_statements_count || st.statements_count || st.userApplicationCount || 0) || 0;
+  const stmtCnt = Number(st.user_statements_count || st.statements_count || st.user?.statements_count || st.userApplicationCount || 0) || 0;
+  const isOwnerRaw = st.is_owner;
+  const isOwnerExplicitFalse = isOwnerRaw === false || isOwnerRaw === 0 || isOwnerRaw === "0";
+  const isOwnerExplicitTrue = isOwnerRaw === true || isOwnerRaw === 1 || isOwnerRaw === "1";
+  const hasAgencySignal = Boolean(st.agency_name || st.agency_id || st.broker || st.agency);
   const isBroker = Boolean(
-    st.is_owner === false ||
+    isOwnerExplicitFalse ||
+    hasAgencySignal ||
     ["agent", "agency", "broker", "developer", "company", "აგენტ", "მაკლერ", "სააგენტო"].some(k => ut.includes(k)) ||
     stmtCnt >= 3
   );
-  const isOwner = isBroker ? 0 : (ut === "physical" || ut === "owner" || st.is_owner === true ? 1 : null);
+  const isOwner = isBroker ? 0 : (isOwnerExplicitTrue || ut === "owner" ? 1 : null);
+  const rawUid = st.user_id || st.user?.id || st.agency_id || null;
   return {
     id: `myhome_${sourceId}`,
     source: "myhome",
@@ -1287,11 +1340,11 @@ function parseMyHomeStatementDetails(st, sourceId, pageUrl) {
     area_m2: Number(st.area || st.totalArea || 0),
     floor: String(st.floor ?? ""),
     rooms: Number(st.room_type_id || st.rooms || 0),
-    district: st.district_name || st.urban_name || st.address?.districtTitle || "",
+    district: st.urban_name || st.district_name || st.address?.subdistrictTitle || st.address?.districtTitle || "",
     is_owner: isOwner,
-    user_type: ut || (isBroker ? "agent" : (isOwner === 1 ? "physical" : null)),
+    user_type: isBroker ? (ut && !["physical", "owner"].includes(ut) ? ut : "agent") : (ut || (isOwner === 1 ? "physical" : null)),
     phone_number: phone9 ? formatGeorgianPhone(phone9) : (maskedPhone || null),
-    author_id: st.user_id ? String(st.user_id) : null,
+    author_id: rawUid ? String(rawUid) : null,
     author_listings_count: stmtCnt || null
   };
 }
@@ -1305,12 +1358,23 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
 
   try {
     if (source === "myhome") {
-      const apiUrl = `https://api-statements.tnet.ge/v1/statements/${sourceId}`;
-      const res = await fetch(apiUrl, { headers: { ...headers, "Origin": "https://www.myhome.ge", "Referer": "https://www.myhome.ge/" } });
+      const apiUrl = `https://api-statements.tnet.ge/v1/statements/${sourceId}?locale=ka`;
+      const res = await fetch(apiUrl, {
+        headers: {
+          ...headers,
+          "Accept": "application/json, text/plain, */*",
+          "X-Website-Key": "myhome",
+          "locale": "ka",
+          "Origin": "https://www.myhome.ge",
+          "Referer": "https://www.myhome.ge/"
+        }
+      });
       if (res.ok) {
         const json = await res.json();
         const st = json?.data?.statement || json?.data || {};
-        return parseMyHomeStatementDetails(st, sourceId, rawUrl);
+        if (st && (st.id || st.user_id || st.price || st.area || st.user_phone_number || st.phone_number)) {
+          return parseMyHomeStatementDetails(st, sourceId, rawUrl);
+        }
       }
     }
 
@@ -1393,7 +1457,10 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
 function evaluateWorkerBrokerVerdict(target, relatedRows) {
   const allRows = [];
   const seen = new Set();
-  if (target && target.id) {
+  const isPhonelessFb = Boolean(
+    target && target.id === "fb_input" && !target.phone_number && !target.author_id
+  );
+  if (target && target.id && !isPhonelessFb) {
     allRows.push(target);
     seen.add(target.id);
   }
@@ -1404,7 +1471,15 @@ function evaluateWorkerBrokerVerdict(target, relatedRows) {
     }
   }
 
-  const aptKeys = new Set();
+  if (isPhonelessFb && allRows.length === 0) {
+    return {
+      isBroker: false,
+      badge: "⚠️ სტატუსი დაუზუსტებელია (ნომერი არ არის მითითებული)",
+      reason: "განცხადებაში ტელეფონის ნომერი არ წერია და ბაზაში იდენტური ბინა ჯერ არ იძებნება"
+    };
+  }
+
+  const clusters = [];
   let maxAuthorCount = 0;
   let anyNonOwner = false;
   let anyAgentType = false;
@@ -1421,12 +1496,42 @@ function evaluateWorkerBrokerVerdict(target, relatedRows) {
     if (agentTokens.some(tok => ut.includes(tok))) anyAgentType = true;
     const cnt = parseInt(r.author_listings_count, 10);
     if (!isNaN(cnt) && cnt > maxAuthorCount) maxAuthorCount = cnt;
-    const dist = String(r.district || "").trim();
-    const areaBucket = Math.round((Number(r.area_m2) || 0) / 2);
-    if (dist || areaBucket) aptKeys.add(`${dist}_${areaBucket}`);
+
+    const rGid = r.group_id || null;
+    const rDist = String(r.district || "").trim();
+    const rAliases = new Set(rDist ? expandDistrictAliases(rDist) : []);
+    const rFloor = cleanFloorStr(r.floor);
+    const rArea = Number(r.area_m2) || 0;
+    const rRooms = parseInt(r.rooms, 10) || 0;
+
+    let matchedCluster = false;
+    for (const c of clusters) {
+      if (rGid && c.group_id && rGid === c.group_id) {
+        matchedCluster = true;
+        break;
+      }
+      const distCompat = !rDist || !c.district || c.aliases.has(rDist) || rAliases.has(c.district);
+      const areaCompat = rArea > 0 && c.area_m2 > 0 && Math.abs(rArea - c.area_m2) <= 2.0;
+      const floorCompat = !rFloor || !c.floor || rFloor === c.floor;
+      const roomsCompat = rRooms <= 0 || c.rooms <= 0 || rRooms === c.rooms;
+      if (distCompat && areaCompat && floorCompat && roomsCompat) {
+        matchedCluster = true;
+        break;
+      }
+    }
+    if (!matchedCluster) {
+      clusters.push({
+        group_id: rGid,
+        district: rDist,
+        aliases: rAliases,
+        area_m2: rArea,
+        floor: rFloor,
+        rooms: rRooms
+      });
+    }
   }
 
-  const uniqueApartments = Math.max(aptKeys.size, allRows.length > 0 && aptKeys.size === 0 ? allRows.length : aptKeys.size);
+  const uniqueApartments = clusters.length;
   const isBroker = anyNonOwner || anyAgentType || maxAuthorCount >= 3 || uniqueApartments >= 2;
 
   if (isBroker) {
@@ -1461,10 +1566,14 @@ function evaluateWorkerBrokerVerdict(target, relatedRows) {
   };
 }
 
+function cleanFloorStr(f) {
+  return String(f || "").trim().split("/")[0].trim();
+}
+
 function workerFloorsMatch(f1, f2) {
-  const a = String(f1 || "").trim().split("/")[0].trim();
-  const b = String(f2 || "").trim().split("/")[0].trim();
-  if (!a || !b) return true;
+  const a = cleanFloorStr(f1);
+  const b = cleanFloorStr(f2);
+  if (!a || !b) return false;
   return a === b;
 }
 
@@ -1473,6 +1582,107 @@ function workerRoomsMatch(r1, r2) {
   const b = parseInt(r2, 10) || 0;
   if (a <= 0 || b <= 0) return true;
   return a === b;
+}
+
+function workerCandidateMatchesTarget(target, cand) {
+  if (!workerRoomsMatch(target?.rooms, cand?.rooms)) return false;
+  const tf = cleanFloorStr(target?.floor);
+  const cf = cleanFloorStr(cand?.floor);
+  if (tf) return cf === tf;
+  const tr = parseInt(target?.rooms, 10) || 0;
+  const cr = parseInt(cand?.rooms, 10) || 0;
+  const tp = Number(target?.price_usd) || 0;
+  const cp = Number(cand?.price_usd) || 0;
+  if (tr > 0 && cr > 0 && tr === cr && tp > 0 && cp > 0) {
+    return Math.abs(cp - tp) / tp <= 0.10;
+  }
+  return false;
+}
+
+async function queryWorkerExactDuplicates(db, target, limit = 25) {
+  const dupMap = new Map();
+  if (!db || !target) return [];
+  const targetId = target.id || "";
+  if (target.group_id) {
+    const { results } = await db
+      .prepare("SELECT * FROM properties WHERE group_id = ? AND id != ?")
+      .bind(target.group_id, targetId)
+      .all();
+    for (const r of results || []) {
+      if (r && r.id) dupMap.set(r.id, r);
+    }
+  }
+  if (target.district && Number(target.area_m2) > 0) {
+    const aliases = expandDistrictAliases(target.district);
+    const placeholders = aliases.map(() => "?").join(", ");
+    const area = Number(target.area_m2);
+    const dealType = target.deal_type || "sale";
+    const tf = cleanFloorStr(target.floor);
+    const tr = parseInt(target.rooms, 10) || 0;
+    const tp = Number(target.price_usd) || 0;
+
+    const sqlParts = [
+      `SELECT * FROM properties WHERE district IN (${placeholders})`,
+      "AND area_m2 BETWEEN ? AND ?",
+      "AND id != ?",
+      "AND (deal_type IS NULL OR deal_type = ?)"
+    ];
+    const params = [...aliases, area - 1.5, area + 1.5, targetId, dealType];
+
+    if (dealType === "sale") {
+      sqlParts.push("AND price_usd >= 10000");
+    }
+    if (tr > 0) {
+      sqlParts.push("AND (rooms IS NULL OR rooms <= 0 OR rooms = ?)");
+      params.push(tr);
+    }
+    if (tf) {
+      sqlParts.push("AND (floor = ? OR floor LIKE ?)");
+      params.push(tf, `${tf}/%`);
+      sqlParts.push(`ORDER BY price_usd ASC LIMIT ${limit}`);
+    } else if (tp > 0) {
+      sqlParts.push(`ORDER BY ABS(price_usd - ?) ASC LIMIT ${limit}`);
+      params.push(tp);
+    } else {
+      sqlParts.push(`ORDER BY price_usd ASC LIMIT ${limit}`);
+    }
+
+    const { results } = await db.prepare(sqlParts.join(" ")).bind(...params).all();
+    for (const r of results || []) {
+      if (!r || !r.id) continue;
+      if (!workerCandidateMatchesTarget(target, r)) continue;
+      dupMap.set(r.id, r);
+    }
+  }
+  return Array.from(dupMap.values()).sort((a, b) => (Number(a.price_usd) || 0) - (Number(b.price_usd) || 0));
+}
+
+async function enrichDuplicatesIfNeeded(db, dups, maxCount = 3) {
+  const slice = (dups || []).slice(0, maxCount);
+  await Promise.all(
+    slice.map(async (dup) => {
+      if (
+        !dup ||
+        (dup.phone_number &&
+          dup.is_owner !== null &&
+          dup.is_owner !== undefined &&
+          dup.author_id &&
+          dup.source !== "ss_ge")
+      ) {
+        return;
+      }
+      const srcId = dup.source_id || String(dup.id || "").replace(/^(?:myhome|ss_ge)_/, "");
+      if (!srcId) return;
+      const live = await fetchLiveStatementDetails(dup.source, srcId, dup.url);
+      if (live) {
+        const merged = mergeLiveIntoRow(dup, live);
+        Object.assign(dup, merged);
+        if (dup.id) {
+          await persistLiveEnrichment(db, dup.id, merged);
+        }
+      }
+    })
+  );
 }
 
 async function handleXRayQuery(text, env) {
@@ -1560,27 +1770,9 @@ async function handleXRayQuery(text, env) {
       const phoneDupMap = new Map();
       for (const r of rows.slice(0, 5)) {
         const refPrice = Number(r.price_usd) || 0;
-        if (r.group_id) {
-          const { results: gRows } = await db
-            .prepare("SELECT * FROM properties WHERE group_id = ? AND id != ?")
-            .bind(r.group_id, r.id || "")
-            .all();
-          for (const d of gRows || []) {
-            if (d && d.id && !relatedIds.has(d.id) && !phoneDupMap.has(d.id)) {
-              phoneDupMap.set(d.id, { dup: d, refPrice });
-            }
-          }
-        }
-        if (r.district && Number(r.area_m2) > 0) {
-          const area = Number(r.area_m2);
-          const { results: dRows } = await db
-            .prepare("SELECT * FROM properties WHERE district = ? AND area_m2 BETWEEN ? AND ? AND id != ? ORDER BY price_usd ASC LIMIT 15")
-            .bind(r.district, area - 1.5, area + 1.5, r.id || "")
-            .all();
-          for (const d of dRows || []) {
-            if (!d || !d.id || relatedIds.has(d.id) || phoneDupMap.has(d.id)) continue;
-            if (!workerFloorsMatch(r.floor, d.floor)) continue;
-            if (!workerRoomsMatch(r.rooms, d.rooms)) continue;
+        const rDups = await queryWorkerExactDuplicates(db, r, 15);
+        for (const d of rDups) {
+          if (d && d.id && !relatedIds.has(d.id) && !phoneDupMap.has(d.id)) {
             phoneDupMap.set(d.id, { dup: d, refPrice });
           }
         }
@@ -1589,12 +1781,14 @@ async function handleXRayQuery(text, env) {
         const sortedPhoneDups = Array.from(phoneDupMap.values()).sort(
           (a, b) => (Number(a.dup.price_usd) || 0) - (Number(b.dup.price_usd) || 0)
         );
+        await enrichDuplicatesIfNeeded(db, sortedPhoneDups.map(item => item.dup), 3);
         lines.push("");
         lines.push("🎯 <b>იგივე ბინა სხვაგან:</b>");
         for (const { dup, refPrice } of sortedPhoneDups.slice(0, 4)) {
           const dPrice = Math.round(Number(dup.price_usd) || 0);
           const dSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
-          const dOwner = dup.is_owner ? "მესაკუთრე ✅" : "სააგენტო 🕵️‍♂️";
+          const dOwner = formatOwnerBadge(dup.is_owner);
+          const dPhonePart = dup.phone_number ? ` | 📞 <code>${dup.phone_number}</code>` : "";
           let diffStr = "";
           if (refPrice > 0 && dPrice > 0) {
             const delta = Math.round(dPrice - refPrice);
@@ -1602,7 +1796,7 @@ async function handleXRayQuery(text, env) {
             else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
             else diffStr = " (იგივე ფასი)";
           }
-          lines.push(`• <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}`);
+          lines.push(`• <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}${dPhonePart}`);
         }
       }
 
@@ -1658,8 +1852,21 @@ async function handleXRayQuery(text, env) {
       );
     }
 
-    const phone9 = parsed.phone9 || extract9DigitPhone(target.phone_number || "");
-    const maskedPhone = parsed.maskedPhone || (phone9 ? `${phone9.slice(0, 6)}***` : extractMaskedPhone(target.phone_number || ""));
+    // Find exact duplicates and live-enrich top matches so missing phones/owner badges are recovered
+    const duplicates = await queryWorkerExactDuplicates(db, target, 25);
+    if (duplicates.length > 0) {
+      await enrichDuplicatesIfNeeded(db, duplicates, 3);
+    }
+
+    let phone9 = parsed.phone9 || extract9DigitPhone(target.phone_number || "");
+    let maskedPhone = parsed.maskedPhone || (phone9 ? `${phone9.slice(0, 6)}***` : extractMaskedPhone(target.phone_number || ""));
+    let verdictTarget = target;
+    if (parsed.kind === "fb_text" && !phone9 && !maskedPhone && duplicates.length > 0) {
+      verdictTarget = duplicates[0];
+      phone9 = extract9DigitPhone(verdictTarget.phone_number || "");
+      maskedPhone = phone9 ? `${phone9.slice(0, 6)}***` : extractMaskedPhone(verdictTarget.phone_number || "");
+    }
+
     const relatedMap = new Map();
     if (phone9 || maskedPhone) {
       const fmt = phone9 ? formatGeorgianPhone(phone9) : maskedPhone;
@@ -1677,46 +1884,33 @@ async function handleXRayQuery(text, env) {
       }
       for (const r of chosen) relatedMap.set(r.id, r);
     }
-    if (target.author_id) {
+    if (verdictTarget.author_id) {
       const { results } = await db
         .prepare("SELECT * FROM properties WHERE author_id = ? ORDER BY scraped_at DESC LIMIT 30")
-        .bind(String(target.author_id))
+        .bind(String(verdictTarget.author_id))
         .all();
       for (const r of results || []) relatedMap.set(r.id, r);
     }
 
-    const verdict = evaluateWorkerBrokerVerdict(target, Array.from(relatedMap.values()));
+    const verdict = evaluateWorkerBrokerVerdict(verdictTarget, Array.from(relatedMap.values()));
 
-    // Find exact duplicates
-    const dupMap = new Map();
-    if (target.group_id) {
-      const { results } = await db
-        .prepare("SELECT * FROM properties WHERE group_id = ? AND id != ?")
-        .bind(target.group_id, target.id || "")
-        .all();
-      for (const r of results || []) dupMap.set(r.id, r);
-    }
-    if (target.district && Number(target.area_m2) > 0) {
-      const area = Number(target.area_m2);
-      const { results } = await db
-        .prepare("SELECT * FROM properties WHERE district = ? AND area_m2 BETWEEN ? AND ? AND id != ? ORDER BY price_usd ASC LIMIT 25")
-        .bind(target.district, area - 1.5, area + 1.5, target.id || "")
-        .all();
-      for (const r of results || []) {
-        if (!workerFloorsMatch(target.floor, r.floor)) continue;
-        if (!workerRoomsMatch(target.rooms, r.rooms)) continue;
-        dupMap.set(r.id, r);
-      }
-    }
-    const duplicates = Array.from(dupMap.values()).sort((a, b) => (Number(a.price_usd) || 0) - (Number(b.price_usd) || 0));
-
-    // District benchmark
+    // District benchmark (with alias fallback for subdistricts like ნუცუბიძე -> საბურთალო)
     let bench = null;
     if (target.district) {
-      const bRow = await db
+      let bRow = await db
         .prepare("SELECT ROUND(AVG(price_per_m2)) AS avg_m2, COUNT(*) AS cnt FROM properties WHERE district = ? AND price_per_m2 > 300 AND price_per_m2 < 6000")
         .bind(target.district)
         .first();
+      if ((!bRow || !bRow.avg_m2 || Number(bRow.cnt) < 1)) {
+        const aliases = expandDistrictAliases(target.district);
+        if (aliases.length > 1) {
+          const placeholders = aliases.map(() => "?").join(", ");
+          bRow = await db
+            .prepare(`SELECT ROUND(AVG(price_per_m2)) AS avg_m2, COUNT(*) AS cnt FROM properties WHERE district IN (${placeholders}) AND price_per_m2 > 300 AND price_per_m2 < 6000`)
+            .bind(...aliases)
+            .first();
+        }
+      }
       if (bRow && bRow.avg_m2 && Number(bRow.cnt) >= 1) {
         bench = { avg_m2: Math.round(Number(bRow.avg_m2)), count: Number(bRow.cnt) };
       }
@@ -1735,6 +1929,10 @@ async function handleXRayQuery(text, env) {
       `👤 <b>გამყიდველი:</b> ${verdict.badge}`,
       `📌 ${verdict.reason}`
     ];
+    const displayPhone = target.phone_number || (duplicates.find(d => d && d.phone_number)?.phone_number) || null;
+    if (displayPhone) {
+      lines.push(`📞 <b>ტელეფონი:</b> <code>${displayPhone}</code>`);
+    }
 
     if (currPrice > 0) {
       lines.push("");
@@ -1766,7 +1964,8 @@ async function handleXRayQuery(text, env) {
       for (const dup of duplicates.slice(0, 4)) {
         const dupPrice = Math.round(Number(dup.price_usd) || 0);
         const dupSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
-        const dupOwner = dup.is_owner ? "მესაკუთრე ✅" : "სააგენტო 🕵️‍♂️";
+        const dupOwner = formatOwnerBadge(dup.is_owner);
+        const dupPhonePart = dup.phone_number ? ` | 📞 <code>${dup.phone_number}</code>` : "";
         let diffStr = "";
         if (currPrice > 0 && dupPrice > 0) {
           const delta = Math.round(dupPrice - currPrice);
@@ -1774,7 +1973,7 @@ async function handleXRayQuery(text, env) {
           else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
           else diffStr = " (იგივე ფასი)";
         }
-        lines.push(`• <a href="${dup.url || "#"}">${dupSrc}</a> — <b>$${dupPrice.toLocaleString()}</b>${diffStr} | ${dupOwner}`);
+        lines.push(`• <a href="${dup.url || "#"}">${dupSrc}</a> — <b>$${dupPrice.toLocaleString()}</b>${diffStr} | ${dupOwner}${dupPhonePart}`);
       }
     } else {
       lines.push("🎯 <b>იგივე ბინა სხვაგან:</b> დუბლიკატი სხვა პორტალზე არ იძებნება.");

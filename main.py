@@ -186,6 +186,12 @@ class RealEstateOrchestrator:
         print(f"[Run]: Active deal types: {', '.join(sorted(active_deal_types))}")
 
         # Build scraping tasks for each active deal type and user filter envelope
+        scrape_sem = asyncio.Semaphore(max(1, getattr(settings, "CONCURRENT_SCRAPERS", 3)))
+
+        async def _run_scraper(scraper_obj, env_filters):
+            async with scrape_sem:
+                return await scraper_obj.fetch_listings(env_filters)
+
         tasks = []
         task_meta = []
         for dt in sorted(active_deal_types):
@@ -193,7 +199,7 @@ class RealEstateOrchestrator:
             envelopes = self._build_search_envelopes(dt, dt_users)
             for envelope in envelopes:
                 for scraper in self.scrapers:
-                    tasks.append(scraper.fetch_listings(envelope))
+                    tasks.append(_run_scraper(scraper, envelope))
                     task_meta.append((scraper, dt))
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -241,6 +247,7 @@ class RealEstateOrchestrator:
                     )
 
         unmatched_to_save = []
+        candidates_to_enrich = []
         for listing in new_listings:
             # 1. Baseline Filter Hygiene (Under Construction, Black Frame, Stop-words, Location Blacklist)
             if not self.filter_engine.matches_hygiene(listing):
@@ -272,225 +279,288 @@ class RealEstateOrchestrator:
                 unmatched_to_save.append(listing)
                 continue
 
-            # Defer to next cycle if all matching users have already reached their per-cycle alert cap
-            matching_users = [
-                u
-                for u in matching_users
-                if user_sent_count.get(u.chat_id, 0) < MAX_ALERTS_PER_USER_CYCLE
-            ]
-            if not matching_users:
-                continue
+            candidates_to_enrich.append((listing, matching_users))
 
-            matched_count += 1
-
-            # 3. Statement Detail Enrichment & Valuation Scale Evaluation
-            myhome_label = None
-            if listing.source == "myhome":
-                myhome_scraper = next((s for s in self.scrapers if s.name == "MyHome.ge"), None)
-                if myhome_scraper and hasattr(myhome_scraper, "fetch_statement_details"):
-                    details = await myhome_scraper.fetch_statement_details(listing.source_id)
-                    if details:
-                        live_usd = details.get("price_usd")
-                        live_gel = details.get("price_gel")
-                        if live_usd and live_usd > 0:
-                            listing.price_usd = live_usd
-                            if live_gel and live_gel > 0:
-                                listing.price_gel = live_gel
-                            if listing.area_m2 and listing.area_m2 > 0:
-                                listing.price_per_m2 = round(listing.price_usd / listing.area_m2, 2)
-
-                        if "is_owner" in details and details["is_owner"] is not None:
-                            listing.is_owner = bool(details["is_owner"])
-                        elif (
-                            details.get("agency_name")
-                            or details.get("broker")
-                            or details.get("agency")
-                        ):
-                            listing.is_owner = False
-
-                        if not listing.condition_id and details.get("condition_id"):
-                            listing.condition_id = details.get("condition_id")
-                            cond_obj = details.get("condition")
-                            listing.condition_name = (
-                                cond_obj.get("name")
-                                if isinstance(cond_obj, dict)
-                                else (cond_obj or None)
-                            )
-                        if not listing.status_id and details.get("status_id"):
-                            listing.status_id = details.get("status_id")
-                        if not listing.description and details.get("comment"):
-                            listing.description = str(details.get("comment"))
-                        if not listing.phone_number:
-                            from scrapers.myhome import _extract_phone_number
-
-                            listing.phone_number = _extract_phone_number(
-                                details.get("user_phone_number"),
-                                details.get("comment") or listing.description,
-                            )
-                        if details.get("price_label"):
-                            myhome_label = details.get("price_label")
-                        if not listing.author_id:
-                            raw_uid = details.get("user_id") or (
-                                details.get("user") or {}
-                            ).get("id")
-                            if raw_uid is not None:
-                                listing.author_id = str(raw_uid)
-                        if listing.author_listings_count is None:
-                            raw_cnt = (
-                                details.get("user_statements_count")
-                                or details.get("statements_count")
-                                or (details.get("user") or {}).get("statements_count")
-                            )
-                            if raw_cnt is not None:
-                                try:
-                                    listing.author_listings_count = int(raw_cnt)
-                                except (ValueError, TypeError):
-                                    pass
-            elif listing.source == "ss_ge":
-                ss_scraper = next((s for s in self.scrapers if s.name == "SS.ge"), None)
-                if ss_scraper and hasattr(ss_scraper, "fetch_statement_details"):
-                    details = await ss_scraper.fetch_statement_details(
-                        listing.url or listing.source_id
-                    )
-                    if details:
-                        live_usd = details.get("price_usd")
-                        live_gel = details.get("price_gel")
-                        if live_usd and live_usd > 0:
-                            listing.price_usd = live_usd
-                            if live_gel and live_gel > 0:
-                                listing.price_gel = live_gel
-                            if listing.area_m2 and listing.area_m2 > 0:
-                                listing.price_per_m2 = round(listing.price_usd / listing.area_m2, 2)
-
-                        if "is_owner" in details and details["is_owner"] is not None:
-                            listing.is_owner = bool(details["is_owner"])
-                        elif details.get("agency_id") or details.get("agency_name"):
-                            listing.is_owner = False
-                        if listing.is_owner is False and not listing.user_type:
-                            listing.user_type = str(details.get("user_entity_type") or "agent")
-                        elif listing.is_owner is True and not listing.user_type:
-                            listing.user_type = "physical"
-                        if not listing.condition_id and details.get("condition_id"):
-                            listing.condition_id = details.get("condition_id")
-                            cond_obj = details.get("condition")
-                            listing.condition_name = (
-                                cond_obj.get("name")
-                                if isinstance(cond_obj, dict)
-                                else (cond_obj or None)
-                            )
-                        if not listing.status_id and details.get("status_id"):
-                            listing.status_id = details.get("status_id")
-                        if not listing.description and details.get("comment"):
-                            listing.description = str(details.get("comment"))
-                        if not listing.phone_number and details.get("phone_number"):
-                            from scrapers.myhome import _extract_phone_number
-
-                            listing.phone_number = _extract_phone_number(
-                                details["phone_number"], listing.description
-                            )
-                        elif not listing.phone_number and details.get("user_phone_number"):
-                            from scrapers.myhome import _extract_phone_number
-
-                            listing.phone_number = _extract_phone_number(
-                                details["user_phone_number"], listing.description
-                            )
-                        if details.get("price_label"):
-                            myhome_label = details.get("price_label")
-                        if not listing.author_id and details.get("author_id"):
-                            listing.author_id = str(details["author_id"])
-                        if (
-                            listing.author_listings_count is None
-                            and details.get("author_listings_count") is not None
-                        ):
-                            listing.author_listings_count = int(details["author_listings_count"])
-
-            # Re-verify in-place price drop after live statement detail enrichment
-            if listing.id in price_drops:
-                old_price = price_drops[listing.id]
-                drop = (
-                    round(old_price - float(listing.price_usd), 2)
-                    if (listing.price_usd and listing.price_usd > 0)
-                    else 0.0
-                )
-                if drop >= 1.0:
-                    listing.previous_price_usd = old_price
-                    listing.price_drop_usd = drop
-                else:
-                    listing.previous_price_usd = None
-                    listing.price_drop_usd = None
-                    price_drops.pop(listing.id, None)
-                    matching_users = [
-                        u
-                        for u in matching_users
-                        if listing.id in unnotified_ids_by_user.get(str(u.chat_id), set())
-                    ]
-
-            # Re-verify baseline filter hygiene with enriched live price, condition & status
-            if not self.filter_engine.matches_hygiene(listing):
-                self.db.save_listing(listing)
-                continue
-
-            # Re-verify matching users after detail enrichment (ensures verified price and is_owner status match preferences)
-            matching_users = [
-                u
-                for u in matching_users
-                if self.filter_engine.matches_user(u, listing, tentative=False)
-            ]
-            if not matching_users:
-                self.db.save_listing(listing)
-                continue
-
-            self.analytics.evaluate_listing(
-                listing,
-                db=self.db,
-                discount_threshold_pct=settings.BARGAIN_DISCOUNT_THRESHOLD_PCT,
-                myhome_price_label=myhome_label,
-            )
-
-            # Re-check is_hot_deal flag in case condition was just enriched
-            if listing.price_per_m2 <= self.filter_engine.filters.hot_deal_price_per_sqm:
-                if listing.condition_id in [1, 2] or (
-                    listing.condition_name and "გარემონტებული" in listing.condition_name
-                ):
-                    listing.is_hot_deal = True
-                    listing.is_bargain = True
-
-            # 4. Save to Database
-            self.db.save_listing(listing)
-
-            # 4.5 Duplicate Detection
-            dup_info = await self.dedup.check_listing(listing)
-            if dup_info:
-                listing.duplicate_group_id = dup_info["group_id"]
-                # Skip alert if this apartment was already alerted at a lower price
-                if not dup_info.get("is_new_best_price"):
-                    continue
-
-            # 5. Dispatch Alert to each matching unnotified user via Telegram Bot
-            sent_any = False
-            if self.telegram_notifier:
-                for user in matching_users:
-                    if user_sent_count.get(user.chat_id, 0) >= MAX_ALERTS_PER_USER_CYCLE:
-                        continue
-                    try:
-                        sent = await self.telegram_notifier.send_notification(
-                            listing, target_chat_id=user.chat_id, dup_info=dup_info
-                        )
-                        if sent:
-                            sent_any = True
-                            notified_count += 1
-                            user_sent_count[user.chat_id] = user_sent_count.get(user.chat_id, 0) + 1
-                            self.db.mark_user_notified(user.chat_id, listing.id)
-                            unnotified_ids_by_user.get(str(user.chat_id), set()).discard(listing.id)
-                    except Exception as e:
-                        print(f"[Telegram Notification Error for {user.chat_id}]: {e}")
-                    await asyncio.sleep(settings.RATE_LIMIT_DELAY_SECONDS)
-
-            if sent_any:
-                self.db.mark_as_notified(listing.id)
-
+        # Persist unmatched listings immediately before slow detail enrichment / image hashing
         if unmatched_to_save:
             self.db.save_listings_batch(unmatched_to_save)
+            unmatched_to_save.clear()
+
+        # 3. Concurrent Statement Detail Enrichment (bounded by semaphore)
+        enrich_sem = asyncio.Semaphore(max(2, getattr(settings, "CONCURRENT_SCRAPERS", 3)))
+        myhome_scraper = next((s for s in self.scrapers if s.name == "MyHome.ge"), None)
+        ss_scraper = next((s for s in self.scrapers if s.name == "SS.ge"), None)
+
+        async def _fetch_candidate_details(cand_listing: PropertyListing):
+            async with enrich_sem:
+                if (
+                    cand_listing.source == "myhome"
+                    and myhome_scraper
+                    and hasattr(myhome_scraper, "fetch_statement_details")
+                ):
+                    return await myhome_scraper.fetch_statement_details(cand_listing.source_id)
+                if (
+                    cand_listing.source == "ss_ge"
+                    and ss_scraper
+                    and hasattr(ss_scraper, "fetch_statement_details")
+                ):
+                    return await ss_scraper.fetch_statement_details(
+                        cand_listing.url or cand_listing.source_id
+                    )
+                return None
+
+        last_sent_at_by_user = {}
+        ENRICH_BATCH_SIZE = 10
+
+        for batch_start in range(0, len(candidates_to_enrich), ENRICH_BATCH_SIZE):
+            batch_slice = candidates_to_enrich[batch_start : batch_start + ENRICH_BATCH_SIZE]
+            eligible_batch = []
+            for listing, matching_users in batch_slice:
+                avail_users = [
+                    u
+                    for u in matching_users
+                    if user_sent_count.get(u.chat_id, 0) < MAX_ALERTS_PER_USER_CYCLE
+                ]
+                if avail_users:
+                    eligible_batch.append((listing, avail_users))
+
+            if not eligible_batch:
+                continue
+
+            enriched_details_list = await asyncio.gather(
+                *(_fetch_candidate_details(item[0]) for item in eligible_batch),
+                return_exceptions=True,
+            )
+
+            for (listing, matching_users), details in zip(eligible_batch, enriched_details_list):
+                if isinstance(details, Exception):
+                    details = None
+
+                # Re-check per-user cap in case earlier items in this batch filled the user's quota
+                matching_users = [
+                    u
+                    for u in matching_users
+                    if user_sent_count.get(u.chat_id, 0) < MAX_ALERTS_PER_USER_CYCLE
+                ]
+                if not matching_users:
+                    continue
+
+                matched_count += 1
+                myhome_label = None
+
+                if listing.source == "myhome" and details:
+                    live_usd = details.get("price_usd")
+                    live_gel = details.get("price_gel")
+                    if live_usd and live_usd > 0:
+                        listing.price_usd = live_usd
+                        if live_gel and live_gel > 0:
+                            listing.price_gel = live_gel
+                        if listing.area_m2 and listing.area_m2 > 0:
+                            listing.price_per_m2 = round(listing.price_usd / listing.area_m2, 2)
+
+                    if "is_owner" in details and details["is_owner"] is not None:
+                        listing.is_owner = bool(details["is_owner"])
+                    elif (
+                        details.get("agency_name")
+                        or details.get("broker")
+                        or details.get("agency")
+                    ):
+                        listing.is_owner = False
+
+                    if not listing.condition_id and details.get("condition_id"):
+                        listing.condition_id = details.get("condition_id")
+                        cond_obj = details.get("condition")
+                        listing.condition_name = (
+                            cond_obj.get("name")
+                            if isinstance(cond_obj, dict)
+                            else (cond_obj or None)
+                        )
+                    if not listing.status_id and details.get("status_id"):
+                        listing.status_id = details.get("status_id")
+                    if not listing.description and details.get("comment"):
+                        listing.description = str(details.get("comment"))
+                    if not listing.phone_number:
+                        from scrapers.myhome import _extract_phone_number
+
+                        listing.phone_number = _extract_phone_number(
+                            details.get("user_phone_number"),
+                            details.get("comment") or listing.description,
+                        )
+                    if details.get("price_label"):
+                        myhome_label = details.get("price_label")
+                    if not listing.author_id:
+                        raw_uid = details.get("user_id") or (
+                            details.get("user") or {}
+                        ).get("id")
+                        if raw_uid is not None:
+                            listing.author_id = str(raw_uid)
+                    if listing.author_listings_count is None:
+                        raw_cnt = (
+                            details.get("user_statements_count")
+                            or details.get("statements_count")
+                            or (details.get("user") or {}).get("statements_count")
+                        )
+                        if raw_cnt is not None:
+                            try:
+                                listing.author_listings_count = int(raw_cnt)
+                            except (ValueError, TypeError):
+                                pass
+                elif listing.source == "ss_ge" and details:
+                    live_usd = details.get("price_usd")
+                    live_gel = details.get("price_gel")
+                    if live_usd and live_usd > 0:
+                        listing.price_usd = live_usd
+                        if live_gel and live_gel > 0:
+                            listing.price_gel = live_gel
+                        if listing.area_m2 and listing.area_m2 > 0:
+                            listing.price_per_m2 = round(listing.price_usd / listing.area_m2, 2)
+
+                    if "is_owner" in details and details["is_owner"] is not None:
+                        listing.is_owner = bool(details["is_owner"])
+                    elif details.get("agency_id") or details.get("agency_name"):
+                        listing.is_owner = False
+                    if listing.is_owner is False and not listing.user_type:
+                        listing.user_type = str(details.get("user_entity_type") or "agent")
+                    elif listing.is_owner is True and not listing.user_type:
+                        listing.user_type = "physical"
+                    if not listing.condition_id and details.get("condition_id"):
+                        listing.condition_id = details.get("condition_id")
+                        cond_obj = details.get("condition")
+                        listing.condition_name = (
+                            cond_obj.get("name")
+                            if isinstance(cond_obj, dict)
+                            else (cond_obj or None)
+                        )
+                    if not listing.status_id and details.get("status_id"):
+                        listing.status_id = details.get("status_id")
+                    if not listing.description and details.get("comment"):
+                        listing.description = str(details.get("comment"))
+                    if not listing.phone_number and details.get("phone_number"):
+                        from scrapers.myhome import _extract_phone_number
+
+                        listing.phone_number = _extract_phone_number(
+                            details["phone_number"], listing.description
+                        )
+                    elif not listing.phone_number and details.get("user_phone_number"):
+                        from scrapers.myhome import _extract_phone_number
+
+                        listing.phone_number = _extract_phone_number(
+                            details["user_phone_number"], listing.description
+                        )
+                    if details.get("price_label"):
+                        myhome_label = details.get("price_label")
+                    if not listing.author_id and details.get("author_id"):
+                        listing.author_id = str(details["author_id"])
+                    if (
+                        listing.author_listings_count is None
+                        and details.get("author_listings_count") is not None
+                    ):
+                        listing.author_listings_count = int(details["author_listings_count"])
+
+                # Re-verify in-place price drop after live statement detail enrichment
+                if listing.id in price_drops:
+                    old_price = price_drops[listing.id]
+                    drop = (
+                        round(old_price - float(listing.price_usd), 2)
+                        if (listing.price_usd and listing.price_usd > 0)
+                        else 0.0
+                    )
+                    if drop >= 1.0:
+                        listing.previous_price_usd = old_price
+                        listing.price_drop_usd = drop
+                    else:
+                        listing.previous_price_usd = None
+                        listing.price_drop_usd = None
+                        price_drops.pop(listing.id, None)
+                        matching_users = [
+                            u
+                            for u in matching_users
+                            if listing.id in unnotified_ids_by_user.get(str(u.chat_id), set())
+                        ]
+
+                # Re-verify baseline filter hygiene with enriched live price, condition & status
+                if not self.filter_engine.matches_hygiene(listing):
+                    unmatched_to_save.append(listing)
+                    continue
+
+                # Re-verify matching users after detail enrichment (ensures verified price and is_owner status match preferences)
+                matching_users = [
+                    u
+                    for u in matching_users
+                    if self.filter_engine.matches_user(u, listing, tentative=False)
+                ]
+                if not matching_users:
+                    unmatched_to_save.append(listing)
+                    continue
+
+                self.analytics.evaluate_listing(
+                    listing,
+                    db=self.db,
+                    discount_threshold_pct=settings.BARGAIN_DISCOUNT_THRESHOLD_PCT,
+                    myhome_price_label=myhome_label,
+                )
+
+                # Re-check is_hot_deal flag in case condition was just enriched
+                if listing.price_per_m2 <= self.filter_engine.filters.hot_deal_price_per_sqm:
+                    if listing.condition_id in [1, 2] or (
+                        listing.condition_name and "გარემონტებული" in listing.condition_name
+                    ):
+                        listing.is_hot_deal = True
+                        listing.is_bargain = True
+
+                # 4. Save to Database
+                self.db.save_listing(listing)
+
+                # 4.5 Duplicate Detection
+                dup_info = await self.dedup.check_listing(listing)
+                if dup_info:
+                    listing.duplicate_group_id = dup_info["group_id"]
+                    # Skip alert if this apartment was already alerted at a lower price
+                    if not dup_info.get("is_new_best_price"):
+                        continue
+
+                # 5. Dispatch Alert to each matching unnotified user via Telegram Bot (per-chat rate limit)
+                sent_any = False
+                if self.telegram_notifier:
+                    loop = asyncio.get_running_loop()
+                    for user in matching_users:
+                        if user_sent_count.get(user.chat_id, 0) >= MAX_ALERTS_PER_USER_CYCLE:
+                            continue
+                        last_sent = last_sent_at_by_user.get(user.chat_id)
+                        if last_sent is not None and settings.RATE_LIMIT_DELAY_SECONDS > 0:
+                            elapsed = loop.time() - last_sent
+                            if elapsed < settings.RATE_LIMIT_DELAY_SECONDS:
+                                await asyncio.sleep(settings.RATE_LIMIT_DELAY_SECONDS - elapsed)
+                        try:
+                            sent = await self.telegram_notifier.send_notification(
+                                listing, target_chat_id=user.chat_id, dup_info=dup_info
+                            )
+                            last_sent_at_by_user[user.chat_id] = loop.time()
+                            if sent:
+                                sent_any = True
+                                notified_count += 1
+                                user_sent_count[user.chat_id] = (
+                                    user_sent_count.get(user.chat_id, 0) + 1
+                                )
+                                self.db.mark_user_notified(user.chat_id, listing.id)
+                                unnotified_ids_by_user.get(str(user.chat_id), set()).discard(
+                                    listing.id
+                                )
+                        except DatabaseUnavailableError:
+                            raise
+                        except Exception as e:
+                            print(f"[Telegram Notification Error for {user.chat_id}]: {e}")
+
+                if sent_any:
+                    self.db.mark_as_notified(listing.id)
+                else:
+                    self.db.rollback_unsent_listing(
+                        listing.id, previous_price_usd=price_drops.get(listing.id)
+                    )
+
+            if unmatched_to_save:
+                self.db.save_listings_batch(unmatched_to_save)
+                unmatched_to_save.clear()
 
         stats = {
             "total_fetched": len(all_listings),

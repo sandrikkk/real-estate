@@ -114,7 +114,7 @@ def fetch_active_users(
     if not base_url or not getattr(settings, "ENABLE_MULTI_USER", True):
         return [get_default_fallback_user()]
 
-    api_url = f"{base_url}/api/users?key={key}&_t={int(time.time())}"
+    api_url = f"{base_url}/api/users?_t={int(time.time())}"
     headers = {
         "User-Agent": "RealEstate-Orchestrator/2.0",
         "Accept": "application/json",
@@ -152,7 +152,8 @@ def fetch_active_users(
                 logger.warning(f"Cloudflare Worker returned HTTP {resp.status}, checking cache.")
     except Exception as e:
         logger.warning(
-            f"Could not reach Cloudflare Worker users API ({api_url}): {e}. Using cached or fallback filters."
+            "Subscriber fetch failed (%s). Using cached or fallback filters.",
+            type(e).__name__,
         )
 
     cached = load_cached_users()

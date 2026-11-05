@@ -21,7 +21,7 @@ DISTRICT_SYNONYMS: Dict[str, List[str]] = {
     # 7. საბურთალო
     "საბურთალო": ["საბურთალო", "ვაშლიჯვარი", "ვეძისი", "თხინვალი", "ლისი", "ლისის მიმდებარედ", "მუხათგვერდი", "მუხათწყარო", "ნუცუბიძის ფერდობი", "ნუცუბიძე", "დელისი"],
     # 8. დიდი დიღომი
-    "დიდი დიღომი": ["დიდი დიღომი", "დიღომი 1-9", "სოფ. დიღომი", "სოფელი დიღომი", "დიღმის ჭალა", "ქოშიგორა"],
+    "დიდი დიღომი": ["დიდი დიღომი", "დიღომი", "დიღომი 1-9", "სოფ. დიღომი", "სოფელი დიღომი", "დიღმის ჭალა", "ქოშიგორა"],
     "დიღომი": ["დიდი დიღომი", "დიღმის მასივი", "დიღომი 1-9", "სოფ. დიღომი", "სოფელი დიღომი", "დიღმის ჭალა", "ქოშიგორა"],
     # 9. ისანი
     "ისანი": ["ისანი", "ნავთლუღი", "ავლაბარი", "მეტრომშენი", "300 არაგველი"],
@@ -155,7 +155,7 @@ class ListingFilter:
                 listing.is_bargain = True
         else:
             is_renovated = (
-                listing.condition_id in [1, 2, 3]
+                listing.condition_id in [1, 2]
                 or (listing.condition_name and ("გარემონტებული" in listing.condition_name or "ახალი გარემონტებული" in listing.condition_name))
                 or ("ახალი გარემონტებული" in text_corpus or "გარემონტებული" in text_corpus)
             )
@@ -219,7 +219,7 @@ class ListingFilter:
                 return False
 
         # 5. Location Priority: Target Metro Stations or Whitelist Districts / Target Districts
-        if listing.metro_station_id is not None and listing.metro_station_id > 0:
+        if listing.metro_station_id is not None and 1 <= listing.metro_station_id <= 23:
             if self.filters.target_metro_ids and listing.metro_station_id not in self.filters.target_metro_ids:
                 return False
         else:
