@@ -5,7 +5,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from curl_cffi.requests import AsyncSession
 from config import settings
 from core.models import PropertyListing, SearchFilters
-from scrapers.base import BaseScraper
+from scrapers.base import BaseScraper, with_proxy_key
 
 
 METRO_STATIONS: Dict[int, str] = {
@@ -324,7 +324,7 @@ class MyHomeScraper(BaseScraper):
             target_url = (
                 f"{settings.CLOUDFLARE_PROXY_URL.rstrip('/')}/?url={urllib.parse.quote_plus(url)}"
             )
-            req_headers = {}
+            req_headers = with_proxy_key()
             timeout = max(self.timeout, 30)
 
         try:
@@ -456,41 +456,45 @@ class MyHomeScraper(BaseScraper):
 
     async def fetch_statement_details(self, source_id: str) -> Optional[dict]:
         """
-        Enriches a listing with exact detail fields from statement page or details endpoint:
+        Enriches a listing with exact detail fields from details JSON API or statement SSR HTML:
         condition_id, condition, status_id, metro_station_id, user_phone_number, price_label,
         and authoritative live price (price_usd, price_gel).
         """
         st_data = None
-        # Primary Strategy: Fetch listing detail page via HTML SSR (contains full dehydrated state)
-        detail_page_url = f"https://www.myhome.ge/ka/pr/{source_id}"
-        html = await self.fetch_html(detail_page_url)
-        if html:
-            st = self.extract_statement_from_html(html)
-            if st:
-                st_data = st
+        # Primary Strategy: Fast JSON API endpoint (~3KB payload vs ~500KB HTML)
+        url = f"{self.API_BASE}/{source_id}?locale=ka"
+        target_url = url
+        req_headers = dict(self.API_HEADERS)
+        timeout = 10
 
+        if settings.CLOUDFLARE_PROXY_URL:
+            target_url = (
+                f"{settings.CLOUDFLARE_PROXY_URL.rstrip('/')}/?url={urllib.parse.quote_plus(url)}"
+            )
+            req_headers = with_proxy_key()
+            timeout = 20
+
+        try:
+            async with AsyncSession(impersonate="chrome124") as session:
+                response = await session.get(
+                    target_url, headers=req_headers if req_headers else None, timeout=timeout
+                )
+                if response.status_code == 200:
+                    payload = response.json()
+                    data = payload.get("data") if isinstance(payload, dict) else None
+                    if isinstance(data, dict):
+                        st_data = data.get("statement") or (data if data.get("id") else None)
+        except Exception as e:
+            print(f"[MyHome.ge Statement Detail API Error for {source_id}]: {e}")
+
+        # Fallback Strategy: Fetch listing detail page via HTML SSR (contains full dehydrated state)
         if not st_data:
-            # Fallback Strategy: JSON API endpoint
-            url = f"{self.API_BASE}/{source_id}?locale=ka"
-            target_url = url
-            req_headers = dict(self.API_HEADERS)
-            timeout = 10
-
-            if settings.CLOUDFLARE_PROXY_URL:
-                target_url = f"{settings.CLOUDFLARE_PROXY_URL.rstrip('/')}/?url={urllib.parse.quote_plus(url)}"
-                req_headers = {}
-                timeout = 30
-
-            try:
-                async with AsyncSession(impersonate="chrome124") as session:
-                    response = await session.get(
-                        target_url, headers=req_headers if req_headers else None, timeout=timeout
-                    )
-                    if response.status_code == 200:
-                        payload = response.json()
-                        st_data = payload.get("data", {}).get("statement")
-            except Exception as e:
-                print(f"[MyHome.ge Statement Detail Error for {source_id}]: {e}")
+            detail_page_url = f"https://www.myhome.ge/ka/pr/{source_id}"
+            html = await self.fetch_html(detail_page_url)
+            if html:
+                st = self.extract_statement_from_html(html)
+                if st:
+                    st_data = st
 
         if st_data and isinstance(st_data, dict):
             usd, gel = self._extract_prices(st_data)
@@ -666,16 +670,18 @@ class MyHomeScraper(BaseScraper):
 
         for page in range(1, self.MAX_PAGES_HARD + 1):
             raw_items = None
-            # 1. Primary Strategy: Direct JSON API (disable for remaining pages/envelopes if it fails)
+            # 1. Primary Strategy: Direct JSON API (disable for remaining pages/envelopes only if API errors)
             if use_api:
                 api_url = self._build_api_url(filters, page=page)
                 raw_items = await self._fetch_api_page(api_url)
-                if not raw_items:
+                if raw_items is None:
                     use_api = False
                     self._api_disabled = True
+                elif len(raw_items) == 0:
+                    break
 
             # 2. Fallback Strategy: SSR HTML Parsing
-            if not raw_items:
+            if raw_items is None:
                 search_url = self._build_search_url(filters, page=page)
                 html = await self.fetch_html(search_url)
                 if html:

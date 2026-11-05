@@ -150,6 +150,60 @@ class TestLocationFiltering(unittest.TestCase):
         self.assertTrue(self.engine.matches_user(samgori_user, varketili_listing))
         self.assertFalse(self.engine.matches_user(samgori_user, isani_listing))
 
+    def test_lisi_synonym_does_not_match_inside_tbilisi(self):
+        """
+        Saburtalo synonym 'ლისი' (stem 'ლის') must not match inside 'თბილისი',
+        while real Lisi locations still match.
+        """
+        saburtalo_user = UserSubscription(
+            chat_id="saburtalo_user", deal_type="sale", price_min_usd=10000, price_max_usd=200000,
+            districts=["საბურთალო"], is_active=True
+        )
+
+        def _listing(lid, title, district=None):
+            return PropertyListing(
+                id=lid, source="myhome", source_id=lid, url="http://x",
+                title=title, price_usd=90000, area_m2=60, district=district
+            )
+
+        self.assertFalse(self.engine.matches_user(
+            saburtalo_user, _listing("t1", "იყიდება ბინა", district="თბილისი")))
+        self.assertFalse(self.engine.matches_user(
+            saburtalo_user, _listing("t2", "იყიდება ბინა", district="თბილისის ზღვა")))
+        self.assertFalse(self.engine.matches_user(
+            saburtalo_user, _listing("t3", "იყიდება ბინა თბილისში")))
+
+        self.assertTrue(self.engine.matches_user(
+            saburtalo_user, _listing("l1", "იყიდება ბინა", district="ლისის ტბა")))
+        self.assertTrue(self.engine.matches_user(
+            saburtalo_user, _listing("l2", "იყიდება ბინა ლისზე")))
+
+    def test_short_district_does_not_match_inside_longer_synonym(self):
+        """
+        A listing district must not match a subscriber just because its name is
+        contained in a longer synonym ('ლისი' in 'ზემო ლისი', 'თბილისი' in 'თბილისის ზღვა').
+        """
+        def _user(districts):
+            return UserSubscription(
+                chat_id="u", deal_type="sale", price_min_usd=10000, price_max_usd=200000,
+                districts=districts, is_active=True
+            )
+
+        def _listing(lid, district):
+            return PropertyListing(
+                id=lid, source="myhome", source_id=lid, url="http://x",
+                title="ბინა", price_usd=90000, area_m2=60, district=district
+            )
+
+        self.assertFalse(self.engine.matches_user(
+            _user(["თბილისის შემოგარენი"]), _listing("a", "ლისი")))
+        self.assertFalse(self.engine.matches_user(
+            _user(["გლდანი"]), _listing("b", "თბილისი")))
+        self.assertTrue(self.engine.matches_user(
+            _user(["თბილისის შემოგარენი"]), _listing("c", "ზემო ლისი")))
+        self.assertTrue(self.engine.matches_user(
+            _user(["გლდანი"]), _listing("d", "თბილისის ზღვა")))
+
     def test_myhome_scraper_does_not_poison_subdistrict(self):
         """
         Verifies that MyHome normalization sets district to urban_name and leaves subdistrict None

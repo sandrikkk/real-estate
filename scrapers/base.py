@@ -6,6 +6,15 @@ from core.models import PropertyListing, SearchFilters
 from config import settings
 
 
+def with_proxy_key(headers: Optional[dict] = None) -> dict:
+    """Headers for the Cloudflare Worker proxy. Never send these to a portal directly."""
+    out = dict(headers or {})
+    key = (settings.CLOUDFLARE_SYNC_KEY or "").strip()
+    if key:
+        out["X-Sync-Key"] = key
+    return out
+
+
 class BaseScraper(ABC):
     def __init__(self, name: str, timeout: int = 15):
         self.name = name
@@ -34,7 +43,7 @@ class BaseScraper(ABC):
             target_url = (
                 f"{settings.CLOUDFLARE_PROXY_URL.rstrip('/')}/?url={urllib.parse.quote_plus(url)}"
             )
-            req_headers = {}
+            req_headers = with_proxy_key()
             timeout = max(self.timeout, 30)
         elif settings.SCRAPER_API_KEY:
             target_url = f"https://api.scraperapi.com?api_key={settings.SCRAPER_API_KEY}&url={urllib.parse.quote_plus(url)}"
@@ -48,7 +57,10 @@ class BaseScraper(ABC):
                 )
                 if response.status_code == 200:
                     return response.text
-                elif response.status_code in (403, 429, 500, 502, 503, 504) and target_url != url:
+                elif (
+                    response.status_code in (401, 403, 429, 500, 502, 503, 504)
+                    and target_url != url
+                ):
                     # Cloudflare worker / proxy hit daily limit, rate limit, or WAF block. Fallback directly!
                     direct_resp = await session.get(url, headers=self.headers, timeout=self.timeout)
                     if direct_resp.status_code == 200:

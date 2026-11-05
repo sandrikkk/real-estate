@@ -108,6 +108,11 @@ class TestXRayEngine(unittest.TestCase):
         self.assertEqual(res_fb["floor"], "7")
         self.assertEqual(res_fb["rooms"], 3)
         self.assertAlmostEqual(res_fb["price_usd"], 85000.0)
+
+        res_tbilisi = parse_xray_input("იყიდება ბინა თბილისში 60 კვ.მ, ფასი 85000$")
+        self.assertIsNone(res_tbilisi["district"], "'თბილისში' must not resolve to ლისი")
+        res_lisi = parse_xray_input("იყიდება ბინა ლისზე 60 კვ.მ, ფასი 85000$")
+        self.assertEqual(res_lisi["district"], "ლისი")
         self.assertEqual(res_fb["phone_9"], "599112233")
 
         # 5. Non-X-Ray inputs must return None (commands, budget range, plain chat)
@@ -456,6 +461,11 @@ class TestXRayEngine(unittest.TestCase):
 
         # 7. Balanced braces check
         self.assertEqual(worker_src.count("{"), worker_src.count("}"))
+
+        # 8. Missing SYNC_KEY fails closed on every protected route
+        self.assertIn("if (!expectedKey) return false;", worker_src)
+        self.assertNotIn("if (!expectedKey) return true;", worker_src)
+        self.assertEqual(worker_src.count("isSyncKeyValid(request, env)"), 5)
 
     def test_ss_ge_scraper_statement_details_parses_broker_signals(self):
         from scrapers.ss_ge import SSGeScraper

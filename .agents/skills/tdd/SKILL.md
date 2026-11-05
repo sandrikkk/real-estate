@@ -24,7 +24,7 @@ Consult this matrix BEFORE writing code. The column on the right is the mandator
 | **Scraper Parsing & API URL Generation** (`scrapers/myhome.py`, `ss_ge.py`, `area_ge.py`) | Unit / API contract | `tests/test_scrapers.py` | `.\.venv\Scripts\python.exe -m unittest tests/test_scrapers.py` |
 | **Location & District Synonyms** (`core/filters.py`, `DISTRICT_SYNONYMS`, subdistricts) | Unit / Location | `tests/test_location_filtering.py` | `.\.venv\Scripts\python.exe -m unittest tests/test_location_filtering.py` |
 | **Owner vs. Agent Classification** (`is_owner`, physical vs agency, detail enrichment) | Unit / Classification | `tests/test_owner_agent_filtering.py` | `.\.venv\Scripts\python.exe -m unittest tests/test_owner_agent_filtering.py` |
-| **Hygiene, Stop-Words & Search Filters** (`ListingFilter`, black frame, stop words, price/area ceilings) | Unit / Filter logic | `tests/test_filters.py` | `.\.venv\Scripts\python.exe -m unittest tests/test_filters.py` |
+| **Hygiene, Stop-Words & Search Filters** (`ListingFilter`, black frame, stop words, price/area ceilings) | Unit / Filter logic | `tests/test_filters_validation.py` | `.\.venv\Scripts\python.exe -m unittest tests/test_filters_validation.py` |
 | **Rental Flow & Deal Types** (rent prices, deal type validation, rent vs sale envelopes) | Unit / Deal type | `tests/test_rental_flow.py` | `.\.venv\Scripts\python.exe -m unittest tests/test_rental_flow.py` |
 | **Market Analytics & Valuation Scale** (`MarketAnalytics`, IQR calculation, hot deal badges) | Unit / Valuation | `tests/test_analytics.py` | `.\.venv\Scripts\python.exe -m unittest tests/test_analytics.py` |
 | **Database Engine & Persistence** (`DatabaseEngine`, SQLite operations, `seen_ids`) | Unit / Database | `tests/test_core.py` | `.\.venv\Scripts\python.exe -m unittest tests/test_core.py` |
@@ -98,7 +98,7 @@ All **71+ tests must be green (`OK`)**.
 
 ## Mocking & Network Discipline
 
-1. **Deterministic Unit Tests:** Unit tests in `tests/test_scrapers.py`, `tests/test_filters.py`, `tests/test_location_filtering.py`, etc., must be completely offline, deterministic, and fast (&lt; 1 second total execution). Use static dictionaries representing real API/HTML payloads.
+1. **Deterministic Unit Tests:** Unit tests in `tests/test_scrapers.py`, `tests/test_filters_validation.py`, `tests/test_location_filtering.py`, etc., must be completely offline, deterministic, and fast (&lt; 1 second total execution). Use static dictionaries representing real API/HTML payloads.
 2. **Never Make Uncontrolled Network Calls in CI Tests:** Do not hit production websites (`ss.ge`, `myhome.ge`) in automated test suites; portal rate-limits or temporary network blips will cause flaky test failures.
 3. **End-to-End Simulation:** In `tests/test_end_to_end_flow.py`, mock external network and Telegram endpoints (`send_listing_alert`), but run real `DatabaseEngine`, `ListingFilter`, and `MarketAnalytics` logic.
 

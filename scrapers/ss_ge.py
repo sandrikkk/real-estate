@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from curl_cffi.requests import AsyncSession
 from config import settings
 from core.models import PropertyListing, SearchFilters
-from scrapers.base import BaseScraper
+from scrapers.base import BaseScraper, with_proxy_key
 from scrapers.myhome import (
     METRO_STATIONS,
     CONDITIONS,
@@ -294,7 +294,9 @@ class SSGeScraper(BaseScraper):
             pass
         return None
 
-    def _build_api_headers(self, token: Optional[str] = None) -> Dict[str, str]:
+    def _build_api_headers(
+        self, token: Optional[str] = None, via_proxy: bool = False
+    ) -> Dict[str, str]:
         headers = {
             "User-Agent": self.BROWSER_UA,
             "Accept": "application/json, text/plain, */*",
@@ -306,7 +308,7 @@ class SSGeScraper(BaseScraper):
         }
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        return headers
+        return with_proxy_key(headers) if via_proxy else headers
 
     async def _get_access_token(
         self, session: AsyncSession, force_refresh: bool = False
@@ -332,7 +334,12 @@ class SSGeScraper(BaseScraper):
 
         for target_url in urls_to_try:
             try:
-                resp = await session.post(target_url, headers=req_headers, timeout=self.timeout)
+                headers = (
+                    req_headers
+                    if target_url == self.TOKEN_REFRESH_URL
+                    else with_proxy_key(req_headers)
+                )
+                resp = await session.post(target_url, headers=headers, timeout=self.timeout)
                 tok = self._extract_session_token(resp)
                 if tok:
                     self._access_token = tok
@@ -379,14 +386,18 @@ class SSGeScraper(BaseScraper):
 
                     for target in targets:
                         try:
-                            headers = self._build_api_headers(token)
+                            headers = self._build_api_headers(
+                                token, via_proxy=target != api_url
+                            )
                             resp = await session.post(
                                 target, data=body_str, headers=headers, timeout=self.timeout
                             )
                             if resp.status_code == 401:
                                 token = await self._get_access_token(session, force_refresh=True)
                                 if token:
-                                    headers = self._build_api_headers(token)
+                                    headers = self._build_api_headers(
+                                        token, via_proxy=target != api_url
+                                    )
                                     resp = await session.post(
                                         target,
                                         data=body_str,
@@ -570,7 +581,9 @@ class SSGeScraper(BaseScraper):
                                 )
                             for target in targets:
                                 try:
-                                    headers = self._build_api_headers(token)
+                                    headers = self._build_api_headers(
+                                        token, via_proxy=target != api_url
+                                    )
                                     resp = await session.put(
                                         target, headers=headers, timeout=self.timeout
                                     )
@@ -579,7 +592,9 @@ class SSGeScraper(BaseScraper):
                                             session, force_refresh=True
                                         )
                                         if token:
-                                            headers = self._build_api_headers(token)
+                                            headers = self._build_api_headers(
+                                                token, via_proxy=target != api_url
+                                            )
                                             resp = await session.put(
                                                 target, headers=headers, timeout=self.timeout
                                             )

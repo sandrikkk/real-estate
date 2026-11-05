@@ -546,6 +546,56 @@ class TestScrapers(unittest.TestCase):
         self.assertIn(f"home.ss.ge:443:{origin_ip}", resolve_list)
         self.assertIn(f"api-gateway.ss.ge:443:{origin_ip}", resolve_list)
 
+    def test_myhome_fetch_statement_details_uses_json_api_first(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        scraper = MyHomeScraper()
+        scraper.fetch_html = AsyncMock(return_value="<html>should not be called</html>")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "data": {
+                "statement": {
+                    "id": 26345700,
+                    "condition_id": 1,
+                    "is_owner": True,
+                    "price": {"2": {"price_total": 65000}},
+                }
+            }
+        }
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("scrapers.myhome.AsyncSession", return_value=mock_session):
+            details = asyncio.run(scraper.fetch_statement_details("26345700"))
+
+        self.assertIsNotNone(details)
+        self.assertEqual(details["price_usd"], 65000.0)
+        self.assertTrue(details["is_owner"])
+        scraper.fetch_html.assert_not_called()
+
+    def test_myhome_fetch_listings_empty_page_does_not_disable_api(self):
+        from unittest.mock import AsyncMock
+
+        scraper = MyHomeScraper(max_pages=3)
+        page_1_item = {
+            "id": 8881234,
+            "dynamic_title": "იყიდება 2 ოთახიანი ბინა საბურთალოზე",
+            "price": {"2": {"price_total": 75000}},
+            "area": 55,
+            "urban_name": "საბურთალო",
+        }
+        scraper._fetch_api_page = AsyncMock(side_effect=[[page_1_item], []])
+        scraper.fetch_html = AsyncMock(return_value=None)
+
+        results = asyncio.run(scraper.fetch_listings(self.filters))
+        self.assertEqual(len(results), 1)
+        self.assertFalse(scraper._api_disabled)
+        scraper.fetch_html.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

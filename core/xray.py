@@ -127,7 +127,7 @@ def _extract_fb_attributes(text: str) -> Dict[str, Any]:
     # District matching
     lower_text = text.lower()
     for stem, canonical in DISTRICT_KEYWORDS:
-        if stem in lower_text:
+        if re.search(rf"(?<![\u10A0-\u10FF]){re.escape(stem)}", lower_text):
             district = canonical
             break
 

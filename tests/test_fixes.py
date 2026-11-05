@@ -786,6 +786,44 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
         finally:
             settings.CLOUDFLARE_PROXY_URL = old_proxy
 
+    async def test_proxy_requests_send_sync_key_and_fall_back_on_401(self):
+        """Worker proxy requires X-Sync-Key; a 401 from it must fall back to the direct URL."""
+        from config import settings
+        from scrapers.myhome import MyHomeScraper
+        from scrapers.ss_ge import SSGeScraper
+
+        old_proxy, old_key = settings.CLOUDFLARE_PROXY_URL, settings.CLOUDFLARE_SYNC_KEY
+        settings.CLOUDFLARE_PROXY_URL = "https://proxy.example.workers.dev"
+        settings.CLOUDFLARE_SYNC_KEY = "secret-key"
+        try:
+            proxy_resp = MagicMock(status_code=401)
+            direct_resp = MagicMock(status_code=200, text="<html>direct ok</html>")
+            mock_session = AsyncMock()
+            mock_session.get = AsyncMock(side_effect=[proxy_resp, direct_resp])
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            with patch("scrapers.base.AsyncSession", return_value=mock_session):
+                html = await SSGeScraper().fetch_html("https://home.ss.ge/ka/udzravi-qoneba")
+            self.assertEqual(html, "<html>direct ok</html>")
+            proxy_call = mock_session.get.call_args_list[0]
+            self.assertEqual(proxy_call.kwargs["headers"].get("X-Sync-Key"), "secret-key")
+
+            api_resp = MagicMock(status_code=200)
+            api_resp.json.return_value = {"data": {"data": []}}
+            api_session = AsyncMock()
+            api_session.get = AsyncMock(return_value=api_resp)
+            api_session.__aenter__ = AsyncMock(return_value=api_session)
+            api_session.__aexit__ = AsyncMock(return_value=False)
+
+            with patch("scrapers.myhome.AsyncSession", return_value=api_session):
+                await MyHomeScraper()._fetch_api_page("https://api-statements.tnet.ge/v1/statements?page=1")
+            self.assertEqual(
+                api_session.get.call_args.kwargs["headers"].get("X-Sync-Key"), "secret-key"
+            )
+        finally:
+            settings.CLOUDFLARE_PROXY_URL, settings.CLOUDFLARE_SYNC_KEY = old_proxy, old_key
+
     async def test_run_cycle_alerts_on_in_place_price_drop_once_and_skips_false_drop(self):
         """Verify that an existing listing dropping price in-place alerts subscribers
         (even if previously notified at higher price), updates DB so next cycle is silent,

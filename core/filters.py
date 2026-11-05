@@ -59,6 +59,11 @@ DISTRICT_SYNONYMS: Dict[str, List[str]] = {
 }
 
 
+def _starts_word(term: str, text: str) -> bool:
+    """True if `term` starts a Georgian word in `text`: 'ლის' is not found in 'თბილისი'."""
+    return re.search(rf"(?<![\u10A0-\u10FF]){re.escape(term)}", text) is not None
+
+
 class ListingFilter:
     def __init__(self, filters: SearchFilters):
         self.filters = filters
@@ -245,10 +250,10 @@ class ListingFilter:
                 allowed_targets = [ud_clean] + [syn.lower() for syn in synonyms]
 
                 for target in allowed_targets:
-                    if target == listing_d_clean or target in listing_d_clean or listing_d_clean in target:
+                    if _starts_word(target, listing_d_clean):
                         return True
                     stem = target.rstrip("ი")
-                    if len(stem) >= 3 and stem in listing_d_clean:
+                    if len(stem) >= 3 and _starts_word(stem, listing_d_clean):
                         return True
 
             # If district is a recognized primary district but did not match allowed targets, reject immediately
@@ -276,10 +281,10 @@ class ListingFilter:
                 synonyms = DISTRICT_SYNONYMS.get(user_d, [])
                 allowed_targets = [ud_clean] + [syn.lower() for syn in synonyms]
                 for target in allowed_targets:
-                    if target in fallback_corpus:
+                    if _starts_word(target, fallback_corpus):
                         return True
                     stem = target.rstrip("ი")
-                    if len(stem) >= 3 and stem in fallback_corpus:
+                    if len(stem) >= 3 and _starts_word(stem, fallback_corpus):
                         return True
 
         return False

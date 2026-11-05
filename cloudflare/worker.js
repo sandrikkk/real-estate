@@ -164,6 +164,7 @@ export default {
     // 1. Scraper Proxy Route (Backward Compatibility for MyHome/SS.ge)
     const targetUrl = url.searchParams.get("url");
     if (targetUrl && ["GET", "POST", "PUT"].includes(request.method)) {
+      if (!isSyncKeyValid(request, env)) return unauthorizedResponse();
       return handleProxy(targetUrl, request);
     }
 
@@ -179,6 +180,7 @@ export default {
 
     // Debug status endpoint
     if (url.pathname === "/api/debug") {
+      if (!isSyncKeyValid(request, env)) return unauthorizedResponse();
       const kv = await getKV(env);
       let listKeys = [];
       let rawSample = null;
@@ -222,12 +224,42 @@ export default {
   }
 };
 
+const PROXY_ALLOWED_HOSTS = [
+  "myhome.ge",
+  "www.myhome.ge",
+  "api-statements.tnet.ge",
+  "ss.ge",
+  "home.ss.ge",
+  "api-gateway.ss.ge",
+  "area.ge"
+];
+
+function isSyncKeyValid(request, env) {
+  const expectedKey = (env.SYNC_KEY || "").trim();
+  if (!expectedKey) return false;
+  const syncKey = (request.headers.get("X-Sync-Key") || new URL(request.url).searchParams.get("key") || "").trim();
+  return syncKey === expectedKey;
+}
+
+function unauthorizedResponse() {
+  return new Response(JSON.stringify({ error: "Unauthorized" }), {
+    status: 401,
+    headers: { "content-type": "application/json" }
+  });
+}
+
 /**
  * Handles proxying HTML requests (bypasses Cloudflare on target sites)
  */
 async function handleProxy(targetUrl, request) {
   try {
     const parsed = new URL(targetUrl);
+    if (parsed.protocol !== "https:" || !PROXY_ALLOWED_HOSTS.includes(parsed.hostname)) {
+      return new Response(JSON.stringify({ error: "Forbidden target host" }), {
+        status: 403,
+        headers: { "content-type": "application/json" }
+      });
+    }
     const headers = new Headers();
     headers.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
     headers.set("Accept-Language", "ka-GE,ka;q=0.9,en-US;q=0.8,en;q=0.7");
@@ -282,16 +314,7 @@ async function handleProxy(targetUrl, request) {
  */
 async function handleApiUsers(request, env) {
   try {
-    const expectedKey = (env.SYNC_KEY || "").trim();
-    if (expectedKey) {
-      const syncKey = (request.headers.get("X-Sync-Key") || new URL(request.url).searchParams.get("key") || "").trim();
-      if (syncKey !== expectedKey) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401,
-          headers: { "content-type": "application/json" }
-        });
-      }
-    }
+    if (!isSyncKeyValid(request, env)) return unauthorizedResponse();
 
     const kv = await getKV(env);
     const listResult = await kv.list({ prefix: "USER_" });
@@ -359,16 +382,7 @@ async function handleApiUsers(request, env) {
  */
 async function handleDbRequest(request, env) {
   try {
-    const expectedKey = (env.SYNC_KEY || "").trim();
-    if (expectedKey) {
-      const syncKey = (request.headers.get("X-Sync-Key") || new URL(request.url).searchParams.get("key") || "").trim();
-      if (syncKey !== expectedKey) {
-        return new Response(JSON.stringify({ success: false, error: "Unauthorized" }), {
-          status: 401,
-          headers: { "content-type": "application/json" }
-        });
-      }
-    }
+    if (!isSyncKeyValid(request, env)) return unauthorizedResponse();
 
     if (!env.DB || typeof env.DB.prepare !== "function") {
       return new Response(JSON.stringify({ success: false, error: "D1 database binding 'DB' not configured in Worker" }), {
@@ -1104,7 +1118,7 @@ function parseXRayInput(text) {
   let district = null;
   const lower = stripped.toLowerCase();
   for (const [stem, canonical] of XRAY_DISTRICT_KEYWORDS) {
-    if (lower.includes(stem)) {
+    if (new RegExp(`(?<![\\u10A0-\\u10FF])${stem}`).test(lower)) {
       district = canonical;
       break;
     }
