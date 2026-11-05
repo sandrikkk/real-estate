@@ -102,7 +102,8 @@ Each rule says what enforces it. "Honour system" means nothing in the repo stops
 - **Owner/agent classification: agent signals win.** `user_type: "physical"` is not proof of an owner. Enforced by `tests/test_owner_agent_filtering.py` and `tests/test_fixes.py`.
 - **Same-class sweep on every bug fix or behaviour change.** Name the defect shape, search every other instance (other portals, both filter paths, both runners, the Worker), then fix, defer with a reference, or rule out with a reason. Procedure: [`root-cause-sweep`](.agents/skills/root-cause-sweep/SKILL.md). Honour system.
 - **Test first when the behaviour is well-specified.** Pick the test file from the [`tdd`](.agents/skills/tdd/SKILL.md) matrix, watch it fail, then fix. Full suite: `python -m unittest discover tests`. Files that use real credentials or the live network are manual scripts (`tests/test_telegram_live.py`, `tests/test_live_alert.py`, `tests/test_real_live_alert.py`, `tests/test_dry_run.py`, `test_ss_live.py`): do not run them unless the user asks.
-- **Commit, push, open branches, and deploy only when the user asks.** That includes `scripts/deploy_worker.py` and the [`deploy-action`](.agents/skills/deploy-action/SKILL.md) skill. Never force-push `master`. Pushing to `master` is what the scraper cron checks out, so a push is a release.
+- **A new change starts on its own branch, not on `master`.** Before the first edit of a tracked file, follow [`git-workflow`](.agents/skills/git-workflow/SKILL.md). Reading, explaining, running tests, and editing gitignored `.env` do not get a branch. If this checkout already has uncommitted work, do not `git checkout -b` here — that moves the shared `HEAD`. Honour system.
+- **Commit, push, and deploy only when the user asks.** That includes `scripts/deploy_worker.py` and the [`deploy-action`](.agents/skills/deploy-action/SKILL.md) skill. Never force-push `master`. Pushing to `master` is what the scraper cron checks out, so a push is a release.
 - **Commit messages follow Conventional Commits** ([`git-commits`](.agents/skills/git-commits/SKILL.md)). Never `--no-verify`, never add `Co-authored-by` trailers (`scripts/git/strip_bad_trailers.py` strips them when its hook is installed).
 - **Documentation is written on request only.** Do not create, rewrite, or "keep fresh" any markdown (`README.md`, `docs/`, ADRs, skills) unless the user asks. Never create a new `.md` file without asking first. If a code change makes a doc wrong, say which doc and ask. The "MUST update docs" table in [`docs-standards`](.agents/skills/docs-standards/SKILL.md) applies only while the user has asked for a doc edit; it does not override this rule.
 - **ADRs are drafted in chat first.** For an architectural change ([`sdd`](.agents/skills/sdd/SKILL.md)), draft the text in the reply, ask whether to create `docs/adr/NNNN-<slug>.md`, and write the file only after a yes.
@@ -161,6 +162,7 @@ Project skills live in [`.agents/skills/`](.agents/skills/).
 | `root-cause-sweep` | Any bug fix or behaviour change: map every instance before patching |
 | `lessons-learned` | Before investigating a silent cron run, quota errors, duplicate or missing alerts, or claiming a fix is verified |
 | `sdd` | Non-trivial architectural change: ADR first (draft in chat) |
+| `git-workflow` | Before the first edit of a tracked file: branch off `master` |
 | `git-commits` | The user asked to commit |
 | `deploy-action` | The user asked to deploy or push |
 | `docs-standards` | The user asked for a markdown edit: placement, `$` rendering, Mermaid |

@@ -13,7 +13,7 @@ description: >
 
 Decide what to build before deciding how to build it. The specification is the artefact that drives the change. [GitHub Spec Kit](https://github.com/github/spec-kit) formalises that idea as a CLI and a pile of per-feature files (`spec.md`, `plan.md`, `tasks.md`, `research.md`, `data-model.md`, `contracts/`).
 
-Keep the philosophy. Leave the CLI, the artefact set, and the auto-branch command out. A typical change here is a filter tweak, a scraper parser fix, a cron edit, or a Worker binding. Spec Kit's `/speckit.specify` also opens a feature branch per spec. This repo's scraper cron checks out `master`, and a branch is created only when the user asks for one.
+Keep the philosophy. Leave the CLI and the artefact set out. Spec Kit's `/speckit.specify` also opens a feature branch per spec; the branch rule here is [`git-workflow`](../git-workflow/SKILL.md), not that command. The scraper cron still checks out `master`, so the branch is local until the user asks to push.
 
 Collapse the whole flow onto **one ADR per non-trivial change**:
 
@@ -22,7 +22,7 @@ Collapse the whole flow onto **one ADR per non-trivial change**:
 | Specify (the "what" + "why") | One-page ADR — Why / What / Consequences |
 | Plan (the "how") | Same ADR — the "What" section names the concrete approach |
 | Tasks | A short checklist in that ADR, then smaller commits if the user asks to commit |
-| Implement | Code + tests on the current branch, after the user accepts the ADR |
+| Implement | Code + tests on the feature branch from `git-workflow`, after the user accepts the ADR |
 
 Do not install Spec Kit. Do not run `/speckit.*` commands. To adopt a piece of it (an ambiguity checklist, a task generator), open an ADR proposing that first.
 
@@ -95,7 +95,7 @@ The existing record to copy for tone and specificity is [`docs/adr/0001-eliminat
 1. **Specify.** Draft the ADR text in the chat first. Ask the user whether to create the file. Never create a markdown file without that permission. After a yes, write `docs/adr/NNNN-<slug>.md` before any implementation edit and wait for acceptance. Capturing the rationale first is the whole point.
 2. **Tasks.** After acceptance, list the chunks in order: model, scraper or Worker, filter, tests. One chunk per commit if the user asks to commit.
 3. **Implement.** Follow the [`tdd`](../tdd/SKILL.md) skill where the behaviour is well-specified: failing test, then the minimum code that passes. Run that test from the project virtual environment.
-4. **Reference.** When the user asks to commit, put the ADR id in the commit body (`ADR-0002`), using a `git-commits` type and scope. Do not push, and do not open a branch, unless the user asks. Scraper deploys and Worker deploys are separate steps (`deploy-action`, `scripts/deploy_worker.py`). Run them only when the user asks.
+4. **Reference.** When the user asks to commit, put the ADR id in the commit body (`ADR-0002`), using a `git-commits` type and scope. The working branch already exists, per [`git-workflow`](../git-workflow/SKILL.md). Do not push unless the user asks. Scraper deploys and Worker deploys are separate steps (`deploy-action`, `scripts/deploy_worker.py`). Run them only when the user asks.
 
 ## What "lightweight" means in practice
 
