@@ -166,7 +166,7 @@ def _extract_9digit_phone(text: str) -> Optional[str]:
     # Remove URLs first so 9-digit numbers inside URLs aren't mistaken for phones
     cleaned = re.sub(r"https?://\S+", " ", text)
     pattern = re.compile(
-        r"(?:\+?995[\s\-\.]*)?(5\d{2}[\s\-\.]*\d{2}[\s\-\.]*\d{2}[\s\-\.]*\d{2}|\b5\d{8}\b)"
+        r"(?<!\d)(?:\+?995[\s\-\.]*)?(5\d{2}(?:[\s\-\.]*\d{2}[\s\-\.]*\d{2}[\s\-\.]*\d{2}|[\s\-\.]*\d{3}[\s\-\.]*\d{3}|[\s\-\.]*\d{6}))(?!\d)"
     )
     match = pattern.search(cleaned)
     if not match:
@@ -200,28 +200,57 @@ def _extract_fb_attributes(text: str) -> Dict[str, Any]:
     price_usd: Optional[float] = None
     district: Optional[str] = None
 
-    # Area: e.g. "60 კვ.მ", "60.5 კვ", "60 m2", "60 მ²", "60მ2"
+    # Area: e.g. "60 კვ.მ", "60.5 კვ", "80 კვ²", "64 კვ/მ", "42 კვდრატი", "55 кв.м", "60 m2", "60 მ²"
     area_match = re.search(
-        r"\b(\d{2,3}(?:[\.,]\d+)?)\s*(?:კვ\.?\s*მ|კვადრატ\w*|მ²|მ2|m2|m²|sqm)\b",
+        r"\b(\d{2,3}(?:[\.,]\d+)?)\s*(?:კვ(?:[./]?\s*მ)?(?:²|2)?(?![\u10A0-\u10FFa-zA-Z\u0400-\u04FF])|კვა?დრატ\w*|кв\.?\s*м|მ²|მ2|m2|m²|sqm)",
         text,
         re.IGNORECASE,
     )
     if area_match:
         area_m2 = float(area_match.group(1).replace(",", "."))
 
-    # Floor: e.g. "მე-7 სართული", "7 სართული", "სართული 7", "7/12 სართული"
+    # Floor: e.g. "მე-7 სართული", "7 სართული", "სართული 7", "7/12 სართული", "2/5", "პირველი სართული", "მეორე სართულზე"
+    floor_word_map = {"პირველ": "1", "მეორე": "2"}
     floor_match = re.search(
-        r"(?:მე[\-\s]*)?(\d{1,2})(?:\s*/\s*\d{1,2})?\s*სართულ\w*|სართულ\w*\s*[:\-]?\s*(\d{1,2})",
+        r"(?:(?:მე[\- \t]*)?([1-9]\d?)(?:[\- \t]*(?:ე|ლი))?(?:[ \t]*/[ \t]*\d{1,2})?|(?<![\u10A0-\u10FF])(პირველ|მეორე)ი?)[ \t]+სართულ(?:ი|ზე)?(?![\u10A0-\u10FF])|"
+        r"(?:მე[\- \t]*)?([1-9]\d?)[ \t]*/[ \t]*\d{1,2}[ \t]*სართულ\w*|"
+        r"სართულ\w*[ \t]*[:\-–—]?[ \t]*([1-9]\d?)(?:[ \t]*/[ \t]*\d{1,2})?(?![ \t]*(?:კვ|მ²|მ2|m2|m²|sqm)|\d)",
         text,
         re.IGNORECASE,
     )
     if floor_match:
-        floor = floor_match.group(1) or floor_match.group(2)
+        if floor_match.group(2):
+            floor = floor_word_map[floor_match.group(2).lower()]
+        else:
+            floor = floor_match.group(1) or floor_match.group(3) or floor_match.group(4)
+    else:
+        for sm in re.finditer(r"(?<![\d/])(?<!\d[.,])(\d{1,2})[ \t]*/[ \t]*(\d{1,2})(?![\d/]|[.,]\d)", text):
+            f_val, total_val = int(sm.group(1)), int(sm.group(2))
+            before = text[max(0, sm.start() - 3) : sm.start()].lower()
+            after = text[sm.end() : sm.end() + 8].lower()
+            if (f_val, total_val) == (24, 7):
+                continue
+            if re.search(r"[მm]\s*$", before):
+                continue
+            if re.match(r"^\s*წუთ", after):
+                continue
+            if 1 <= f_val <= total_val <= 40 and total_val >= 2:
+                floor = str(f_val)
+                break
 
-    # Rooms: e.g. "3 ოთახი", "3-ოთახიანი", "3 ოთახიანი"
-    rooms_match = re.search(r"\b(\d)\s*[\-\s]*ოთახ\w*", text, re.IGNORECASE)
+    # Rooms: e.g. "3 ოთახი", "3-ოთახიანი", "3ოთახიანი", "ოროთახიანი" (excluding decimals like "1.5 ოთახიანი")
+    rooms_match = re.search(r"(?<!\d)(?<!\d[.,])(\d)[ \t\-]*ოთახ\w*", text, re.IGNORECASE)
     if rooms_match:
         rooms = int(rooms_match.group(1))
+    else:
+        rooms_word_match = re.search(
+            r"(?<![\u10A0-\u10FF])(ერთ|ორ|სამ|ოთხ|ხუთ)ი?[ \t\-]*ოთახ\w*",
+            text,
+            re.IGNORECASE,
+        )
+        if rooms_word_match:
+            rooms_word_map = {"ერთ": 1, "ორ": 2, "სამ": 3, "ოთხ": 4, "ხუთ": 5}
+            rooms = rooms_word_map[rooms_word_match.group(1).lower()]
 
     # Price USD: e.g. "85000$", "$85,000", "85 000 $", "ფასი 85000"
     price_match = re.search(
@@ -264,7 +293,9 @@ def parse_xray_input(text: str) -> Optional[Dict[str, Any]]:
     if not stripped or stripped.startswith("/"):
         return None
     # Ignore pure 2-number filter wizard responses like "45000 70000" or "40 90"
-    if re.fullmatch(r"\d+(?:\.\d+)?\s*[\-\s]\s*\d+(?:\.\d+)?", stripped):
+    if re.fullmatch(r"\d+(?:\.\d+)?\s*[\-\s]\s*\d+(?:\.\d+)?", stripped) and not re.fullmatch(
+        r"5\d{2}[\s\-]+\d{6}", stripped
+    ):
         return None
 
     # 1. Check MyHome.ge URL
