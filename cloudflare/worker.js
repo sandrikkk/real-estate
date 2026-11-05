@@ -1122,7 +1122,7 @@ function formatGeorgianPhone(phone9) {
 function extract9DigitPhone(text) {
   if (!text) return null;
   const cleaned = String(text).replace(/https?:\/\/\S+/g, " ");
-  const m = cleaned.match(/(?:\+?995[\s\-.]*)?(5\d{2}[\s\-.]*\d{2}[\s\-.]*\d{2}[\s\-.]*\d{2}|\b5\d{8}\b)/);
+  const m = cleaned.match(/(?<!\d)(?:\+?995[\s\-.]*)?(5\d{2}(?:[\s\-.]*\d{2}[\s\-.]*\d{2}[\s\-.]*\d{2}|[\s\-.]*\d{3}[\s\-.]*\d{3}|[\s\-.]*\d{6}))(?!\d)/);
   if (!m) return null;
   const digits = m[1].replace(/\D/g, "");
   return (digits.length === 9 && digits.startsWith("5")) ? digits : null;
@@ -1141,7 +1141,7 @@ function parseXRayInput(text) {
   if (!text || typeof text !== "string") return null;
   const stripped = text.trim();
   if (!stripped || stripped.startsWith("/")) return null;
-  if (/^\d+(?:\.\d+)?\s*[-\s]\s*\d+(?:\.\d+)?$/.test(stripped)) return null;
+  if (/^\d+(?:\.\d+)?\s*[-\s]\s*\d+(?:\.\d+)?$/.test(stripped) && !/^5\d{2}[\s-]+\d{6}$/.test(stripped)) return null;
 
   const mhMatch = stripped.match(/https?:\/\/(?:www\.)?myhome\.ge\/(?:[a-z]{2}\/)?pr\/(\d+)(?:\/[^\s]*)?/i);
   if (mhMatch) {
@@ -1168,16 +1168,43 @@ function parseXRayInput(text) {
   }
 
   let areaM2 = null;
-  const areaMatch = stripped.match(/\b(\d{2,3}(?:[.,]\d+)?)\s*(?:კვ\.?\s*მ|კვადრატ\S*|მ²|მ2|m2|m²|sqm)/i);
+  const areaMatch = stripped.match(/\b(\d{2,3}(?:[.,]\d+)?)\s*(?:კვ(?:[./]?\s*მ)?(?:²|2)?(?![\u10A0-\u10FFa-zA-Z\u0400-\u04FF])|კვა?დრატ\S*|кв\.?\s*м|მ²|მ2|m2|m²|sqm)/i);
   if (areaMatch) areaM2 = parseFloat(areaMatch[1].replace(",", "."));
 
   let floor = null;
-  const floorMatch = stripped.match(/(?:მე[-\s]*)?(\d{1,2})(?:\s*\/\s*\d{1,2})?\s*სართულ\S*|სართულ\S*\s*[:-]?\s*(\d{1,2})/i);
-  if (floorMatch) floor = floorMatch[1] || floorMatch[2];
+  const floorWordMap = { "პირველ": "1", "მეორე": "2" };
+  const floorMatch = stripped.match(/(?:(?:მე[- \t]*)?([1-9]\d?)(?:[- \t]*(?:ე|ლი))?(?:[ \t]*\/[ \t]*\d{1,2})?|(?<![\u10A0-\u10FF])(პირველ|მეორე)ი?)[ \t]+სართულ(?:ი|ზე)?(?![\u10A0-\u10FF])|(?:მე[- \t]*)?([1-9]\d?)[ \t]*\/[ \t]*\d{1,2}[ \t]*სართულ\S*|სართულ\S*[ \t]*[:\-–—]?[ \t]*([1-9]\d?)(?:[ \t]*\/[ \t]*\d{1,2})?(?![ \t]*(?:კვ|მ²|მ2|m2|m²|sqm)|\d)/i);
+  if (floorMatch) {
+    floor = floorMatch[2] ? floorWordMap[floorMatch[2].toLowerCase()] : (floorMatch[1] || floorMatch[3] || floorMatch[4]);
+  } else {
+    const slashRe = /(?<![\d/])(?<!\d[.,])(\d{1,2})[ \t]*\/[ \t]*(\d{1,2})(?![\d/]|[.,]\d)/g;
+    let sm;
+    while ((sm = slashRe.exec(stripped)) !== null) {
+      const fVal = parseInt(sm[1], 10);
+      const totalVal = parseInt(sm[2], 10);
+      const before = stripped.slice(Math.max(0, sm.index - 3), sm.index).toLowerCase();
+      const after = stripped.slice(sm.index + sm[0].length, sm.index + sm[0].length + 8).toLowerCase();
+      if (fVal === 24 && totalVal === 7) continue;
+      if (/[მm]\s*$/.test(before)) continue;
+      if (/^\s*წუთ/.test(after)) continue;
+      if (fVal >= 1 && fVal <= totalVal && totalVal <= 40 && totalVal >= 2) {
+        floor = String(fVal);
+        break;
+      }
+    }
+  }
 
   let rooms = null;
-  const roomsMatch = stripped.match(/\b(\d)\s*[-\s]*ოთახ\S*/i);
-  if (roomsMatch) rooms = parseInt(roomsMatch[1], 10);
+  const roomsMatch = stripped.match(/(?<!\d)(?<!\d[.,])(\d)[ \t-]*ოთახ\S*/i);
+  if (roomsMatch) {
+    rooms = parseInt(roomsMatch[1], 10);
+  } else {
+    const roomsWordMatch = stripped.match(/(?<![\u10A0-\u10FF])(ერთ|ორ|სამ|ოთხ|ხუთ)ი?[ \t-]*ოთახ\S*/i);
+    if (roomsWordMatch) {
+      const roomsWordMap = { "ერთ": 1, "ორ": 2, "სამ": 3, "ოთხ": 4, "ხუთ": 5 };
+      rooms = roomsWordMap[roomsWordMatch[1].toLowerCase()];
+    }
+  }
 
   let priceUsd = null;
   let priceMatch = stripped.match(/(?:\$\s*(\d{2,3}(?:[,\s]\d{3})+|\d{4,6})|(\d{2,3}(?:[,\s]\d{3})+|\d{4,6})\s*(?:\$|დოლარ\S*|usd))/i);
