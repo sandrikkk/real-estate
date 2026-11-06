@@ -1,0 +1,23 @@
+{
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR:-.}/scripts/git/check_ai_traces.py\" claude-hook",
+            "shell": "bash",
+            "timeout": 15,
+            "statusMessage": "Checking for AI attribution traces..."
+          }
+        ]
+      }
+    ]
+  }
+}

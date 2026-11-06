@@ -44,6 +44,19 @@ repos:
         entry: python scripts/git/strip_bad_trailers.py
         stages: [commit-msg]
 
+      - id: no-ai-traces-message
+        name: reject AI attribution in the commit message (project policy)
+        language: python
+        entry: python scripts/git/check_ai_traces.py commit-msg
+        stages: [commit-msg]
+
+      - id: no-ai-traces-staged
+        name: reject AI attribution in staged additions (project policy)
+        language: python
+        entry: python scripts/git/check_ai_traces.py staged
+        pass_filenames: false
+        stages: [pre-commit]
+
       - id: setup-ai-config
         name: generate AI coding-agent config pointers
         language: python
