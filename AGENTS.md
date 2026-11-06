@@ -94,14 +94,14 @@ flowchart LR
 
 Each rule says what enforces it. "Honour system" means nothing in the repo stops a violation.
 
-- **Run Python inside the project virtual environment** (`.venv/`, `venv/`, `env/`; on Linux and macOS `source .venv/bin/activate`, on Windows `.venv\Scripts\activate`). Never `pip install` globally. This checkout has no virtual environment today: ask before creating one. Honour system.
-- **Never commit secrets.** `.env`, `.dev.vars` and `cloudflare/wrangler.toml` are gitignored. `scripts/detect_secrets.py` scans staged files. The hook is configured in `.pre-commit-config.yaml` and `.githooks/pre-commit`, and neither is installed in this checkout, so do not rely on it. `tests/test_detect_secrets.py` covers the scanner itself.
+- **Run Python inside the project virtual environment** (`.venv/`, `venv/`, `env/`; on Linux and macOS `source .venv/bin/activate`, on Windows `.venv\Scripts\activate`). Never `pip install` globally. If the checkout has no virtual environment, ask before creating one. Honour system.
+- **Never commit secrets.** `.env`, `.dev.vars` and `cloudflare/wrangler.toml` are gitignored. `scripts/detect_secrets.py` scans staged files. The hooks are configured in `.pre-commit-config.yaml` (ruff, ruff-format, codespell, the secret scan) and `.githooks/pre-commit`. Check `.git/hooks/pre-commit` before relying on them: a checkout may not have them installed. `tests/test_detect_secrets.py` covers the scanner itself.
 - **Never fall back to a local SQLite file when D1 is configured.** On the cron runner that file is empty and every old listing would be alerted again. A D1 failure raises `DatabaseUnavailableError` and `main.py` exits 1. Enforced by `tests/test_fixes.py` (`test_d1_circuit_breaker_fail_closed`).
 - **No per-listing network call inside a loop, and chunk every `IN (...)` at 50.** D1 allows 100 bound parameters, and the Worker has a daily request cap. Use `save_listings_batch`, `filter_unnotified_listings`, `_get_hashes_batch`. Enforced by `tests/test_batch_db.py`.
 - **No whole-table `SELECT` at start-up.** Cold-start bulk loads exhausted D1 row reads (ADR [0001](docs/adr/0001-eliminate-d1-full-table-scans.md)). Honour system.
 - **Owner/agent classification: agent signals win.** `user_type: "physical"` is not proof of an owner. Enforced by `tests/test_owner_agent_filtering.py` and `tests/test_fixes.py`.
 - **Same-class sweep on every bug fix or behaviour change.** Name the defect shape, search every other instance (other portals, both filter paths, both runners, the Worker), then fix, defer with a reference, or rule out with a reason. Procedure: [`root-cause-sweep`](.agents/skills/root-cause-sweep/SKILL.md). Honour system.
-- **Test first when the behaviour is well-specified.** Pick the test file from the [`tdd`](.agents/skills/tdd/SKILL.md) matrix, watch it fail, then fix. Full suite: `python -m unittest discover tests`. Files that use real credentials or the live network are manual scripts (`tests/test_telegram_live.py`, `tests/test_live_alert.py`, `tests/test_real_live_alert.py`, `tests/test_dry_run.py`, `test_ss_live.py`): do not run them unless the user asks.
+- **Test first when the behaviour is well-specified.** Pick the test file from the [`tdd`](.agents/skills/tdd/SKILL.md) matrix, watch it fail, then fix. Full suite: `python -m unittest discover tests` and `node --test tests/js/*.test.mjs`. Files that use real credentials or the live network are manual scripts (`tests/test_telegram_live.py`, `tests/test_live_alert.py`, `tests/test_real_live_alert.py`, `tests/test_dry_run.py`, `test_ss_live.py`): do not run them unless the user asks.
 - **A new change starts on its own branch, not on `master`.** Before the first edit of a tracked file, follow [`git-workflow`](.agents/skills/git-workflow/SKILL.md). Reading, explaining, running tests, and editing gitignored `.env` do not get a branch. If this checkout already has uncommitted work, do not `git checkout -b` here — that moves the shared `HEAD`. Honour system.
 - **Commit, push, and deploy only when the user asks.** That includes `scripts/deploy_worker.py` and the [`deploy-action`](.agents/skills/deploy-action/SKILL.md) skill. Never force-push `master`. Pushing to `master` is what the scraper cron checks out, so a push is a release.
 - **Commit messages follow Conventional Commits** ([`git-commits`](.agents/skills/git-commits/SKILL.md)). Never `--no-verify`, never add `Co-authored-by` trailers (`scripts/git/strip_bad_trailers.py` strips them when its hook is installed).
@@ -115,6 +115,7 @@ Each rule says what enforces it. "Honour system" means nothing in the repo stops
 - Code, comments, docs, and commit messages are in English. Reply to the user in the language they write in.
 - Settings come from `config/settings.py` (`pydantic-settings`, reads `.env`). Search rules come from `config/filters.json`. `SearchFilters()` defaults in `core/models.py` differ from that file and are what many tests build directly: say which one a change targets.
 - Price, area, and room rules exist in both `ListingFilter.matches` and `ListingFilter.matches_user`. Change both.
+- X-Ray logic exists twice: `cloudflare/worker.js` runs in production, and `core/xray.py` is its Python twin, used only by `tests/test_xray.py`. Change both. The golden-set baselines in `tests/js/xray_worker.test.mjs` and `tests/test_xray.py` must stay equal.
 
 ## Run and test
 
@@ -123,6 +124,7 @@ cp .env.example .env              # then fill TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_
 python main.py --once             # one cycle: what the cron runs. Exits 1 if D1 is unreachable
 python main.py --stats            # market report to stdout (add --telegram to send it)
 python -m unittest discover tests # offline unit suite
+node --test tests/js/*.test.mjs   # Worker suite: runs cloudflare/worker.js in node:vm
 ```
 
 Without `--once`, `main.py` loops every `CHECK_INTERVAL_SECONDS`. A live cycle needs real Telegram and Cloudflare credentials and sends real alerts.
@@ -130,8 +132,8 @@ Without `--once`, `main.py` loops every `CHECK_INTERVAL_SECONDS`. A live cycle n
 ## CI/CD
 
 - [`.github/workflows/scrape.yml`](.github/workflows/scrape.yml): cron, runs `python main.py --once`, Python 3.11, 6-minute timeout, `contents: read`. Read the file for the schedule; do not copy numbers from prose. Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `CLOUDFLARE_PROXY_URL`, `CLOUDFLARE_SYNC_KEY`.
-- [`.github/workflows/deploy-worker.yml`](.github/workflows/deploy-worker.yml): deploys the Worker on a push to `master` that touches `cloudflare/worker.js`, `scripts/deploy_worker.py`, or the workflow itself. Setup and bindings: [`cloudflare/README.md`](cloudflare/README.md).
-- There is no PR or staging pipeline. Tests run locally.
+- [`.github/workflows/deploy-worker.yml`](.github/workflows/deploy-worker.yml): deploys the Worker on a push to `master` that touches `cloudflare/worker.js`, `scripts/deploy_worker.py`, or the workflow itself. Before deploying it runs `node --check`, the Node suite, and the Python suite. Setup and bindings: [`cloudflare/README.md`](cloudflare/README.md).
+- There is no PR or staging pipeline. The deploy job above is the only CI test gate; `scrape.yml` runs no tests.
 
 ## Key files
 
@@ -145,7 +147,8 @@ Without `--once`, `main.py` loops every `CHECK_INTERVAL_SECONDS`. A live cycle n
 | `core/dedup.py` | Photo-hash duplicate groups and best-price tracking |
 | `core/analytics.py` | District medians, bargain detection, valuation scale |
 | `core/user_sync.py` | Active subscribers from the Worker, with an on-disk cache |
-| `core/xray.py` | On-demand listing, phone, and Facebook-text check |
+| `core/xray.py` | Python twin of the Worker's X-Ray (listing, phone, Facebook text), used only by tests |
+| `tests/js/` | Node tests that execute the real `cloudflare/worker.js` (X-Ray, webhook) |
 | `scrapers/` | `myhome.py` (TNET API + `__NEXT_DATA__`), `ss_ge.py`, `area_ge.py`, `base.py` |
 | `notifier/` | `telegram_bot.py` (alert HTML), `ntfy_notifier.py` |
 | `cloudflare/worker.js` | Telegram webhook, KV filters, D1 proxy, X-Ray |

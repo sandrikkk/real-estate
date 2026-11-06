@@ -136,6 +136,7 @@ ENABLE_MULTI_USER=True
 
 ```bash
 python -m unittest discover tests
+node --test tests/js/*.test.mjs
 python main.py --once
 ```
 
