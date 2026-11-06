@@ -258,6 +258,34 @@ def _extract_fb_attributes(text: str) -> Dict[str, Any]:
             rooms_word_map = {"ერთ": 1, "ორ": 2, "სამ": 3, "ოთხ": 4, "ხუთ": 5}
             rooms = rooms_word_map[rooms_word_match.group(1).lower()]
 
+    # Bedrooms: "2 საძინებელი", "ორი ნათელი საძინებლით" (one word may sit in between)
+    bedrooms: Optional[int] = None
+    bedrooms_match = re.search(
+        r"(?<![\d\u10A0-\u10FF])([1-9]|ერთ|ორ|სამ|ოთხ|ხუთ)ი?(?:[ \t\-]+[\u10A0-\u10FF]+)?[ \t\-]*საძინებ",
+        text,
+        re.IGNORECASE,
+    )
+    if bedrooms_match:
+        bedrooms_word_map = {"ერთ": 1, "ორ": 2, "სამ": 3, "ოთხ": 4, "ხუთ": 5}
+        word = bedrooms_match.group(1).lower()
+        bedrooms = bedrooms_word_map.get(word) or int(word)
+
+    # Building height: "7/25" (only when 7 is the parsed floor), "5-სართულიან", "(9) სართულიანია"
+    total_floors: Optional[int] = None
+    if floor:
+        for st in re.finditer(r"(?<![\d/])([1-9]\d?)[ \t]*/[ \t]*(\d{1,2})(?![\d/])", text):
+            if st.group(1) == floor:
+                total_floors = int(st.group(2))
+                break
+    if total_floors is None:
+        height_match = re.search(r"(?<!\d)(?:(\d{1,2})|\((\d{1,2})\))[ \t]*-?[ \t]*სართულიან", text)
+        if height_match:
+            total_floors = int(height_match.group(1) or height_match.group(2))
+    if total_floors is not None and (
+        total_floors < 2 or total_floors > 40 or (floor and total_floors < int(floor))
+    ):
+        total_floors = None
+
     # Price USD: e.g. "85000$", "$85,000", "85 000 $", "ფასი 85000"
     price_match = re.search(
         r"(?:\$\s*(\d{2,3}(?:[,\s]\d{3})+|\d{4,6})|(\d{2,3}(?:[,\s]\d{3})+|\d{4,6})\s*(?:\$|დოლარ\w*|usd))",
@@ -287,6 +315,8 @@ def _extract_fb_attributes(text: str) -> Dict[str, Any]:
         "area_m2": area_m2,
         "floor": floor,
         "rooms": rooms,
+        "bedrooms": bedrooms,
+        "total_floors": total_floors,
         "price_usd": price_usd,
         "district": district,
     }
@@ -542,24 +572,72 @@ def _floors_match(target_floor: Any, cand_floor: Any) -> bool:
     return tf == cf
 
 
-def _rooms_match(target_rooms: Any, cand_rooms: Any) -> bool:
+def _positive_int(value: Any) -> int:
     try:
-        tr = int(target_rooms) if target_rooms is not None else 0
-        cr = int(cand_rooms) if cand_rooms is not None else 0
+        n = int(value)
     except (ValueError, TypeError):
-        return True
-    if tr <= 0 or cr <= 0:
-        return True
-    return tr == cr
+        return 0
+    return n if n > 0 else 0
+
+
+# Field comparisons return "agree", "conflict", or "unknown" (a side is missing).
+# Unknown is never evidence for a match.
+def _compare_layout(target: Dict[str, Any], cand: Dict[str, Any]) -> str:
+    tr, cr = _positive_int(target.get("rooms")), _positive_int(cand.get("rooms"))
+    tb, cb = _positive_int(target.get("bedrooms")), _positive_int(cand.get("bedrooms"))
+    if tr and cr:
+        return "agree" if tr == cr else "conflict"
+    if tb and cb:
+        return "agree" if tb == cb else "conflict"
+    # Golden FB posts that state both: rooms = bedrooms + 1 (22 of 23) or + 2 (1 of 23).
+    r = tr or cr
+    b = cb if tr else tb
+    if r and b:
+        return "agree" if r - b in (1, 2) else "conflict"
+    return "unknown"
+
+
+def _total_floors_of(listing: Dict[str, Any]) -> int:
+    t = _positive_int(listing.get("total_floors"))
+    if t:
+        return t
+    m = re.search(r"/\s*(\d{1,2})", str(listing.get("floor") or ""))
+    return int(m.group(1)) if m else 0
+
+
+def _compare_total_floors(target: Dict[str, Any], cand: Dict[str, Any]) -> str:
+    a, b = _total_floors_of(target), _total_floors_of(cand)
+    if not a or not b:
+        return "unknown"
+    if a == b:
+        return "agree"
+    # Portals and posts may count a ground or attic floor differently.
+    return "unknown" if abs(a - b) == 1 else "conflict"
+
+
+def _compare_location(target: Dict[str, Any], cand: Dict[str, Any]) -> str:
+    # A row filed under the parent district is not evidence of the child district;
+    # only the child named in its subdistrict or street is.
+    d = str(target.get("district") or "").strip()
+    if not d:
+        return "unknown"
+    stems = [stem for stem, canonical in DISTRICT_KEYWORDS if canonical == d] + [d]
+    hay = f"{cand.get('subdistrict') or ''} {cand.get('street') or ''}".lower()
+    return "agree" if any(s in hay for s in stems) else "unknown"
 
 
 def _candidate_matches_target(target: Dict[str, Any], cand: Dict[str, Any]) -> bool:
-    if not _rooms_match(target.get("rooms"), cand.get("rooms")):
+    layout = _compare_layout(target, cand)
+    height = _compare_total_floors(target, cand)
+    if "conflict" in (layout, height):
         return False
     tf = _clean_floor(target.get("floor"))
     cf = _clean_floor(cand.get("floor"))
     if tf:
-        return cf == tf
+        if cf != tf:
+            return False
+        # Floor and area alone fit many unrelated flats: require one more agreeing fact.
+        return "agree" in (layout, height, _compare_location(target, cand))
     # When floor is omitted on target (e.g. in an FB post), require explicit matching rooms
     # AND price within ±10% so unrelated apartments on other floors do not match.
     try:
@@ -723,17 +801,17 @@ def _merge_live_into_row(row: Dict[str, Any], live: Optional[Dict[str, Any]]) ->
     if not live:
         return row
     merged = dict(row)
+    # The live portal answer is the freshest fact, so it replaces the stored flag both ways.
     live_own = live.get("is_owner")
-    if live_own is False or (
-        isinstance(live_own, int) and not isinstance(live_own, bool) and live_own == 0
-    ):
-        merged["is_owner"] = 0
-    elif merged.get("is_owner") is None and live_own is not None:
-        merged["is_owner"] = 1 if live_own else 0
-    if live.get("user_type") and (merged.get("is_owner") == 0 or not merged.get("user_type")):
+    if live_own is not None:
+        merged["is_owner"] = 0 if live_own in (False, 0, "0") else 1
+    if live.get("user_type") and (live_own is not None or not merged.get("user_type")):
         merged["user_type"] = live["user_type"]
-    if not merged.get("phone_number") and live.get("phone_number"):
-        merged["phone_number"] = live["phone_number"]
+    stored_phone, live_phone = merged.get("phone_number"), live.get("phone_number")
+    if live_phone and (
+        not stored_phone or ("*" in str(stored_phone) and "*" not in str(live_phone))
+    ):
+        merged["phone_number"] = live_phone
     if not merged.get("author_id") and live.get("author_id"):
         merged["author_id"] = str(live["author_id"])
     if live.get("author_listings_count") is not None:
@@ -865,6 +943,8 @@ def run_xray_on_db(
                 "district": parsed.get("district") or "",
                 "floor": parsed.get("floor") or "",
                 "rooms": parsed.get("rooms") or 0,
+                "bedrooms": parsed.get("bedrooms"),
+                "total_floors": parsed.get("total_floors"),
                 "phone_number": parsed.get("formatted_phone"),
                 "is_owner": None,
                 "user_type": None,

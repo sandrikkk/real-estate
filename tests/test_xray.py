@@ -830,5 +830,209 @@ class TestXRayEngine(unittest.TestCase):
         self.assertIn("dispatches", worker_src)
 
 
+# Correct values out of 100 posts (price: out of the USD-priced posts) on the golden set.
+# A ratchet: raise a number when the parser improves, never lower it.
+# Keep in sync with GOLDEN_BASELINE in tests/js/xray_worker.test.mjs.
+GOLDEN_BASELINE = {
+    "kind": 93,
+    "area_m2": 95,
+    "floor": 95,
+    "rooms": 98,
+    "bedrooms": 88,
+    "total_floors": 98,
+    "district": 70,
+    "phone9": 100,
+    "price_usd": 26,
+}
+
+# Incident 2026-11-06 (docs/incidents/2026-11-06-xray-false-duplicate.md), FB text reconstructed.
+INCIDENT_FB = (
+    "იყიდება ქალაქური პროექტის ბინა თემქაზე, 3 მ/რ, 4 კვარტალი. 62 კვ.მ, 1 სართული 8 სართულიანი კორპუსის. "
+    "ერთი საძინებელი, მისაღები და ლოჯი. ფასი 79 000$ ტელ: 599 90 90 01"
+)
+
+
+def _incident_nadzaladevi_listing() -> PropertyListing:
+    return _make_listing(
+        "26524985",
+        price_usd=92000.0,
+        area_m2=63.0,
+        district="ნაძალადევი",
+        floor="1",
+        rooms=4,
+        phone_number="+995 555 00 00 02",
+        author_id="a1",
+        author_listings_count=2,
+    ).model_copy(update={"street": "ზედაზნის ქ. 6", "total_floors": 12, "bedrooms": 3})
+
+
+class TestXRayFalseDuplicateIncident(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db = DatabaseEngine(
+            db_path=os.path.join(self.temp_dir.name, "test_xray_incident.db"), use_d1=False
+        )
+        self.db.init_db()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_golden_fb_posts_parser_accuracy_never_drops_below_baseline(self):
+        import json
+
+        fixture = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "fixtures", "xray_fb_posts.json"
+        )
+        with open(fixture, encoding="utf-8") as f:
+            posts = json.load(f)
+
+        def norm(v):
+            return None if v in (None, "") else v
+
+        def same(got, want):
+            got, want = norm(got), norm(want)
+            if got is None or want is None:
+                return got is want
+            if isinstance(want, (int, float)) and not isinstance(want, bool):
+                return float(got) == float(want)
+            return str(got) == str(want)
+
+        correct: dict = {}
+        for post in posts:
+            e = post["expected"] or {}
+            r = parse_xray_input(post["text"]) or {}
+            pairs = {
+                "kind": (r.get("kind"), e.get("xray_kind")),
+                "area_m2": (r.get("area_m2"), e.get("area_m2")),
+                "floor": (r.get("floor"), e.get("floor")),
+                "rooms": (r.get("rooms"), e.get("rooms")),
+                "bedrooms": (r.get("bedrooms"), e.get("bedrooms")),
+                "total_floors": (r.get("total_floors"), e.get("total_floors")),
+                "district": (r.get("district"), e.get("district")),
+                "phone9": (r.get("phone_9"), e.get("phone9")),
+            }
+            if e.get("currency") == "USD":
+                pairs["price_usd"] = (r.get("price_usd"), e.get("price"))
+            for field, (got, want) in pairs.items():
+                if same(got, want):
+                    correct[field] = correct.get(field, 0) + 1
+        for field, minimum in GOLDEN_BASELINE.items():
+            self.assertGreaterEqual(correct.get(field, 0), minimum, field)
+
+    def test_incident_temqa_post_does_not_match_4_room_nadzaladevi_flat(self):
+        self.db.save_listings_batch([_incident_nadzaladevi_listing()])
+        report = run_xray_on_db(self.db, INCIDENT_FB)
+        self.assertIsNotNone(report)
+        self.assertNotIn("26524985", report)
+        self.assertIn("დუბლიკატი სხვა პორტალზე არ იძებნება", report)
+
+    def test_incident_post_still_finds_its_real_duplicate(self):
+        same_flat = _make_listing(
+            "777",
+            price_usd=81000.0,
+            area_m2=62.0,
+            district="ნაძალადევი",
+            floor="1/8",
+            rooms=2,
+            phone_number="+995 599 77 77 77",
+        ).model_copy(update={"subdistrict": "თემქა", "total_floors": 8, "bedrooms": 1})
+        self.db.save_listings_batch([_incident_nadzaladevi_listing(), same_flat])
+        report = run_xray_on_db(self.db, INCIDENT_FB)
+        self.assertIn("/pr/777/", report)
+        self.assertNotIn("26524985", report)
+
+    def test_matcher_area_and_floor_alone_are_not_enough(self):
+        from core.xray import _candidate_matches_target
+
+        target = {"district": "თემქა", "area_m2": 62, "floor": "1", "rooms": 0, "price_usd": 79000}
+        cand = {
+            "district": "ნაძალადევი",
+            "area_m2": 62,
+            "floor": "1",
+            "rooms": None,
+            "price_usd": 79000,
+        }
+        self.assertFalse(_candidate_matches_target(target, cand))
+
+    def test_matcher_known_layout_or_height_conflicts_reject(self):
+        from core.xray import _candidate_matches_target
+
+        base = {"district": "საბურთალო", "area_m2": 60, "floor": "7"}
+        self.assertFalse(_candidate_matches_target({**base, "bedrooms": 1}, {**base, "rooms": 4}))
+        self.assertFalse(
+            _candidate_matches_target(
+                {**base, "rooms": 3, "total_floors": 8}, {**base, "rooms": 3, "floor": "7/12"}
+            )
+        )
+
+    def test_matcher_corroborated_duplicates_still_match(self):
+        from core.xray import _candidate_matches_target
+
+        base = {"area_m2": 60, "floor": "7"}
+        self.assertTrue(
+            _candidate_matches_target(
+                {**base, "district": "ნუცუბიძე", "rooms": 3},
+                {**base, "district": "საბურთალო", "rooms": 3},
+            )
+        )
+        self.assertTrue(
+            _candidate_matches_target(
+                {**base, "district": "საბურთალო", "bedrooms": 2},
+                {**base, "district": "საბურთალო", "rooms": 3},
+            )
+        )
+        self.assertTrue(
+            _candidate_matches_target(
+                {**base, "district": "თემქა"},
+                {**base, "district": "ნაძალადევი", "subdistrict": "თემქა"},
+            )
+        )
+        self.assertTrue(
+            _candidate_matches_target(
+                {**base, "district": "საბურთალო", "rooms": 3, "total_floors": 12},
+                {**base, "district": "საბურთალო", "rooms": 3, "total_floors": 13},
+            )
+        )
+
+    def test_parser_reads_bedrooms_and_building_height(self):
+        cases = [
+            ("2 საძინებელი, 65 კვ.მ", {"bedrooms": 2}),
+            ("ორი ნათელი საძინებლით, 65 კვ.მ", {"bedrooms": 2}),
+            ("ერთი საძინებლით, 45 კვ.მ", {"bedrooms": 1}),
+            ("65 კვ.მ, სართული: 7/25", {"floor": "7", "total_floors": 25}),
+            ("65 კვ.მ, 1-ლი სართული 5-სართულიან კორპუსში", {"floor": "1", "total_floors": 5}),
+            ("65 კვ.მ, 2-ე სართული (9) სართულიანია", {"floor": "2", "total_floors": 9}),
+            ("65 კვ.მ, 8-სართულიანი კორპუსის მე-6 სართული", {"floor": "6", "total_floors": 8}),
+        ]
+        for text, want in cases:
+            got = parse_xray_input(f"იყიდება ბინა საბურთალოზე {text}") or {}
+            for field, value in want.items():
+                self.assertEqual(got.get(field), value, f"{field} in {text!r}")
+
+    def test_merge_live_answer_replaces_stored_and_full_phone_replaces_masked(self):
+        from core.xray import _merge_live_into_row
+
+        healed = _merge_live_into_row(
+            {"is_owner": 0, "user_type": "agent", "phone_number": "555000***"},
+            {"is_owner": 1, "user_type": "physical", "phone_number": "+995 555 00 00 02"},
+        )
+        self.assertEqual(healed["is_owner"], 1)
+        self.assertEqual(healed["user_type"], "physical")
+        self.assertEqual(healed["phone_number"], "+995 555 00 00 02")
+
+        agent = _merge_live_into_row(
+            {"is_owner": 1, "user_type": "physical"}, {"is_owner": 0, "user_type": "agent"}
+        )
+        self.assertEqual(agent["is_owner"], 0)
+        self.assertEqual(agent["user_type"], "agent")
+
+        unknown = _merge_live_into_row(
+            {"is_owner": 0, "phone_number": "+995 555 00 00 02"},
+            {"is_owner": None, "phone_number": "555000***"},
+        )
+        self.assertEqual(unknown["is_owner"], 0)
+        self.assertEqual(unknown["phone_number"], "+995 555 00 00 02")
+
+
 if __name__ == "__main__":
     unittest.main()
