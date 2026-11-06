@@ -6,8 +6,6 @@ from datetime import datetime, timezone
 from core.database import DatabaseEngine
 from core.models import PropertyListing
 from core.xray import (
-    evaluate_broker_verdict,
-    find_exact_duplicates,
     parse_xray_input,
     run_xray_on_db,
 )
@@ -68,7 +66,9 @@ class TestXRayEngine(unittest.TestCase):
 
     def test_parse_xray_input_variants(self):
         # 1. MyHome URL
-        res_mh = parse_xray_input("ნახე ეს ბინა https://www.myhome.ge/ka/pr/22051234/iyideba-3-otaxiani-bina/")
+        res_mh = parse_xray_input(
+            "ნახე ეს ბინა https://www.myhome.ge/ka/pr/22051234/iyideba-3-otaxiani-bina/"
+        )
         self.assertIsNotNone(res_mh)
         self.assertEqual(res_mh["kind"], "url")
         self.assertEqual(res_mh["source"], "myhome")
@@ -76,7 +76,9 @@ class TestXRayEngine(unittest.TestCase):
         self.assertEqual(res_mh["listing_id"], "myhome_22051234")
 
         # 2. SS.ge URL
-        res_ss = parse_xray_input("https://home.ss.ge/ka/udzravi-qoneba/iyideba-3-otaxiani-bina-saburtaloze-31948512")
+        res_ss = parse_xray_input(
+            "https://home.ss.ge/ka/udzravi-qoneba/iyideba-3-otaxiani-bina-saburtaloze-31948512"
+        )
         self.assertIsNotNone(res_ss)
         self.assertEqual(res_ss["kind"], "url")
         self.assertEqual(res_ss["source"], "ss_ge")
@@ -97,8 +99,7 @@ class TestXRayEngine(unittest.TestCase):
 
         # 4. Facebook post text with apartment attributes and phone
         fb_text = (
-            "იყიდება საბურთალოზე 60 კვ.მ ბინა, მე-7 სართული, "
-            "3 ოთახი, ფასი 85000$, ტელ 599112233"
+            "იყიდება საბურთალოზე 60 კვ.მ ბინა, მე-7 სართული, 3 ოთახი, ფასი 85000$, ტელ 599112233"
         )
         res_fb = parse_xray_input(fb_text)
         self.assertIsNotNone(res_fb)
@@ -127,9 +128,15 @@ class TestXRayEngine(unittest.TestCase):
         # but has 3 distinct apartments under the same phone number
         self.db.save_listings_batch(
             [
-                _make_listing("101", area_m2=55.0, district="საბურთალო", phone_number="+995 599 11 22 33"),
-                _make_listing("102", area_m2=82.0, district="ვაკე", phone_number="+995 599 11 22 33"),
-                _make_listing("103", area_m2=110.0, district="დიღომი", phone_number="+995 599 11 22 33"),
+                _make_listing(
+                    "101", area_m2=55.0, district="საბურთალო", phone_number="+995 599 11 22 33"
+                ),
+                _make_listing(
+                    "102", area_m2=82.0, district="ვაკე", phone_number="+995 599 11 22 33"
+                ),
+                _make_listing(
+                    "103", area_m2=110.0, district="დიღომი", phone_number="+995 599 11 22 33"
+                ),
             ]
         )
 
@@ -207,7 +214,13 @@ class TestXRayEngine(unittest.TestCase):
         )
         # Add another Saburtalo listing so district benchmark has multiple samples
         self.db.save_listing(
-            _make_listing("4002", price_usd=102000.0, area_m2=60.0, district="საბურთალო", phone_number="+995 591 00 00 02")
+            _make_listing(
+                "4002",
+                price_usd=102000.0,
+                area_m2=60.0,
+                district="საბურთალო",
+                phone_number="+995 591 00 00 02",
+            )
         )
 
         report = run_xray_on_db(self.db, "https://www.myhome.ge/ka/pr/4001/iyideba-bina/")
@@ -230,8 +243,12 @@ class TestXRayEngine(unittest.TestCase):
             phone_number="+995 599 55 44 33",
         )
         # Broker also has 3 other listings in DB under phone 577 99 88 77
-        b1 = _make_listing("601", area_m2=45.0, district="ვაკე", phone_number="+995 577 99 88 77", is_owner=False)
-        b2 = _make_listing("602", area_m2=90.0, district="ისანი", phone_number="+995 577 99 88 77", is_owner=False)
+        b1 = _make_listing(
+            "601", area_m2=45.0, district="ვაკე", phone_number="+995 577 99 88 77", is_owner=False
+        )
+        b2 = _make_listing(
+            "602", area_m2=90.0, district="ისანი", phone_number="+995 577 99 88 77", is_owner=False
+        )
         self.db.save_listings_batch([owner_listing, b1, b2])
 
         # User copies Facebook post text from a broker asking $83,000 with phone 577998877
@@ -560,9 +577,7 @@ class TestXRayEngine(unittest.TestCase):
         self.assertIn("✅ რეალური მესაკუთრე (Owner)", report)
 
     def test_phoneless_fb_post_with_no_match_reports_missing_phone_honestly(self):
-        fb_post_no_phone = (
-            "იყიდება ბინა ვარკეთილში, 64 კვ.მ, მე-9 სართული, 3 ოთახი, ფასი 71000$"
-        )
+        fb_post_no_phone = "იყიდება ბინა ვარკეთილში, 64 კვ.მ, მე-9 სართული, 3 ოთახი, ფასი 71000$"
         report = run_xray_on_db(self.db, fb_post_no_phone)
         self.assertIsNotNone(report)
         self.assertNotIn("ბაზაში ფიქსირდება 1 განცხადება", report)
@@ -687,7 +702,9 @@ class TestXRayEngine(unittest.TestCase):
             "soft-smoke-33e0",
         )
         self.assertEqual(
-            extract_worker_name("custom-worker", "https://soft-smoke-33e0.iashvilisandro7.workers.dev"),
+            extract_worker_name(
+                "custom-worker", "https://soft-smoke-33e0.iashvilisandro7.workers.dev"
+            ),
             "custom-worker",
         )
 
@@ -696,8 +713,17 @@ class TestXRayEngine(unittest.TestCase):
             "success": True,
             "result": {
                 "bindings": [
-                    {"name": "USERS_KV", "type": "kv_namespace", "namespace_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90"},
-                    {"name": "DB", "type": "d1", "id": "11112222-3333-4444-5555-666677778888", "database_name": "real-estate-db"},
+                    {
+                        "name": "USERS_KV",
+                        "type": "kv_namespace",
+                        "namespace_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+                    },
+                    {
+                        "name": "DB",
+                        "type": "d1",
+                        "id": "11112222-3333-4444-5555-666677778888",
+                        "database_name": "real-estate-db",
+                    },
                     {"name": "TELEGRAM_BOT_TOKEN", "type": "secret_text"},
                 ]
             },
@@ -713,7 +739,9 @@ class TestXRayEngine(unittest.TestCase):
         with self.assertRaises(ValueError):
             render_wrangler_toml("soft-smoke-33e0", "a1b2c3d4e5f60718293a4b5c6d7e8f90", "")
         with self.assertRaises(ValueError):
-            render_wrangler_toml("soft-smoke-33e0", "YOUR_KV_NAMESPACE_ID", "11112222-3333-4444-5555-666677778888")
+            render_wrangler_toml(
+                "soft-smoke-33e0", "YOUR_KV_NAMESPACE_ID", "11112222-3333-4444-5555-666677778888"
+            )
 
         # 4. Safe TOML generation preserves vars & bindings
         toml_text = render_wrangler_toml(
