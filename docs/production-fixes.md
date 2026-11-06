@@ -274,6 +274,21 @@ In GitHub Actions CI runs, each job runs on an ephemeral virtual machine with a 
   - Fallback: Evaluates phone frequency across the database (`freq <= 1`).
 - **Verdict:** **Zero false positives.** Confirmed by regression tests (`test_private_broker_physical_user_type_is_owner_zero` and `test_no_owner_phone_if_all_agents`).
 
+### 5.5 False Positive: X-Ray "Same Flat" Match and Agency Badge (2026-11-06)
+- **Symptom:** An X-Ray of a Facebook post (Temqa, 62 m², floor 1 of 8, "ერთი საძინებელი", `$79,000`) listed an unrelated 4-room new build in Nadzaladevi (`$92,000`) as "იგივე ბინა სხვაგან". It also labelled that listing's verified MyHome owner "სააგენტო 🕵️‍♂️" and showed a masked phone.
+- **Root causes** (reproduced by running `cloudflare/worker.js` in Node):
+  - `parseXRayInput` never read bedrooms or building height, so the facts that ruled the flat out were lost before matching. Only 28 of the 100 golden posts (`tests/fixtures/xray_fb_posts.json`) state "ოთახი".
+  - An unknown room count matched any room count, and once the floor matched nothing else was checked. A match meant one of three districts, area within 1.5 m², and the same floor.
+  - `Boolean(st.broker)` is true for `{}`, so an empty TNET object overrode an explicit `is_owner: true`.
+  - `mergeLiveIntoRow` let a live `0` replace a stored value but never a live `1`, and a stored masked phone blocked the full one. Duplicates with a phone were never re-fetched, so the wrong state stayed in D1.
+  - The Worker's X-Ray was never executed by a test. `tests/test_xray.py` tested the Python twin `core/xray.py`, which had the same defects. The golden set was not used by any test.
+- **False Positive Elimination:**
+  - Each field comparison is agree, conflict, or unknown. A known conflict in layout (rooms vs bedrooms) or building height rejects the candidate, unknown adds nothing, and floor plus area need one more agreeing fact. Price never rejects: a different price for the same flat is what the feature reports.
+  - Agent evidence from `broker` / `agency` needs a non-empty id or name. A live portal `is_owner` replaces the stored one in both directions, a full phone replaces a masked one, and masked duplicates are re-fetched.
+  - `tests/js/xray_worker.test.mjs` runs the production Worker in `node:vm`, including a golden-set accuracy ratchet that `tests/test_xray.py` mirrors for the twin. `deploy-worker.yml` runs it before every Worker deploy.
+  - Same change: `timingSafeEqualStr` was called but never defined, so setting `TELEGRAM_WEBHOOK_SECRET` would have thrown on every update. Photo captions are now read like message text.
+- **Verdict:** The incident pair no longer matches, its real duplicate still does, and the owner badge and phone heal on the next X-Ray lookup. Confirmed by the incident tests in both suites. Learning field weights from photo-hash duplicate pairs is proposed in [ADR 0002](adr/0002-xray-duplicate-match-weights.md).
+
 ---
 
 ## 6. Senior Developer Best Practices Review

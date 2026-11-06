@@ -47,6 +47,7 @@ jobs:
       - name: Validate Worker JavaScript syntax & run unit tests
         run: |
           node --check cloudflare/worker.js
+          node --test tests/js/*.test.mjs
           python -m unittest discover -s tests -p "test_*.py"
 
       - name: Deploy Cloudflare Worker (Fail-Closed & Zero-Secret)

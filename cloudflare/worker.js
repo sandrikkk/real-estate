@@ -259,11 +259,22 @@ const PROXY_ALLOWED_HOSTS = [
   "area.ge"
 ];
 
+// Constant-time compare, so response timing does not reveal how much of a secret matched.
+function timingSafeEqualStr(a, b) {
+  const x = new TextEncoder().encode(String(a));
+  const y = new TextEncoder().encode(String(b));
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    diff |= (x[i] || 0) ^ (y[i] || 0);
+  }
+  return diff === 0;
+}
+
 function isSyncKeyValid(request, env) {
   const expectedKey = (env.SYNC_KEY || "").trim();
   if (!expectedKey) return false;
   const syncKey = (request.headers.get("X-Sync-Key") || new URL(request.url).searchParams.get("key") || "").trim();
-  return syncKey === expectedKey;
+  return timingSafeEqualStr(syncKey, expectedKey);
 }
 
 function unauthorizedResponse() {
@@ -498,7 +509,7 @@ async function handleTelegramWebhook(request, env) {
     }
 
     // 2. Handle Text Messages
-    if (update.message && update.message.text) {
+    if (update.message && (update.message.text || update.message.caption)) {
       await handleMessage(update.message, token, kv, env);
       return new Response("OK");
     }
@@ -515,7 +526,8 @@ async function handleTelegramWebhook(request, env) {
  */
 async function handleMessage(msg, token, kv, env) {
   const chatId = msg.chat.id;
-  const text = msg.text.trim();
+  // A forwarded post with a photo carries its text in the caption.
+  const text = (msg.text || msg.caption || "").trim();
   const userKey = `USER_${chatId}`;
   let user = await kv.get(userKey, "json");
 
@@ -1206,6 +1218,32 @@ function parseXRayInput(text) {
     }
   }
 
+  // Bedrooms: "2 საძინებელი", "ორი ნათელი საძინებლით" (one word may sit in between)
+  let bedrooms = null;
+  const bedroomsMatch = stripped.match(/(?<![\d\u10A0-\u10FF])([1-9]|ერთ|ორ|სამ|ოთხ|ხუთ)ი?(?:[ \t-]+[\u10A0-\u10FF]+)?[ \t-]*საძინებ/i);
+  if (bedroomsMatch) {
+    const bedroomsWordMap = { "ერთ": 1, "ორ": 2, "სამ": 3, "ოთხ": 4, "ხუთ": 5 };
+    bedrooms = bedroomsWordMap[bedroomsMatch[1].toLowerCase()] || parseInt(bedroomsMatch[1], 10);
+  }
+
+  // Building height: "7/25" (only when 7 is the parsed floor), "5-სართულიან", "(9) სართულიანია"
+  let totalFloors = null;
+  const slashTotalRe = /(?<![\d/])([1-9]\d?)[ \t]*\/[ \t]*(\d{1,2})(?![\d/])/g;
+  let st;
+  while (floor && (st = slashTotalRe.exec(stripped)) !== null) {
+    if (st[1] === floor) {
+      totalFloors = parseInt(st[2], 10);
+      break;
+    }
+  }
+  if (totalFloors === null) {
+    const heightMatch = stripped.match(/(?<!\d)(?:(\d{1,2})|\((\d{1,2})\))[ \t]*-?[ \t]*სართულიან/);
+    if (heightMatch) totalFloors = parseInt(heightMatch[1] || heightMatch[2], 10);
+  }
+  if (totalFloors !== null && (totalFloors < 2 || totalFloors > 40 || (floor && totalFloors < parseInt(floor, 10)))) {
+    totalFloors = null;
+  }
+
   let priceUsd = null;
   let priceMatch = stripped.match(/(?:\$\s*(\d{2,3}(?:[,\s]\d{3})+|\d{4,6})|(\d{2,3}(?:[,\s]\d{3})+|\d{4,6})\s*(?:\$|დოლარ\S*|usd))/i);
   if (!priceMatch) {
@@ -1238,6 +1276,8 @@ function parseXRayInput(text) {
       area_m2: areaM2,
       floor,
       rooms,
+      bedrooms,
+      total_floors: totalFloors,
       price_usd: priceUsd,
       district
     };
@@ -1327,19 +1367,36 @@ function parseSsGeStatementDetails(st, agentInfo = {}, html = "", sourceId = "",
   };
 }
 
+function isMaskedPhone(phone) {
+  return String(phone || "").includes("*");
+}
+
+// Portal payloads use {} / [] / "" for an absent agency, and {} and [] are truthy in JS.
+function hasRealValue(v) {
+  if (v === null || v === undefined) return false;
+  if (typeof v === "string") return v.trim().length > 0;
+  if (typeof v === "number") return v > 0;
+  if (typeof v === "boolean") return v;
+  if (typeof v === "object") return hasRealValue(v.id) || hasRealValue(v.name);
+  return false;
+}
+
 function mergeLiveIntoRow(row, live) {
   if (!live) return row;
   if (!row) return live;
   const merged = { ...row };
-  if (live.is_owner === 0 || live.is_owner === false) {
-    merged.is_owner = 0;
-  } else if ((merged.is_owner === null || merged.is_owner === undefined) && live.is_owner !== null && live.is_owner !== undefined) {
-    merged.is_owner = live.is_owner ? 1 : 0;
+  // The live portal answer is the freshest fact, so it replaces the stored flag both ways.
+  const liveOwnerKnown = live.is_owner !== null && live.is_owner !== undefined;
+  if (liveOwnerKnown) {
+    merged.is_owner = live.is_owner === 0 || live.is_owner === false || live.is_owner === "0" ? 0 : 1;
   }
-  if (live.user_type && (merged.is_owner === 0 || !merged.user_type)) {
+  if (live.user_type && (liveOwnerKnown || !merged.user_type)) {
     merged.user_type = live.user_type;
   }
-  if (!merged.phone_number && live.phone_number) {
+  if (
+    live.phone_number &&
+    (!merged.phone_number || (isMaskedPhone(merged.phone_number) && !isMaskedPhone(live.phone_number)))
+  ) {
     merged.phone_number = live.phone_number;
   }
   if (!merged.author_id && live.author_id) {
@@ -1381,7 +1438,8 @@ function parseMyHomeStatementDetails(st, sourceId, pageUrl) {
   const isOwnerRaw = st.is_owner;
   const isOwnerExplicitFalse = isOwnerRaw === false || isOwnerRaw === 0 || isOwnerRaw === "0";
   const isOwnerExplicitTrue = isOwnerRaw === true || isOwnerRaw === 1 || isOwnerRaw === "1";
-  const hasAgencySignal = Boolean(st.agency_name || st.agency_id || st.broker || st.agency);
+  const hasAgencySignal =
+    hasRealValue(st.agency_name) || hasRealValue(st.agency_id) || hasRealValue(st.broker) || hasRealValue(st.agency);
   const isBroker = Boolean(
     isOwnerExplicitFalse ||
     hasAgencySignal ||
@@ -1636,18 +1694,60 @@ function workerFloorsMatch(f1, f2) {
   return a === b;
 }
 
-function workerRoomsMatch(r1, r2) {
-  const a = parseInt(r1, 10) || 0;
-  const b = parseInt(r2, 10) || 0;
-  if (a <= 0 || b <= 0) return true;
-  return a === b;
+// Field comparisons return "agree", "conflict", or "unknown" (a side is missing).
+// Unknown is never evidence for a match.
+function compareLayout(target, cand) {
+  const tr = parseInt(target?.rooms, 10) || 0;
+  const cr = parseInt(cand?.rooms, 10) || 0;
+  const tb = parseInt(target?.bedrooms, 10) || 0;
+  const cb = parseInt(cand?.bedrooms, 10) || 0;
+  if (tr > 0 && cr > 0) return tr === cr ? "agree" : "conflict";
+  if (tb > 0 && cb > 0) return tb === cb ? "agree" : "conflict";
+  // Golden FB posts that state both: rooms = bedrooms + 1 (22 of 23) or + 2 (1 of 23).
+  const r = tr || cr;
+  const b = tr ? cb : tb;
+  if (r > 0 && b > 0) return r - b === 1 || r - b === 2 ? "agree" : "conflict";
+  return "unknown";
+}
+
+function totalFloorsOf(listing) {
+  const t = parseInt(listing?.total_floors, 10) || 0;
+  if (t > 0) return t;
+  const m = String(listing?.floor || "").match(/\/\s*(\d{1,2})/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+function compareTotalFloors(target, cand) {
+  const a = totalFloorsOf(target);
+  const b = totalFloorsOf(cand);
+  if (!a || !b) return "unknown";
+  if (a === b) return "agree";
+  // Portals and posts may count a ground or attic floor differently.
+  return Math.abs(a - b) === 1 ? "unknown" : "conflict";
+}
+
+// A row filed under the parent district is not evidence of the child district;
+// only the child named in its subdistrict or street is.
+function compareLocation(target, cand) {
+  const d = String(target?.district || "").trim();
+  if (!d) return "unknown";
+  const stems = XRAY_DISTRICT_KEYWORDS.filter(([, canonical]) => canonical === d).map(([stem]) => stem);
+  stems.push(d);
+  const hay = `${cand?.subdistrict || ""} ${cand?.street || ""}`.toLowerCase();
+  return stems.some(s => hay.includes(s)) ? "agree" : "unknown";
 }
 
 function workerCandidateMatchesTarget(target, cand) {
-  if (!workerRoomsMatch(target?.rooms, cand?.rooms)) return false;
+  const layout = compareLayout(target, cand);
+  const height = compareTotalFloors(target, cand);
+  if (layout === "conflict" || height === "conflict") return false;
   const tf = cleanFloorStr(target?.floor);
   const cf = cleanFloorStr(cand?.floor);
-  if (tf) return cf === tf;
+  if (tf) {
+    if (cf !== tf) return false;
+    // Floor and area alone fit many unrelated flats: require one more agreeing fact.
+    return [layout, height, compareLocation(target, cand)].includes("agree");
+  }
   const tr = parseInt(target?.rooms, 10) || 0;
   const cr = parseInt(cand?.rooms, 10) || 0;
   const tp = Number(target?.price_usd) || 0;
@@ -1723,6 +1823,7 @@ async function enrichDuplicatesIfNeeded(db, dups, maxCount = 3) {
       if (
         !dup ||
         (dup.phone_number &&
+          !isMaskedPhone(dup.phone_number) &&
           dup.is_owner !== null &&
           dup.is_owner !== undefined &&
           dup.author_id &&
@@ -1781,6 +1882,7 @@ async function handleXRayQuery(text, env) {
         rows.length <= 5 &&
         (rows[0].is_owner === null ||
           rows[0].is_owner === undefined ||
+          isMaskedPhone(rows[0].phone_number) ||
           !rows[0].author_id ||
           rows[0].author_listings_count === null ||
           rows[0].author_listings_count === undefined ||
@@ -1898,6 +2000,8 @@ async function handleXRayQuery(text, env) {
         district: parsed.district || "",
         floor: parsed.floor || "",
         rooms: parsed.rooms || 0,
+        bedrooms: parsed.bedrooms || null,
+        total_floors: parsed.total_floors || null,
         phone_number: parsed.formattedPhone,
         is_owner: null,
         user_type: null

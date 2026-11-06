@@ -30,8 +30,9 @@ Consult this matrix BEFORE writing code. The column on the right is the mandator
 | **Database Engine & Persistence** (`DatabaseEngine`, SQLite operations, `seen_ids`) | Unit / Database | `tests/test_core.py` | `.\.venv\Scripts\python.exe -m unittest tests/test_core.py` |
 | **Multi-User Deduplication & Sync** (per-user notification isolation, subscriber matching) | Unit / Multi-user | `tests/test_user_dedup.py` | `.\.venv\Scripts\python.exe -m unittest tests/test_user_dedup.py` |
 | **Full Pipeline Integration** (Scrape -> Filter -> Enrich -> Analyze -> Notify) | Integration / Flow | `tests/test_end_to_end_flow.py` | `.\.venv\Scripts\python.exe -m unittest tests/test_end_to_end_flow.py` |
+| **X-Ray & Worker Logic** (`cloudflare/worker.js`, its Python twin `core/xray.py`, duplicate matching, webhook) | Unit / Worker executed in `node:vm` + Python twin | `tests/js/xray_worker.test.mjs` and `tests/test_xray.py` | `node --test tests/js/*.test.mjs` and `.\.venv\Scripts\python.exe -m unittest tests/test_xray.py` |
 | **Bug Fix Anywhere** | Reproduction test | Same file as the affected surface | The test case you wrote |
-| **Pre-Flight Before Any Commit or Deploy** | Full Repository Suite | All test suites in `tests/` | `.\.venv\Scripts\python.exe -m unittest discover tests` |
+| **Pre-Flight Before Any Commit or Deploy** | Full Repository Suite | All test suites in `tests/` | `.\.venv\Scripts\python.exe -m unittest discover tests` and `node --test tests/js/*.test.mjs` |
 
 ---
 

@@ -6,8 +6,6 @@ from datetime import datetime, timezone
 from core.database import DatabaseEngine
 from core.models import PropertyListing
 from core.xray import (
-    evaluate_broker_verdict,
-    find_exact_duplicates,
     parse_xray_input,
     run_xray_on_db,
 )
@@ -68,7 +66,9 @@ class TestXRayEngine(unittest.TestCase):
 
     def test_parse_xray_input_variants(self):
         # 1. MyHome URL
-        res_mh = parse_xray_input("ნახე ეს ბინა https://www.myhome.ge/ka/pr/22051234/iyideba-3-otaxiani-bina/")
+        res_mh = parse_xray_input(
+            "ნახე ეს ბინა https://www.myhome.ge/ka/pr/22051234/iyideba-3-otaxiani-bina/"
+        )
         self.assertIsNotNone(res_mh)
         self.assertEqual(res_mh["kind"], "url")
         self.assertEqual(res_mh["source"], "myhome")
@@ -76,7 +76,9 @@ class TestXRayEngine(unittest.TestCase):
         self.assertEqual(res_mh["listing_id"], "myhome_22051234")
 
         # 2. SS.ge URL
-        res_ss = parse_xray_input("https://home.ss.ge/ka/udzravi-qoneba/iyideba-3-otaxiani-bina-saburtaloze-31948512")
+        res_ss = parse_xray_input(
+            "https://home.ss.ge/ka/udzravi-qoneba/iyideba-3-otaxiani-bina-saburtaloze-31948512"
+        )
         self.assertIsNotNone(res_ss)
         self.assertEqual(res_ss["kind"], "url")
         self.assertEqual(res_ss["source"], "ss_ge")
@@ -97,8 +99,7 @@ class TestXRayEngine(unittest.TestCase):
 
         # 4. Facebook post text with apartment attributes and phone
         fb_text = (
-            "იყიდება საბურთალოზე 60 კვ.მ ბინა, მე-7 სართული, "
-            "3 ოთახი, ფასი 85000$, ტელ 599112233"
+            "იყიდება საბურთალოზე 60 კვ.მ ბინა, მე-7 სართული, 3 ოთახი, ფასი 85000$, ტელ 599112233"
         )
         res_fb = parse_xray_input(fb_text)
         self.assertIsNotNone(res_fb)
@@ -127,9 +128,15 @@ class TestXRayEngine(unittest.TestCase):
         # but has 3 distinct apartments under the same phone number
         self.db.save_listings_batch(
             [
-                _make_listing("101", area_m2=55.0, district="საბურთალო", phone_number="+995 599 11 22 33"),
-                _make_listing("102", area_m2=82.0, district="ვაკე", phone_number="+995 599 11 22 33"),
-                _make_listing("103", area_m2=110.0, district="დიღომი", phone_number="+995 599 11 22 33"),
+                _make_listing(
+                    "101", area_m2=55.0, district="საბურთალო", phone_number="+995 599 11 22 33"
+                ),
+                _make_listing(
+                    "102", area_m2=82.0, district="ვაკე", phone_number="+995 599 11 22 33"
+                ),
+                _make_listing(
+                    "103", area_m2=110.0, district="დიღომი", phone_number="+995 599 11 22 33"
+                ),
             ]
         )
 
@@ -207,7 +214,13 @@ class TestXRayEngine(unittest.TestCase):
         )
         # Add another Saburtalo listing so district benchmark has multiple samples
         self.db.save_listing(
-            _make_listing("4002", price_usd=102000.0, area_m2=60.0, district="საბურთალო", phone_number="+995 591 00 00 02")
+            _make_listing(
+                "4002",
+                price_usd=102000.0,
+                area_m2=60.0,
+                district="საბურთალო",
+                phone_number="+995 591 00 00 02",
+            )
         )
 
         report = run_xray_on_db(self.db, "https://www.myhome.ge/ka/pr/4001/iyideba-bina/")
@@ -230,8 +243,12 @@ class TestXRayEngine(unittest.TestCase):
             phone_number="+995 599 55 44 33",
         )
         # Broker also has 3 other listings in DB under phone 577 99 88 77
-        b1 = _make_listing("601", area_m2=45.0, district="ვაკე", phone_number="+995 577 99 88 77", is_owner=False)
-        b2 = _make_listing("602", area_m2=90.0, district="ისანი", phone_number="+995 577 99 88 77", is_owner=False)
+        b1 = _make_listing(
+            "601", area_m2=45.0, district="ვაკე", phone_number="+995 577 99 88 77", is_owner=False
+        )
+        b2 = _make_listing(
+            "602", area_m2=90.0, district="ისანი", phone_number="+995 577 99 88 77", is_owner=False
+        )
         self.db.save_listings_batch([owner_listing, b1, b2])
 
         # User copies Facebook post text from a broker asking $83,000 with phone 577998877
@@ -560,9 +577,7 @@ class TestXRayEngine(unittest.TestCase):
         self.assertIn("✅ რეალური მესაკუთრე (Owner)", report)
 
     def test_phoneless_fb_post_with_no_match_reports_missing_phone_honestly(self):
-        fb_post_no_phone = (
-            "იყიდება ბინა ვარკეთილში, 64 კვ.მ, მე-9 სართული, 3 ოთახი, ფასი 71000$"
-        )
+        fb_post_no_phone = "იყიდება ბინა ვარკეთილში, 64 კვ.მ, მე-9 სართული, 3 ოთახი, ფასი 71000$"
         report = run_xray_on_db(self.db, fb_post_no_phone)
         self.assertIsNotNone(report)
         self.assertNotIn("ბაზაში ფიქსირდება 1 განცხადება", report)
@@ -687,7 +702,9 @@ class TestXRayEngine(unittest.TestCase):
             "soft-smoke-33e0",
         )
         self.assertEqual(
-            extract_worker_name("custom-worker", "https://soft-smoke-33e0.iashvilisandro7.workers.dev"),
+            extract_worker_name(
+                "custom-worker", "https://soft-smoke-33e0.iashvilisandro7.workers.dev"
+            ),
             "custom-worker",
         )
 
@@ -696,8 +713,17 @@ class TestXRayEngine(unittest.TestCase):
             "success": True,
             "result": {
                 "bindings": [
-                    {"name": "USERS_KV", "type": "kv_namespace", "namespace_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90"},
-                    {"name": "DB", "type": "d1", "id": "11112222-3333-4444-5555-666677778888", "database_name": "real-estate-db"},
+                    {
+                        "name": "USERS_KV",
+                        "type": "kv_namespace",
+                        "namespace_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+                    },
+                    {
+                        "name": "DB",
+                        "type": "d1",
+                        "id": "11112222-3333-4444-5555-666677778888",
+                        "database_name": "real-estate-db",
+                    },
                     {"name": "TELEGRAM_BOT_TOKEN", "type": "secret_text"},
                 ]
             },
@@ -713,7 +739,9 @@ class TestXRayEngine(unittest.TestCase):
         with self.assertRaises(ValueError):
             render_wrangler_toml("soft-smoke-33e0", "a1b2c3d4e5f60718293a4b5c6d7e8f90", "")
         with self.assertRaises(ValueError):
-            render_wrangler_toml("soft-smoke-33e0", "YOUR_KV_NAMESPACE_ID", "11112222-3333-4444-5555-666677778888")
+            render_wrangler_toml(
+                "soft-smoke-33e0", "YOUR_KV_NAMESPACE_ID", "11112222-3333-4444-5555-666677778888"
+            )
 
         # 4. Safe TOML generation preserves vars & bindings
         toml_text = render_wrangler_toml(
@@ -800,6 +828,210 @@ class TestXRayEngine(unittest.TestCase):
         # 3. Worker exports scheduled() handler to trigger GitHub workflow_dispatch when configured
         self.assertIn("async scheduled(", worker_src)
         self.assertIn("dispatches", worker_src)
+
+
+# Correct values out of 100 posts (price: out of the USD-priced posts) on the golden set.
+# A ratchet: raise a number when the parser improves, never lower it.
+# Keep in sync with GOLDEN_BASELINE in tests/js/xray_worker.test.mjs.
+GOLDEN_BASELINE = {
+    "kind": 93,
+    "area_m2": 95,
+    "floor": 95,
+    "rooms": 98,
+    "bedrooms": 88,
+    "total_floors": 98,
+    "district": 70,
+    "phone9": 100,
+    "price_usd": 26,
+}
+
+# Incident 2026-11-06 (docs/incidents/2026-11-06-xray-false-duplicate.md), FB text reconstructed.
+INCIDENT_FB = (
+    "იყიდება ქალაქური პროექტის ბინა თემქაზე, 3 მ/რ, 4 კვარტალი. 62 კვ.მ, 1 სართული 8 სართულიანი კორპუსის. "
+    "ერთი საძინებელი, მისაღები და ლოჯი. ფასი 79 000$ ტელ: 599 90 90 01"
+)
+
+
+def _incident_nadzaladevi_listing() -> PropertyListing:
+    return _make_listing(
+        "26524985",
+        price_usd=92000.0,
+        area_m2=63.0,
+        district="ნაძალადევი",
+        floor="1",
+        rooms=4,
+        phone_number="+995 555 00 00 02",
+        author_id="a1",
+        author_listings_count=2,
+    ).model_copy(update={"street": "ზედაზნის ქ. 6", "total_floors": 12, "bedrooms": 3})
+
+
+class TestXRayFalseDuplicateIncident(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db = DatabaseEngine(
+            db_path=os.path.join(self.temp_dir.name, "test_xray_incident.db"), use_d1=False
+        )
+        self.db.init_db()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_golden_fb_posts_parser_accuracy_never_drops_below_baseline(self):
+        import json
+
+        fixture = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "fixtures", "xray_fb_posts.json"
+        )
+        with open(fixture, encoding="utf-8") as f:
+            posts = json.load(f)
+
+        def norm(v):
+            return None if v in (None, "") else v
+
+        def same(got, want):
+            got, want = norm(got), norm(want)
+            if got is None or want is None:
+                return got is want
+            if isinstance(want, (int, float)) and not isinstance(want, bool):
+                return float(got) == float(want)
+            return str(got) == str(want)
+
+        correct: dict = {}
+        for post in posts:
+            e = post["expected"] or {}
+            r = parse_xray_input(post["text"]) or {}
+            pairs = {
+                "kind": (r.get("kind"), e.get("xray_kind")),
+                "area_m2": (r.get("area_m2"), e.get("area_m2")),
+                "floor": (r.get("floor"), e.get("floor")),
+                "rooms": (r.get("rooms"), e.get("rooms")),
+                "bedrooms": (r.get("bedrooms"), e.get("bedrooms")),
+                "total_floors": (r.get("total_floors"), e.get("total_floors")),
+                "district": (r.get("district"), e.get("district")),
+                "phone9": (r.get("phone_9"), e.get("phone9")),
+            }
+            if e.get("currency") == "USD":
+                pairs["price_usd"] = (r.get("price_usd"), e.get("price"))
+            for field, (got, want) in pairs.items():
+                if same(got, want):
+                    correct[field] = correct.get(field, 0) + 1
+        for field, minimum in GOLDEN_BASELINE.items():
+            self.assertGreaterEqual(correct.get(field, 0), minimum, field)
+
+    def test_incident_temqa_post_does_not_match_4_room_nadzaladevi_flat(self):
+        self.db.save_listings_batch([_incident_nadzaladevi_listing()])
+        report = run_xray_on_db(self.db, INCIDENT_FB)
+        self.assertIsNotNone(report)
+        self.assertNotIn("26524985", report)
+        self.assertIn("დუბლიკატი სხვა პორტალზე არ იძებნება", report)
+
+    def test_incident_post_still_finds_its_real_duplicate(self):
+        same_flat = _make_listing(
+            "777",
+            price_usd=81000.0,
+            area_m2=62.0,
+            district="ნაძალადევი",
+            floor="1/8",
+            rooms=2,
+            phone_number="+995 599 77 77 77",
+        ).model_copy(update={"subdistrict": "თემქა", "total_floors": 8, "bedrooms": 1})
+        self.db.save_listings_batch([_incident_nadzaladevi_listing(), same_flat])
+        report = run_xray_on_db(self.db, INCIDENT_FB)
+        self.assertIn("/pr/777/", report)
+        self.assertNotIn("26524985", report)
+
+    def test_matcher_area_and_floor_alone_are_not_enough(self):
+        from core.xray import _candidate_matches_target
+
+        target = {"district": "თემქა", "area_m2": 62, "floor": "1", "rooms": 0, "price_usd": 79000}
+        cand = {
+            "district": "ნაძალადევი",
+            "area_m2": 62,
+            "floor": "1",
+            "rooms": None,
+            "price_usd": 79000,
+        }
+        self.assertFalse(_candidate_matches_target(target, cand))
+
+    def test_matcher_known_layout_or_height_conflicts_reject(self):
+        from core.xray import _candidate_matches_target
+
+        base = {"district": "საბურთალო", "area_m2": 60, "floor": "7"}
+        self.assertFalse(_candidate_matches_target({**base, "bedrooms": 1}, {**base, "rooms": 4}))
+        self.assertFalse(
+            _candidate_matches_target(
+                {**base, "rooms": 3, "total_floors": 8}, {**base, "rooms": 3, "floor": "7/12"}
+            )
+        )
+
+    def test_matcher_corroborated_duplicates_still_match(self):
+        from core.xray import _candidate_matches_target
+
+        base = {"area_m2": 60, "floor": "7"}
+        self.assertTrue(
+            _candidate_matches_target(
+                {**base, "district": "ნუცუბიძე", "rooms": 3},
+                {**base, "district": "საბურთალო", "rooms": 3},
+            )
+        )
+        self.assertTrue(
+            _candidate_matches_target(
+                {**base, "district": "საბურთალო", "bedrooms": 2},
+                {**base, "district": "საბურთალო", "rooms": 3},
+            )
+        )
+        self.assertTrue(
+            _candidate_matches_target(
+                {**base, "district": "თემქა"},
+                {**base, "district": "ნაძალადევი", "subdistrict": "თემქა"},
+            )
+        )
+        self.assertTrue(
+            _candidate_matches_target(
+                {**base, "district": "საბურთალო", "rooms": 3, "total_floors": 12},
+                {**base, "district": "საბურთალო", "rooms": 3, "total_floors": 13},
+            )
+        )
+
+    def test_parser_reads_bedrooms_and_building_height(self):
+        cases = [
+            ("2 საძინებელი, 65 კვ.მ", {"bedrooms": 2}),
+            ("ორი ნათელი საძინებლით, 65 კვ.მ", {"bedrooms": 2}),
+            ("ერთი საძინებლით, 45 კვ.მ", {"bedrooms": 1}),
+            ("65 კვ.მ, სართული: 7/25", {"floor": "7", "total_floors": 25}),
+            ("65 კვ.მ, 1-ლი სართული 5-სართულიან კორპუსში", {"floor": "1", "total_floors": 5}),
+            ("65 კვ.მ, 2-ე სართული (9) სართულიანია", {"floor": "2", "total_floors": 9}),
+            ("65 კვ.მ, 8-სართულიანი კორპუსის მე-6 სართული", {"floor": "6", "total_floors": 8}),
+        ]
+        for text, want in cases:
+            got = parse_xray_input(f"იყიდება ბინა საბურთალოზე {text}") or {}
+            for field, value in want.items():
+                self.assertEqual(got.get(field), value, f"{field} in {text!r}")
+
+    def test_merge_live_answer_replaces_stored_and_full_phone_replaces_masked(self):
+        from core.xray import _merge_live_into_row
+
+        healed = _merge_live_into_row(
+            {"is_owner": 0, "user_type": "agent", "phone_number": "555000***"},
+            {"is_owner": 1, "user_type": "physical", "phone_number": "+995 555 00 00 02"},
+        )
+        self.assertEqual(healed["is_owner"], 1)
+        self.assertEqual(healed["user_type"], "physical")
+        self.assertEqual(healed["phone_number"], "+995 555 00 00 02")
+
+        agent = _merge_live_into_row(
+            {"is_owner": 1, "user_type": "physical"}, {"is_owner": 0, "user_type": "agent"}
+        )
+        self.assertEqual(agent["is_owner"], 0)
+        self.assertEqual(agent["user_type"], "agent")
+
+        unknown = _merge_live_into_row(
+            {"is_owner": 0, "phone_number": "+995 555 00 00 02"},
+            {"is_owner": None, "phone_number": "555000***"},
+        )
+        self.assertEqual(unknown["is_owner"], 0)
+        self.assertEqual(unknown["phone_number"], "+995 555 00 00 02")
 
 
 if __name__ == "__main__":

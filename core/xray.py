@@ -149,9 +149,13 @@ def _expand_district_aliases(district: Optional[str]) -> List[str]:
 
 
 def _format_owner_badge(is_owner: Any) -> str:
-    if is_owner is True or (isinstance(is_owner, int) and not isinstance(is_owner, bool) and is_owner == 1):
+    if is_owner is True or (
+        isinstance(is_owner, int) and not isinstance(is_owner, bool) and is_owner == 1
+    ):
         return "მესაკუთრე ✅"
-    if is_owner is False or (isinstance(is_owner, int) and not isinstance(is_owner, bool) and is_owner == 0):
+    if is_owner is False or (
+        isinstance(is_owner, int) and not isinstance(is_owner, bool) and is_owner == 0
+    ):
         return "სააგენტო 🕵️‍♂️"
     return "გადაუმოწმებელი ⚠️"
 
@@ -224,7 +228,9 @@ def _extract_fb_attributes(text: str) -> Dict[str, Any]:
         else:
             floor = floor_match.group(1) or floor_match.group(3) or floor_match.group(4)
     else:
-        for sm in re.finditer(r"(?<![\d/])(?<!\d[.,])(\d{1,2})[ \t]*/[ \t]*(\d{1,2})(?![\d/]|[.,]\d)", text):
+        for sm in re.finditer(
+            r"(?<![\d/])(?<!\d[.,])(\d{1,2})[ \t]*/[ \t]*(\d{1,2})(?![\d/]|[.,]\d)", text
+        ):
             f_val, total_val = int(sm.group(1)), int(sm.group(2))
             before = text[max(0, sm.start() - 3) : sm.start()].lower()
             after = text[sm.end() : sm.end() + 8].lower()
@@ -251,6 +257,34 @@ def _extract_fb_attributes(text: str) -> Dict[str, Any]:
         if rooms_word_match:
             rooms_word_map = {"ერთ": 1, "ორ": 2, "სამ": 3, "ოთხ": 4, "ხუთ": 5}
             rooms = rooms_word_map[rooms_word_match.group(1).lower()]
+
+    # Bedrooms: "2 საძინებელი", "ორი ნათელი საძინებლით" (one word may sit in between)
+    bedrooms: Optional[int] = None
+    bedrooms_match = re.search(
+        r"(?<![\d\u10A0-\u10FF])([1-9]|ერთ|ორ|სამ|ოთხ|ხუთ)ი?(?:[ \t\-]+[\u10A0-\u10FF]+)?[ \t\-]*საძინებ",
+        text,
+        re.IGNORECASE,
+    )
+    if bedrooms_match:
+        bedrooms_word_map = {"ერთ": 1, "ორ": 2, "სამ": 3, "ოთხ": 4, "ხუთ": 5}
+        word = bedrooms_match.group(1).lower()
+        bedrooms = bedrooms_word_map.get(word) or int(word)
+
+    # Building height: "7/25" (only when 7 is the parsed floor), "5-სართულიან", "(9) სართულიანია"
+    total_floors: Optional[int] = None
+    if floor:
+        for st in re.finditer(r"(?<![\d/])([1-9]\d?)[ \t]*/[ \t]*(\d{1,2})(?![\d/])", text):
+            if st.group(1) == floor:
+                total_floors = int(st.group(2))
+                break
+    if total_floors is None:
+        height_match = re.search(r"(?<!\d)(?:(\d{1,2})|\((\d{1,2})\))[ \t]*-?[ \t]*სართულიან", text)
+        if height_match:
+            total_floors = int(height_match.group(1) or height_match.group(2))
+    if total_floors is not None and (
+        total_floors < 2 or total_floors > 40 or (floor and total_floors < int(floor))
+    ):
+        total_floors = None
 
     # Price USD: e.g. "85000$", "$85,000", "85 000 $", "ფასი 85000"
     price_match = re.search(
@@ -281,6 +315,8 @@ def _extract_fb_attributes(text: str) -> Dict[str, Any]:
         "area_m2": area_m2,
         "floor": floor,
         "rooms": rooms,
+        "bedrooms": bedrooms,
+        "total_floors": total_floors,
         "price_usd": price_usd,
         "district": district,
     }
@@ -398,7 +434,6 @@ def evaluate_broker_verdict(
         }
 
     # Count distinct apartments by (district, round(area_m2 / 2))
-    apt_keys = set()
     max_author_count = 0
     any_non_owner = False
     any_agent_type = False
@@ -417,9 +452,13 @@ def evaluate_broker_verdict(
     def _inspect_row(r: Dict[str, Any]) -> None:
         nonlocal any_non_owner, any_agent_type, any_verified_owner, max_author_count
         is_own = r.get("is_owner")
-        if is_own is False or (isinstance(is_own, int) and not isinstance(is_own, bool) and is_own == 0):
+        if is_own is False or (
+            isinstance(is_own, int) and not isinstance(is_own, bool) and is_own == 0
+        ):
             any_non_owner = True
-        elif is_own is True or (isinstance(is_own, int) and not isinstance(is_own, bool) and is_own == 1):
+        elif is_own is True or (
+            isinstance(is_own, int) and not isinstance(is_own, bool) and is_own == 1
+        ):
             any_verified_owner = True
         ut = str(r.get("user_type") or "").lower()
         if any(tok in ut for tok in agent_tokens):
@@ -461,9 +500,7 @@ def evaluate_broker_verdict(
                 or r_dist in c["aliases"]
                 or c["district"] in r_aliases
             )
-            area_compat = (
-                r_area > 0 and c["area_m2"] > 0 and abs(r_area - c["area_m2"]) <= 2.0
-            )
+            area_compat = r_area > 0 and c["area_m2"] > 0 and abs(r_area - c["area_m2"]) <= 2.0
             floor_compat = not r_floor or not c["floor"] or r_floor == c["floor"]
             rooms_compat = r_rooms <= 0 or c["rooms"] <= 0 or r_rooms == c["rooms"]
             if dist_compat and area_compat and floor_compat and rooms_compat:
@@ -485,17 +522,14 @@ def evaluate_broker_verdict(
     unique_apartments = len(clusters)
     total_listings = max(len(all_rows), max_author_count, unique_apartments)
 
-    is_broker = (
-        any_non_owner
-        or any_agent_type
-        or max_author_count >= 3
-        or unique_apartments >= 2
-    )
+    is_broker = any_non_owner or any_agent_type or max_author_count >= 3 or unique_apartments >= 2
 
     if is_broker:
         reasons = []
         if unique_apartments >= 2 or len(all_rows) >= 2:
-            reasons.append(f"ბაზაში ამ ნომრით/ავტორით იძებნება <b>{len(all_rows)} განცხადება</b> ({unique_apartments} სხვადასხვა ბინა)")
+            reasons.append(
+                f"ბაზაში ამ ნომრით/ავტორით იძებნება <b>{len(all_rows)} განცხადება</b> ({unique_apartments} სხვადასხვა ბინა)"
+            )
         elif max_author_count >= 3:
             reasons.append(f"პორტალზე ავტორს უფიქსირდება <b>{max_author_count} განცხადება</b>")
         if any_agent_type or any_non_owner:
@@ -538,24 +572,72 @@ def _floors_match(target_floor: Any, cand_floor: Any) -> bool:
     return tf == cf
 
 
-def _rooms_match(target_rooms: Any, cand_rooms: Any) -> bool:
+def _positive_int(value: Any) -> int:
     try:
-        tr = int(target_rooms) if target_rooms is not None else 0
-        cr = int(cand_rooms) if cand_rooms is not None else 0
+        n = int(value)
     except (ValueError, TypeError):
-        return True
-    if tr <= 0 or cr <= 0:
-        return True
-    return tr == cr
+        return 0
+    return n if n > 0 else 0
+
+
+# Field comparisons return "agree", "conflict", or "unknown" (a side is missing).
+# Unknown is never evidence for a match.
+def _compare_layout(target: Dict[str, Any], cand: Dict[str, Any]) -> str:
+    tr, cr = _positive_int(target.get("rooms")), _positive_int(cand.get("rooms"))
+    tb, cb = _positive_int(target.get("bedrooms")), _positive_int(cand.get("bedrooms"))
+    if tr and cr:
+        return "agree" if tr == cr else "conflict"
+    if tb and cb:
+        return "agree" if tb == cb else "conflict"
+    # Golden FB posts that state both: rooms = bedrooms + 1 (22 of 23) or + 2 (1 of 23).
+    r = tr or cr
+    b = cb if tr else tb
+    if r and b:
+        return "agree" if r - b in (1, 2) else "conflict"
+    return "unknown"
+
+
+def _total_floors_of(listing: Dict[str, Any]) -> int:
+    t = _positive_int(listing.get("total_floors"))
+    if t:
+        return t
+    m = re.search(r"/\s*(\d{1,2})", str(listing.get("floor") or ""))
+    return int(m.group(1)) if m else 0
+
+
+def _compare_total_floors(target: Dict[str, Any], cand: Dict[str, Any]) -> str:
+    a, b = _total_floors_of(target), _total_floors_of(cand)
+    if not a or not b:
+        return "unknown"
+    if a == b:
+        return "agree"
+    # Portals and posts may count a ground or attic floor differently.
+    return "unknown" if abs(a - b) == 1 else "conflict"
+
+
+def _compare_location(target: Dict[str, Any], cand: Dict[str, Any]) -> str:
+    # A row filed under the parent district is not evidence of the child district;
+    # only the child named in its subdistrict or street is.
+    d = str(target.get("district") or "").strip()
+    if not d:
+        return "unknown"
+    stems = [stem for stem, canonical in DISTRICT_KEYWORDS if canonical == d] + [d]
+    hay = f"{cand.get('subdistrict') or ''} {cand.get('street') or ''}".lower()
+    return "agree" if any(s in hay for s in stems) else "unknown"
 
 
 def _candidate_matches_target(target: Dict[str, Any], cand: Dict[str, Any]) -> bool:
-    if not _rooms_match(target.get("rooms"), cand.get("rooms")):
+    layout = _compare_layout(target, cand)
+    height = _compare_total_floors(target, cand)
+    if "conflict" in (layout, height):
         return False
     tf = _clean_floor(target.get("floor"))
     cf = _clean_floor(cand.get("floor"))
     if tf:
-        return cf == tf
+        if cf != tf:
+            return False
+        # Floor and area alone fit many unrelated flats: require one more agreeing fact.
+        return "agree" in (layout, height, _compare_location(target, cand))
     # When floor is omitted on target (e.g. in an FB post), require explicit matching rooms
     # AND price within ±10% so unrelated apartments on other floors do not match.
     try:
@@ -570,9 +652,7 @@ def _candidate_matches_target(target: Dict[str, Any], cand: Dict[str, Any]) -> b
     return False
 
 
-def find_exact_duplicates(
-    conn: sqlite3.Connection, target: Dict[str, Any]
-) -> List[Dict[str, Any]]:
+def find_exact_duplicates(conn: sqlite3.Connection, target: Dict[str, Any]) -> List[Dict[str, Any]]:
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     target_id = target.get("id") or ""
@@ -717,21 +797,21 @@ def _query_by_phone_or_author(
     return list(seen.values())
 
 
-def _merge_live_into_row(
-    row: Dict[str, Any], live: Optional[Dict[str, Any]]
-) -> Dict[str, Any]:
+def _merge_live_into_row(row: Dict[str, Any], live: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not live:
         return row
     merged = dict(row)
+    # The live portal answer is the freshest fact, so it replaces the stored flag both ways.
     live_own = live.get("is_owner")
-    if live_own is False or (isinstance(live_own, int) and not isinstance(live_own, bool) and live_own == 0):
-        merged["is_owner"] = 0
-    elif merged.get("is_owner") is None and live_own is not None:
-        merged["is_owner"] = 1 if live_own else 0
-    if live.get("user_type") and (merged.get("is_owner") == 0 or not merged.get("user_type")):
+    if live_own is not None:
+        merged["is_owner"] = 0 if live_own in (False, 0, "0") else 1
+    if live.get("user_type") and (live_own is not None or not merged.get("user_type")):
         merged["user_type"] = live["user_type"]
-    if not merged.get("phone_number") and live.get("phone_number"):
-        merged["phone_number"] = live["phone_number"]
+    stored_phone, live_phone = merged.get("phone_number"), live.get("phone_number")
+    if live_phone and (
+        not stored_phone or ("*" in str(stored_phone) and "*" not in str(live_phone))
+    ):
+        merged["phone_number"] = live_phone
     if not merged.get("author_id") and live.get("author_id"):
         merged["author_id"] = str(live["author_id"])
     if live.get("author_listings_count") is not None:
@@ -803,7 +883,7 @@ def run_xray_on_db(
                 src = "MyHome" if r.get("source") == "myhome" else "SS.ge"
                 url = r.get("url") or "#"
                 lines.append(
-                    f"• <a href=\"{url}\">{src}</a> — <b>${p_usd:,}</b> | {area:g} მ² | {dist}"
+                    f'• <a href="{url}">{src}</a> — <b>${p_usd:,}</b> | {area:g} მ² | {dist}'
                 )
 
             dup_by_id: Dict[str, tuple[Dict[str, Any], float]] = {}
@@ -838,7 +918,7 @@ def run_xray_on_db(
                         else:
                             diff_str = " (იგივე ფასი)"
                     lines.append(
-                        f"• <a href=\"{dup_url}\">{dup_src}</a> — <b>${int(dup_price):,}</b>{diff_str} | {dup_owner}{phone_part}"
+                        f'• <a href="{dup_url}">{dup_src}</a> — <b>${int(dup_price):,}</b>{diff_str} | {dup_owner}{phone_part}'
                     )
 
             return "\n".join(lines)
@@ -863,6 +943,8 @@ def run_xray_on_db(
                 "district": parsed.get("district") or "",
                 "floor": parsed.get("floor") or "",
                 "rooms": parsed.get("rooms") or 0,
+                "bedrooms": parsed.get("bedrooms"),
+                "total_floors": parsed.get("total_floors"),
                 "phone_number": parsed.get("formatted_phone"),
                 "is_owner": None,
                 "user_type": None,
@@ -878,7 +960,9 @@ def run_xray_on_db(
         if kind == "fb_text" and live_details and duplicates:
             duplicates[0] = _merge_live_into_row(duplicates[0], live_details)
 
-        phone_9 = parsed.get("phone_9") or _extract_9digit_phone(str(target.get("phone_number") or ""))
+        phone_9 = parsed.get("phone_9") or _extract_9digit_phone(
+            str(target.get("phone_number") or "")
+        )
         masked_phone = (
             parsed.get("masked_phone")
             or (f"{phone_9[:6]}***" if phone_9 else None)
@@ -890,9 +974,8 @@ def run_xray_on_db(
         if kind == "fb_text" and not phone_9 and not masked_phone and duplicates:
             verdict_target = duplicates[0]
             phone_9 = _extract_9digit_phone(str(verdict_target.get("phone_number") or ""))
-            masked_phone = (
-                (f"{phone_9[:6]}***" if phone_9 else None)
-                or _extract_masked_phone(str(verdict_target.get("phone_number") or ""))
+            masked_phone = (f"{phone_9[:6]}***" if phone_9 else None) or _extract_masked_phone(
+                str(verdict_target.get("phone_number") or "")
             )
             author_id = verdict_target.get("author_id")
 
@@ -930,7 +1013,10 @@ def run_xray_on_db(
         # Price history section
         if curr_price > 0:
             lines.append("")
-            lines.append(f"💰 <b>მიმდინარე ფასი:</b> ${int(curr_price):,}" + (f" (${price_m2:,}/მ²)" if price_m2 else ""))
+            lines.append(
+                f"💰 <b>მიმდინარე ფასი:</b> ${int(curr_price):,}"
+                + (f" (${price_m2:,}/მ²)" if price_m2 else "")
+            )
             if init_price > 0:
                 lines.append(f"📉 პირვანდელი ფასი: <b>${int(init_price):,}</b>")
                 diff = round(curr_price - init_price)
@@ -973,7 +1059,7 @@ def run_xray_on_db(
                     else:
                         diff_str = " (იგივე ფასი)"
                 lines.append(
-                    f"• <a href=\"{dup_url}\">{dup_src}</a> — <b>${int(dup_price):,}</b>{diff_str} | {dup_owner}{phone_part}"
+                    f'• <a href="{dup_url}">{dup_src}</a> — <b>${int(dup_price):,}</b>{diff_str} | {dup_owner}{phone_part}'
                 )
         else:
             lines.append("🎯 <b>იგივე ბინა სხვაგან:</b> დუბლიკატი სხვა პორტალზე არ იძებნება.")

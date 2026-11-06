@@ -80,6 +80,26 @@ MyHome publishes its own price badge in the page's `__NEXT_DATA__` state. A medi
 
 **Do:** when a filter rule changes, change both paths and say which defaults the test uses. When the KV subscriber call fails, the cached subscribers on disk (`core/user_sync.py`) stand in, so a stale cache can also explain a wrong alert. Evidence: `docs/production-fixes.md` section 5.2; `core/filters.py`, `core/models.py`, `config/filters.json`.
 
+## X-Ray duplicate matching
+
+### A missing field is not a matching field
+
+The X-Ray matched a one-bedroom Temqa flat to a 4-room new build because an unknown room count matched any room count and a matching floor ended the check. The less the parser understood, the more listings matched. Most Facebook posts never say "ოთახი" (28 of the 100 golden posts do), so this was the normal case, not an edge case.
+
+**Do:** compare each field as agree, conflict, or unknown. Let unknown add nothing, let a known conflict reject, and never let one weak field (floor, district) decide alone. Measure parser changes with the golden set in `tests/fixtures/xray_fb_posts.json`. Evidence: `docs/production-fixes.md` section 5.5; `cloudflare/worker.js` (`workerCandidateMatchesTarget`).
+
+### The Python twin cannot catch JavaScript bugs
+
+`core/xray.py` mirrors the Worker's X-Ray and has the Python tests. Production runs `cloudflare/worker.js`, where `Boolean({})` is true. An empty TNET `broker` object made a verified owner an agency, and the Python tests stayed green because `bool({})` is false. Test assertions that only check that a string exists in `worker.js` prove nothing about behaviour.
+
+**Do:** test Worker behaviour in `tests/js/` (the real file in `node:vm`), and change the twin in the same commit. Evidence: `docs/production-fixes.md` section 5.5.
+
+### A masked value is a value
+
+A stored masked phone (`555000***` shape) counted as "has a phone", so the full number from the portal never replaced it and the duplicate was never re-fetched. A merge that only lets one direction win (a live `0` replaced an owner, a live `1` never replaced a `0`) keeps one bad write forever.
+
+**Do:** when merging fresh portal data into stored rows, rank values by quality (full over masked over none) and let the fresh portal answer win both ways. Evidence: `cloudflare/worker.js` (`mergeLiveIntoRow`, `enrichDuplicatesIfNeeded`).
+
 ## Documentation
 
 ### Numbers in prose rot faster than the code
