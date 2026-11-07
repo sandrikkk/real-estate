@@ -270,6 +270,15 @@ class TestXRayListingJob(unittest.TestCase):
         self.assertIsNone(self.saved())
         self.assertEqual(self.notified, [LISTING_JOB])
 
+    def test_empty_agency_objects_are_not_agent_evidence(self):
+        # Incident rule once held by the Worker's parseMyHomeStatementDetails: MyHome sends
+        # {} / [] / "" for an absent agency, and that must not turn an owner into an agent.
+        scraper = MyHomeScraper()
+        base = list_item(LISTING, user_type={"type": "physical"}, is_owner=True, comment="")
+        for empty in ({}, [], {"id": None}, {"name": ""}, ""):
+            st = {**base, "agency": empty, "broker": empty, "user_statements_count": 1}
+            self.assertEqual(xray_lookup.statement_details(scraper, st)["is_owner"], 1, repr(empty))
+
     def test_a_listing_job_keeps_the_phone_a_phone_job_stored(self):
         xray_lookup.save_live_listings(
             self.conn, PHONE, [xray_lookup.parse_myhome_list_item(list_item(LISTING))]

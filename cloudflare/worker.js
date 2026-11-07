@@ -1489,16 +1489,6 @@ function isMaskedPhone(phone) {
   return String(phone || "").includes("*");
 }
 
-// Portal payloads use {} / [] / "" for an absent agency, and {} and [] are truthy in JS.
-function hasRealValue(v) {
-  if (v === null || v === undefined) return false;
-  if (typeof v === "string") return v.trim().length > 0;
-  if (typeof v === "number") return v > 0;
-  if (typeof v === "boolean") return v;
-  if (typeof v === "object") return hasRealValue(v.id) || hasRealValue(v.name);
-  return false;
-}
-
 function mergeLiveIntoRow(row, live) {
   if (!live) return row;
   if (!row) return live;
@@ -1547,44 +1537,10 @@ async function persistLiveEnrichment(db, rowId, merged) {
   } catch (e) {}
 }
 
-function parseMyHomeStatementDetails(st, sourceId, pageUrl) {
-  const rawPhone = st.user_phone_number || st.phone_number || st.phoneNumber || "";
-  const phone9 = extract9DigitPhone(`${rawPhone} ${st.comment || st.description || ""}`);
-  const maskedPhone = phone9 ? null : extractMaskedPhone(rawPhone);
-  const ut = String(st.user_type?.type || st.user_type || "").toLowerCase();
-  const stmtCnt = Number(st.user_statements_count || st.statements_count || st.user?.statements_count || st.userApplicationCount || 0) || 0;
-  const isOwnerRaw = st.is_owner;
-  const isOwnerExplicitFalse = isOwnerRaw === false || isOwnerRaw === 0 || isOwnerRaw === "0";
-  const isOwnerExplicitTrue = isOwnerRaw === true || isOwnerRaw === 1 || isOwnerRaw === "1";
-  const hasAgencySignal =
-    hasRealValue(st.agency_name) || hasRealValue(st.agency_id) || hasRealValue(st.broker) || hasRealValue(st.agency);
-  const isBroker = Boolean(
-    isOwnerExplicitFalse ||
-    hasAgencySignal ||
-    ["agent", "agency", "broker", "developer", "company", "აგენტ", "მაკლერ", "სააგენტო"].some(k => ut.includes(k)) ||
-    stmtCnt >= 3
-  );
-  const isOwner = isBroker ? 0 : (isOwnerExplicitTrue || ut === "owner" ? 1 : null);
-  const rawUid = st.user_id || st.user?.id || st.agency_id || null;
-  return {
-    id: `myhome_${sourceId}`,
-    source: "myhome",
-    source_id: String(sourceId),
-    url: pageUrl || `https://www.myhome.ge/ka/pr/${sourceId}/`,
-    price_usd: Number(st.price?.[2]?.price_total || st.price?.["2"]?.price_total || st.price_usd || st.total_price || 0),
-    area_m2: Number(st.area || st.totalArea || 0),
-    floor: String(st.floor ?? ""),
-    rooms: Number(st.room_type_id || st.rooms || 0),
-    district: st.urban_name || st.district_name || st.address?.subdistrictTitle || st.address?.districtTitle || "",
-    is_owner: isOwner,
-    user_type: isBroker ? (ut && !["physical", "owner"].includes(ut) ? ut : "agent") : (ut || (isOwner === 1 ? "physical" : null)),
-    phone_number: phone9 ? formatGeorgianPhone(phone9) : (maskedPhone || null),
-    author_id: rawUid ? String(rawUid) : null,
-    author_listings_count: stmtCnt || null
-  };
-}
-
 async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
+  // MyHome answers the Worker with a Cloudflare challenge (403) and its API with 401, so only
+  // SS.ge is read live here; MyHome listings are read by the lookup job (ADR 0004).
+  if (source !== "ss_ge") return null;
   const headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -1592,27 +1548,6 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
   };
 
   try {
-    if (source === "myhome") {
-      const apiUrl = `https://api-statements.tnet.ge/v1/statements/${sourceId}?locale=ka`;
-      const res = await fetch(apiUrl, {
-        headers: {
-          ...headers,
-          "Accept": "application/json, text/plain, */*",
-          "X-Website-Key": "myhome",
-          "locale": "ka",
-          "Origin": "https://www.myhome.ge",
-          "Referer": "https://www.myhome.ge/"
-        }
-      });
-      if (res.ok) {
-        const json = await res.json();
-        const st = json?.data?.statement || json?.data || {};
-        if (st && (st.id || st.user_id || st.price || st.area || st.user_phone_number || st.phone_number)) {
-          return parseMyHomeStatementDetails(st, sourceId, rawUrl);
-        }
-      }
-    }
-
     if (source === "ss_ge") {
       try {
         const tokenRes = await fetch("https://home.ss.ge/api/refresh_access_token", {
@@ -1656,9 +1591,7 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
       }
     }
 
-    const pageUrl = rawUrl || (source === "myhome"
-      ? `https://www.myhome.ge/ka/pr/${sourceId}/`
-      : `https://home.ss.ge/ka/udzravi-qoneba/${sourceId}`);
+    const pageUrl = rawUrl || `https://home.ss.ge/ka/udzravi-qoneba/${sourceId}`;
     const res = await fetch(pageUrl, { headers });
     if (!res.ok) return null;
     const html = await res.text();
@@ -1679,11 +1612,7 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
     const st = dehydratedStmt || pp?.applicationData || pp?.statement || {};
     const agentInfo = pp?.initialAgentInfoData || {};
 
-    if (source === "ss_ge") {
-      return parseSsGeStatementDetails(st, agentInfo, html, sourceId, pageUrl);
-    }
-
-    return parseMyHomeStatementDetails(st, sourceId, pageUrl);
+    return parseSsGeStatementDetails(st, agentInfo, html, sourceId, pageUrl);
   } catch (e) {
     return null;
   }
