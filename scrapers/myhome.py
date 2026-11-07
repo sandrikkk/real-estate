@@ -4,6 +4,7 @@ import urllib.parse
 from typing import List, Optional, Dict, Any, Tuple
 from curl_cffi.requests import AsyncSession
 from config import settings
+from core.district_prices import parse_price_table
 from core.models import PropertyListing, SearchFilters
 from scrapers.base import BaseScraper, with_proxy_key
 
@@ -342,6 +343,45 @@ class MyHomeScraper(BaseScraper):
                     print(f"[MyHome.ge API Warning]: Status {response.status_code} for API query")
         except Exception as e:
             print(f"[MyHome.ge API Error]: {e}")
+        return None
+
+    def _build_district_prices_url(self, bedroom_type_id: Optional[int] = None) -> str:
+        # city_ids must use the array syntax (a bare city_ids=1 is a 422); 1 = Tbilisi
+        params = ["city_ids[]=1", "deal_type_id=1", "currency_id=2", "square_price=1"]
+        if bedroom_type_id:
+            params.append(f"bedroom_type_id={bedroom_type_id}")
+        return f"{self.API_BASE}/statistics/city-district-urban-prices?{'&'.join(params)}"
+
+    async def fetch_district_prices(
+        self, bedroom_type_id: Optional[int] = None
+    ) -> Optional[Dict[str, float]]:
+        """
+        MyHome's own average sale $/m² per Tbilisi district and urban, as {name: price}
+        (the table behind myhome.ge/binebis-pasebi). `bedroom_type_id` is 1, 2, 3 or 6
+        (studio); None gives the all-flats average. Returns None when MyHome has no answer.
+        """
+        url = self._build_district_prices_url(bedroom_type_id)
+        target_url = url
+        req_headers = dict(self.API_HEADERS)
+        timeout = self.timeout
+
+        if settings.CLOUDFLARE_PROXY_URL:
+            target_url = (
+                f"{settings.CLOUDFLARE_PROXY_URL.rstrip('/')}/?url={urllib.parse.quote_plus(url)}"
+            )
+            req_headers = with_proxy_key()
+            timeout = max(self.timeout, 30)
+
+        try:
+            async with AsyncSession(impersonate="chrome124") as session:
+                response = await session.get(
+                    target_url, headers=req_headers if req_headers else None, timeout=timeout
+                )
+                if response.status_code == 200:
+                    return parse_price_table(response.json())
+                print(f"[MyHome.ge Prices Warning]: Status {response.status_code} for price table")
+        except Exception as e:
+            print(f"[MyHome.ge Prices Error]: {e}")
         return None
 
     def _extract_listings_from_html(self, html_text: str) -> List[dict]:

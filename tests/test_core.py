@@ -1,11 +1,20 @@
+import json
 import unittest
 import os
 import tempfile
 from core.models import PropertyListing, SearchFilters
 from core.database import DatabaseEngine
 from core.analytics import MarketAnalytics
+from core.district_prices import parse_price_table
 from core.filters import ListingFilter
 from notifier.ntfy_notifier import NtfyNotifier
+
+
+def myhome_price_table():
+    """MyHome's real 2-bedroom price table (2026-10-07): the benchmark source for alerts."""
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "myhome_district_prices_bed2.json")
+    with open(path, encoding="utf-8") as f:
+        return parse_price_table(json.load(f))
 
 
 class TestCoreComponents(unittest.TestCase):
@@ -27,7 +36,7 @@ class TestCoreComponents(unittest.TestCase):
             area_m2=50,
             city="თბილისი",
             district="საბურთალო",
-            url="https://www.myhome.ge/ka/pr/12345"
+            url="https://www.myhome.ge/ka/pr/12345",
         )
         self.assertEqual(listing.price_per_m2, 1200.0)
         self.assertEqual(listing.id, "myhome_12345")
@@ -42,13 +51,13 @@ class TestCoreComponents(unittest.TestCase):
             area_m2=75,
             city="თბილისი",
             district="ვაკე",
-            url="https://home.ss.ge/ka/udzravi-qoneba/l/99999"
+            url="https://home.ss.ge/ka/udzravi-qoneba/l/99999",
         )
         self.assertFalse(self.db.is_seen("ss_ge_99999"))
         saved = self.db.save_listing(listing)
         self.assertTrue(saved)
         self.assertTrue(self.db.is_seen("ss_ge_99999"))
-        
+
         # Second save should be ignored (duplicate)
         duplicate_saved = self.db.save_listing(listing)
         self.assertFalse(duplicate_saved)
@@ -60,7 +69,7 @@ class TestCoreComponents(unittest.TestCase):
             area_min_m2=40,
             area_max_m2=100,
             target_districts=["საბურთალო", "ვაკე"],
-            stop_words=["დაგირავება", "იპოთეკური"]
+            stop_words=["დაგირავება", "იპოთეკური"],
         )
         engine = ListingFilter(filters)
 
@@ -73,7 +82,7 @@ class TestCoreComponents(unittest.TestCase):
             price_usd=75000,
             area_m2=60,
             district="საბურთალო",
-            url="http://example.com/1"
+            url="http://example.com/1",
         )
         self.assertTrue(engine.matches(valid_listing))
 
@@ -86,7 +95,7 @@ class TestCoreComponents(unittest.TestCase):
             price_usd=60000,
             area_m2=50,
             district="საბურთალო",
-            url="http://example.com/2"
+            url="http://example.com/2",
         )
         self.assertFalse(engine.matches(stop_listing))
 
@@ -101,23 +110,23 @@ class TestCoreComponents(unittest.TestCase):
             price_usd=60000,
             area_m2=50,
             rooms=2,
-            url="http://example.com/3"
+            url="http://example.com/3",
         )
         self.assertFalse(room_engine.matches(two_room_listing))
 
     def test_market_analytics_bargain_detection(self):
-        analytics = MarketAnalytics()
+        analytics = MarketAnalytics(price_tables={None: myhome_price_table()})
 
-        # Listing in Saburtalo with $1000/m² (benchmark $1650/m²) -> ~39% discount -> Bargain!
+        # Listing in Saburtalo with $1000/m² (MyHome's figure is $1577.81/m²) -> ~37% discount -> Bargain!
         cheap_listing = PropertyListing(
             id="test_bargain",
             source="ss_ge",
             source_id="101",
             title="იაფად საბურთალოზე",
             price_usd=60000,
-            area_m2=60, # $1000/m²
+            area_m2=60,  # $1000/m²
             district="საბურთალო",
-            url="http://example.com/bargain"
+            url="http://example.com/bargain",
         )
         evaluated = analytics.evaluate_listing(cheap_listing, discount_threshold_pct=15.0)
         self.assertTrue(evaluated.is_bargain)
@@ -137,7 +146,7 @@ class TestCoreComponents(unittest.TestCase):
                 area_m2=50,
                 rooms=2 if idx % 2 == 0 else 3,
                 district="დიდი დიღომი",
-                url=f"http://example.com/dig_{idx}"
+                url=f"http://example.com/dig_{idx}",
             )
             self.db.save_listing(listing)
 
@@ -168,7 +177,7 @@ class TestCoreComponents(unittest.TestCase):
             district="საბურთალო",
             street="ვაჟა-ფშაველას გამზ.",
             url="https://www.myhome.ge/ka/pr/555",
-            images=["https://example.com/photo.jpg"]
+            images=["https://example.com/photo.jpg"],
         )
         title = notifier.format_title(listing)
         body = notifier.format_body(listing)
@@ -176,23 +185,32 @@ class TestCoreComponents(unittest.TestCase):
         self.assertIn("80,000", body)
         self.assertIn("საბურთალო", body)
 
-
     def test_myhome_price_label_exact_mapping(self):
         analytics = MarketAnalytics()
         test_cases = [
             ({"display_label": "top_price"}, "დაბალი ფასი", 1),
             ({"display_label": "good_price"}, "საშუალოზე იაფი", 2),
             ({"display_label": "middle_price"}, "საშუალო ფასი", 3),
-            ({"display_label": "high_middle_price", "range_label": "high_middle_price_2"}, "საშუალოზე მაღალი", 4),
+            (
+                {"display_label": "high_middle_price", "range_label": "high_middle_price_2"},
+                "საშუალოზე მაღალი",
+                4,
+            ),
             ({"display_label": "high_price", "range_label": "high_price_1"}, "მაღალი ფასი", 5),
         ]
         for label, expected_name, expected_tier in test_cases:
-            l = PropertyListing(
-                id="t", source="myhome", source_id="1", title="t", price_usd=50000, area_m2=50, url="u"
+            listing = PropertyListing(
+                id="t",
+                source="myhome",
+                source_id="1",
+                title="t",
+                price_usd=50000,
+                area_m2=50,
+                url="u",
             )
-            analytics.compute_valuation_scale(l, label)
-            self.assertEqual(l.valuation_scale_label, expected_name)
-            self.assertEqual(l.valuation_scale_tier, expected_tier)
+            analytics.compute_valuation_scale(listing, label)
+            self.assertEqual(listing.valuation_scale_label, expected_name)
+            self.assertEqual(listing.valuation_scale_tier, expected_tier)
 
 
 if __name__ == "__main__":

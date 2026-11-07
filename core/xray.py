@@ -1,8 +1,9 @@
 import re
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from core.database import DatabaseEngine
+from core.district_prices import bedroom_type_for, lookup_price
 
 # Georgian district stem -> canonical district name used in `properties.district`
 DISTRICT_KEYWORDS: List[tuple[str, str]] = [
@@ -722,39 +723,31 @@ def find_exact_duplicates(conn: sqlite3.Connection, target: Dict[str, Any]) -> L
     return results
 
 
-def get_district_avg_m2(
-    conn: sqlite3.Connection, district: Optional[str]
-) -> Optional[Dict[str, Any]]:
-    if not district:
+def _as_int(value: Any) -> Optional[int]:
+    try:
+        return int(value) if value else None
+    except (TypeError, ValueError):
         return None
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT ROUND(AVG(price_per_m2)), COUNT(*)
-        FROM properties
-        WHERE district = ? AND price_per_m2 > 300 AND price_per_m2 < 6000
-        """,
-        (district,),
-    )
-    row = cur.fetchone()
-    if row and row[0] and int(row[1] or 0) >= 1:
-        return {"avg_m2": int(row[0]), "count": int(row[1])}
 
-    aliases = _expand_district_aliases(district)
-    if len(aliases) > 1:
-        placeholders = ", ".join("?" for _ in aliases)
-        cur.execute(
-            f"""
-            SELECT ROUND(AVG(price_per_m2)), COUNT(*)
-            FROM properties
-            WHERE district IN ({placeholders}) AND price_per_m2 > 300 AND price_per_m2 < 6000
-            """,
-            tuple(aliases),
-        )
-        row = cur.fetchone()
-        if row and row[0] and int(row[1] or 0) >= 1:
-            return {"avg_m2": int(row[0]), "count": int(row[1])}
-    return None
+
+def get_district_avg_m2(
+    target: Dict[str, Any],
+    price_table_provider: Optional[Callable[[Optional[int]], Optional[Dict[str, float]]]],
+) -> Optional[int]:
+    """MyHome's average $/m² for the target's district and bedroom count, or None.
+
+    `price_table_provider(bedroom_type_id)` returns MyHome's price table (see
+    core.district_prices.parse_price_table). Nothing falls back to our own rows: the bot only
+    sees the listings that passed its filters, which is not the market.
+    """
+    district = target.get("district")
+    if not district or price_table_provider is None:
+        return None
+    bedroom_type_id = bedroom_type_for(
+        _as_int(target.get("rooms")), _as_int(target.get("bedrooms"))
+    )
+    price = lookup_price(price_table_provider(bedroom_type_id), _expand_district_aliases(district))
+    return round(price) if price else None
 
 
 def _query_by_phone_or_author(
@@ -825,7 +818,10 @@ def _merge_live_into_row(row: Dict[str, Any], live: Optional[Dict[str, Any]]) ->
 
 
 def run_xray_on_db(
-    db: DatabaseEngine, text: str, live_details: Optional[Dict[str, Any]] = None
+    db: DatabaseEngine,
+    text: str,
+    live_details: Optional[Dict[str, Any]] = None,
+    price_table_provider: Optional[Callable[[Optional[int]], Optional[Dict[str, float]]]] = None,
 ) -> Optional[str]:
     parsed = parse_xray_input(text)
     if not parsed:
@@ -987,7 +983,7 @@ def run_xray_on_db(
             masked_phone=masked_phone,
         )
         verdict = evaluate_broker_verdict(verdict_target, related)
-        bench = get_district_avg_m2(conn, target.get("district"))
+        avg_m2 = get_district_avg_m2(target, price_table_provider)
 
         curr_price = float(target.get("price_usd") or 0.0)
         init_price = float(target.get("initial_price_usd") or curr_price)
@@ -1030,8 +1026,7 @@ def run_xray_on_db(
                     lines.append("➖ ფასი არ შეცვლილა (პირვანდელი ფასია)")
 
         # District market benchmark
-        if bench and price_m2 > 0:
-            avg_m2 = bench["avg_m2"]
+        if avg_m2 and price_m2 > 0:
             diff_pct = round((price_m2 - avg_m2) / avg_m2 * 100)
             sign = f"+{diff_pct}%" if diff_pct > 0 else f"{diff_pct}%"
             lines.append(

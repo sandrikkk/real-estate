@@ -1,29 +1,8 @@
-from typing import Optional, Dict
+from typing import Awaitable, Callable, Dict, Optional
 from core.models import PropertyListing, DistrictPriceStats
 from core.database import DatabaseEngine
-
-
-# Prior baseline median $/m² benchmarks in Tbilisi (2025/2026 data)
-TBILISI_DISTRICT_BENCHMARKS: Dict[str, float] = {
-    "მთაწმინდა": 2300.0,
-    "ვაკე": 2200.0,
-    "საბურთალო": 1650.0,
-    "ბაგები": 1550.0,
-    "კრწანისი": 1450.0,
-    "ორთაჭალა": 1400.0,
-    "ჩუღურეთი": 1350.0,
-    "დიდუბე": 1300.0,
-    "დიდი დიღომი": 1250.0,
-    "დიღომი": 1200.0,
-    "ისანი": 1150.0,
-    "სანზონა": 1100.0,
-    "ნაძალადევი": 1050.0,
-    "თემქა": 1000.0,
-    "სამგორი": 980.0,
-    "გლდანი": 950.0,
-    "ვარკეთილი": 950.0,
-    "მუხიანი": 930.0,
-}
+from core.district_prices import bedroom_type_for, lookup_price
+from core.xray import _expand_district_aliases
 
 
 # Official 5-tier valuation scale mapping (as seen on MyHome.ge)
@@ -38,26 +17,37 @@ MYHOME_SCALE_MAPPING = {
 
 
 class MarketAnalytics:
-    def __init__(self, fallback_default_avg_m2: float = 1250.0):
-        self.default_avg_m2 = fallback_default_avg_m2
+    def __init__(
+        self,
+        fetch_price_table: Optional[
+            Callable[[Optional[int]], Awaitable[Optional[Dict[str, float]]]]
+        ] = None,
+        price_tables: Optional[Dict[Optional[int], Optional[Dict[str, float]]]] = None,
+    ):
+        # fetch_price_table(bedroom_type_id) -> MyHome's {area: $/m²} table, or None.
+        self._fetch_price_table = fetch_price_table
+        # Tables already asked for this run, by bedroom_type_id (None = all flats). A None
+        # table means MyHome had no answer; it is remembered so a dead API is tried once.
+        # `price_tables` seeds it (offline use).
+        self._price_tables: Dict[Optional[int], Optional[Dict[str, float]]] = dict(
+            price_tables or {}
+        )
 
-    def get_district_benchmark(self, district: Optional[str], rooms: Optional[int] = None) -> float:
-        """
-        Retrieves real-world market $/m² benchmark for the district
-        based on calibrated Tbilisi real estate market indices (TBC Capital / Galt & Taggart / MyHome).
-        """
-        if district:
-            # Check matching district name in established market benchmarks
-            for key, val in TBILISI_DISTRICT_BENCHMARKS.items():
-                if key in district:
-                    # Adjust for room count (Studios/1-rooms have higher $/m², 3+ rooms slightly lower)
-                    if rooms == 1:
-                        return round(val * 1.08, 1)
-                    elif rooms and rooms >= 3:
-                        return round(val * 0.94, 1)
-                    return val
+    async def load_price_table(self, listing: PropertyListing) -> None:
+        """Fetches, once per run, the MyHome table evaluate_listing compares this listing to."""
+        bedroom_type_id = bedroom_type_for(listing.rooms, listing.bedrooms)
+        if bedroom_type_id not in self._price_tables and self._fetch_price_table is not None:
+            self._price_tables[bedroom_type_id] = await self._fetch_price_table(bedroom_type_id)
 
-        return self.default_avg_m2
+    def get_district_benchmark(
+        self, district: Optional[str], rooms: Optional[int] = None, bedrooms: Optional[int] = None
+    ) -> Optional[float]:
+        """
+        MyHome's average $/m² for the district and bedroom count (the table behind
+        myhome.ge/binebis-pasebi), or None when MyHome has no figure. There is no guess behind it.
+        """
+        table = self._price_tables.get(bedroom_type_for(rooms, bedrooms))
+        return lookup_price(table, _expand_district_aliases(district))
 
     def compute_valuation_scale(
         self, listing: PropertyListing, myhome_price_label: Optional[dict] = None
@@ -129,10 +119,12 @@ class MarketAnalytics:
         if listing.price_per_m2 <= 0:
             return listing
 
-        room_count = listing.rooms or listing.bedrooms
-        benchmark = self.get_district_benchmark(listing.district, rooms=room_count)
-        listing.market_avg_price_m2 = benchmark
-        listing.market_median_price_m2 = benchmark
+        benchmark = self.get_district_benchmark(
+            listing.district, rooms=listing.rooms, bedrooms=listing.bedrooms
+        )
+        if benchmark is not None:
+            listing.market_avg_price_m2 = benchmark
+            listing.market_median_price_m2 = benchmark
 
         # Compute discount percentage relative to benchmark
         # For rental listings, skip $/m² sale benchmarks
@@ -149,11 +141,14 @@ class MarketAnalytics:
             return listing
 
         # Positive = cheaper than benchmark (discount), Negative = more expensive
-        discount_pct = round(((benchmark - listing.price_per_m2) / benchmark) * 100, 1)
-        listing.discount_pct = discount_pct
+        if benchmark is not None:
+            discount_pct = round(((benchmark - listing.price_per_m2) / benchmark) * 100, 1)
+            listing.discount_pct = discount_pct
 
-        # Apply official / calculated 5-tier valuation scale
-        self.compute_valuation_scale(listing, myhome_price_label)
+        # Apply official / calculated 5-tier valuation scale. With neither MyHome's own label
+        # nor a MyHome district figure there is nothing to base a verdict on, so none is made.
+        if benchmark is not None or myhome_price_label:
+            self.compute_valuation_scale(listing, myhome_price_label)
 
         # Suspicious / Outlier check (e.g. price per m2 unrealistically low)
         if listing.price_per_m2 < 350:
@@ -179,7 +174,7 @@ class MarketAnalytics:
             elif tier == 5:
                 listing.is_bargain = False
                 listing.price_status_label = "🔴 მაღალი ფასი (MyHome)"
-        else:
+        elif benchmark is not None:
             # Fallback for non-MyHome portals
             if discount_pct >= discount_threshold_pct:
                 listing.is_bargain = True

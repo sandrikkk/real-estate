@@ -5,12 +5,20 @@ from core.models import PropertyListing, UserSubscription
 from core.database import DatabaseEngine
 from core.analytics import MarketAnalytics
 from core.dedup import DuplicateDetector
+from core.district_prices import parse_price_table
 from notifier.telegram_bot import TelegramNotifier
 from scrapers.myhome import MyHomeScraper
 
 
 import tempfile
 import os
+
+
+def myhome_price_table():
+    """MyHome's real 2-bedroom price table (2026-10-07): the benchmark source for alerts."""
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "myhome_district_prices_bed2.json")
+    with open(path, encoding="utf-8") as f:
+        return parse_price_table(json.load(f))
 
 
 class TestFixes(unittest.IsolatedAsyncioTestCase):
@@ -70,7 +78,8 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
 
     def test_myhome_valuation_scale_labeling(self):
         """Issue 1: Official MyHome label maps top_price to 'დაბალი ფასი'."""
-        analytics = MarketAnalytics()
+        # 3 rooms = 2 bedrooms: the fallback below compares against MyHome's 2-bedroom table
+        analytics = MarketAnalytics(price_tables={2: myhome_price_table()})
         listing = PropertyListing(
             id="test_1",
             source="myhome",
@@ -780,7 +789,9 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
             mock_session.__aexit__ = AsyncMock(return_value=False)
 
             with patch("scrapers.base.AsyncSession", return_value=mock_session):
-                html = await scraper.fetch_html("https://home.ss.ge/ka/udzravi-qoneba/l/bina/iyideba")
+                html = await scraper.fetch_html(
+                    "https://home.ss.ge/ka/udzravi-qoneba/l/bina/iyideba"
+                )
                 self.assertEqual(html, "<html>SS.ge direct ok</html>")
                 self.assertEqual(mock_session.get.call_count, 2)
         finally:
@@ -817,7 +828,9 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
             api_session.__aexit__ = AsyncMock(return_value=False)
 
             with patch("scrapers.myhome.AsyncSession", return_value=api_session):
-                await MyHomeScraper()._fetch_api_page("https://api-statements.tnet.ge/v1/statements?page=1")
+                await MyHomeScraper()._fetch_api_page(
+                    "https://api-statements.tnet.ge/v1/statements?page=1"
+                )
             self.assertEqual(
                 api_session.get.call_args.kwargs["headers"].get("X-Sync-Key"), "secret-key"
             )
@@ -1006,9 +1019,7 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
 
         mock_scraper = MagicMock()
         mock_scraper.name = "MyHome.ge"
-        mock_scraper.fetch_listings = AsyncMock(
-            return_value=[unmatched_item, matched_1, matched_2]
-        )
+        mock_scraper.fetch_listings = AsyncMock(return_value=[unmatched_item, matched_1, matched_2])
         mock_scraper.fetch_statement_details = AsyncMock(side_effect=mock_fetch_details)
         orch.scrapers = [mock_scraper]
 
@@ -1114,13 +1125,12 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
         def fake_urlopen(req, timeout=10):
             captured_urls.append(req.full_url)
             captured_headers.append(dict(req.header_items()))
-            raise urllib.error.HTTPError(
-                req.full_url, 502, "Bad Gateway", {}, None
-            )
+            raise urllib.error.HTTPError(req.full_url, 502, "Bad Gateway", {}, None)
 
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen), self.assertLogs(
-            "core.user_sync", level="WARNING"
-        ) as cm:
+        with (
+            patch("urllib.request.urlopen", side_effect=fake_urlopen),
+            self.assertLogs("core.user_sync", level="WARNING") as cm,
+        ):
             fetch_active_users(worker_url="https://worker.dev", sync_key="super_secret_sync_key_99")
 
         self.assertEqual(len(captured_urls), 1)

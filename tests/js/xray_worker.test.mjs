@@ -1,8 +1,10 @@
 // Executes the production X-Ray code in cloudflare/worker.js (not the Python twin).
 // Run: node --test tests/js/
+import fs from "node:fs";
+import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadWorker, loadGoldenPosts } from "./load_worker.mjs";
+import { loadWorker, loadGoldenPosts, repoRoot } from "./load_worker.mjs";
 
 const w = loadWorker();
 
@@ -228,4 +230,99 @@ test("a photo post's caption is handled like message text", async () => {
   const req = new Request("https://worker.example/telegram", { method: "POST", body: JSON.stringify(update) });
   await w.handleTelegramWebhook(req, env);
   assert.ok(gets.includes("USER_123"), "caption message never reached handleMessage");
+});
+
+// MyHome's price statistics (real 2-bedroom response, 2026-10-07), the source of the
+// "უბნის საშუალო ფასი" line. Keep in sync with tests/test_district_prices.py.
+const DISTRICT_PRICES = JSON.parse(
+  fs.readFileSync(path.join(repoRoot, "tests", "fixtures", "myhome_district_prices_bed2.json"), "utf8")
+);
+const statsUrl = "https://api-statements.tnet.ge/v1/statements/statistics/city-district-urban-prices";
+const goOffline = () => { w.fetch = async () => new Response("offline", { status: 503 }); };
+function serveStats(payload) {
+  const urls = [];
+  w.fetch = async url => {
+    urls.push(String(url));
+    return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  return urls;
+}
+
+test("bedroom type: bedrooms win, otherwise rooms - 1, 1 room is a studio, 4+ has no table", () => {
+  assert.equal(w.workerBedroomTypeFor(null, 1), 1);
+  assert.equal(w.workerBedroomTypeFor(3, 2), 2);
+  assert.equal(w.workerBedroomTypeFor(2, null), 1);
+  assert.equal(w.workerBedroomTypeFor(3, null), 2);
+  assert.equal(w.workerBedroomTypeFor(4, 0), 3);
+  assert.equal(w.workerBedroomTypeFor(1, null), 6);
+  assert.equal(w.workerBedroomTypeFor(null, 4), null);
+  assert.equal(w.workerBedroomTypeFor(5, null), null);
+  assert.equal(w.workerBedroomTypeFor(0, 0), null);
+});
+
+test("price table: parse and lookup agree with the Python twin on the same real response", () => {
+  const table = w.parseMyHomePriceTable(DISTRICT_PRICES);
+  assert.equal(table["საბურთალო"], 1577.81);
+  assert.equal(table["ვაკე-საბურთალო"], 1478.23);
+  assert.equal(table["აეროპორტის დას."], 1100);
+  // a sub-area's own figure beats its parent; spelling variants resolve through the alias list
+  assert.equal(w.lookupMyHomePrice(table, w.expandDistrictAliases("ნუცუბიძე")), 1359.2);
+  assert.equal(w.lookupMyHomePrice(table, w.expandDistrictAliases("სანზონა")), 1143.96);
+  assert.equal(w.lookupMyHomePrice(table, ["არარსებული უბანი"]), null);
+  assert.equal(w.lookupMyHomePrice(null, ["საბურთალო"]), null);
+  for (const bad of [null, { result: false, data: [] }, { result: true, data: { items: [] } }, { result: true, data: [] }]) {
+    assert.equal(w.parseMyHomePriceTable(bad), null);
+  }
+});
+
+test("price URL: array city_ids, sale, USD, per m2, bedroom type only when known", () => {
+  const u = new URL(w.myHomeDistrictPricesUrl(2));
+  assert.equal(u.origin + u.pathname, statsUrl);
+  assert.equal(u.searchParams.get("city_ids[]"), "1");
+  assert.equal(u.searchParams.get("deal_type_id"), "1");
+  assert.equal(u.searchParams.get("currency_id"), "2");
+  assert.equal(u.searchParams.get("square_price"), "1");
+  assert.equal(u.searchParams.get("bedroom_type_id"), "2");
+  assert.equal(new URL(w.myHomeDistrictPricesUrl(null)).searchParams.has("bedroom_type_id"), false);
+});
+
+test("X-Ray district benchmark is MyHome's figure for the same bedrooms, not an average of our rows", async () => {
+  const urls = serveStats(DISTRICT_PRICES);
+  let avgIssued = false;
+  const db = fakeD1([[/AVG\(price_per_m2\)/, () => { avgIssued = true; return [{ avg_m2: 999, cnt: 5 }]; }]]);
+  try {
+    const report = await w.handleXRayQuery(INCIDENT_FB, { DB: db });
+    // Temqa, 1 bedroom: MyHome 1080.96 -> $1,081; $79,000 / 62 m2 = $1,274/m2 is 18% above it.
+    // toLocaleString groups digits per host locale, so the separator is not pinned.
+    assert.match(
+      report,
+      /📊 <b>უბნის საშუალო ფასი \(თემქა\):<\/b> \$1\D?081\/მ² \(\+18% საბაზროსთან\)/
+    );
+    assert.equal(avgIssued, false, "the D1 AVG(price_per_m2) benchmark is still being queried");
+    assert.ok(!report.includes("$999"));
+    assert.equal(urls.length, 1);
+    assert.equal(new URL(urls[0]).searchParams.get("bedroom_type_id"), "1");
+  } finally {
+    goOffline();
+  }
+});
+
+test("X-Ray omits the district line when MyHome cannot answer or has no figure", async () => {
+  const marker = "უბნის საშუალო ფასი";
+  const db = () => fakeD1([[/AVG\(price_per_m2\)/, () => [{ avg_m2: 999, cnt: 5 }]]]);
+  try {
+    goOffline();
+    assert.ok(!(await w.handleXRayQuery(INCIDENT_FB, { DB: db() })).includes(marker), "503");
+
+    w.fetch = async () => { throw new Error("network down"); };
+    assert.ok(!(await w.handleXRayQuery(INCIDENT_FB, { DB: db() })).includes(marker), "fetch throws");
+
+    serveStats({ result: false, data: [], errors: ["Unauthorized"] });
+    assert.ok(!(await w.handleXRayQuery(INCIDENT_FB, { DB: db() })).includes(marker), "result:false");
+
+    serveStats({ result: true, data: { items: [{ "გლდანი": 1000 }], date: "2026-10-07" } });
+    assert.ok(!(await w.handleXRayQuery(INCIDENT_FB, { DB: db() })).includes(marker), "district not in table");
+  } finally {
+    goOffline();
+  }
 });

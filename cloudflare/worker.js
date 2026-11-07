@@ -1121,6 +1121,83 @@ function expandDistrictAliases(district) {
   return aliases ? Array.from(new Set([d, ...aliases])) : [d];
 }
 
+// MyHome's own price statistics (the myhome.ge/binebis-pasebi page): average $/m² per area.
+// The X-Ray district benchmark comes from here, never from the listings this bot happened to scrape.
+const MYHOME_DISTRICT_PRICES_URL = "https://api-statements.tnet.ge/v1/statements/statistics/city-district-urban-prices";
+const MYHOME_PRICES_CACHE_SECONDS = 6 * 60 * 60; // MyHome refreshes the figures monthly
+
+// MyHome bedroom_type_id: 1, 2, 3 bedrooms and 6 = studio. 4+ bedrooms have no table.
+function workerBedroomTypeFor(rooms, bedrooms) {
+  const b = parseInt(bedrooms, 10) || 0;
+  const r = parseInt(rooms, 10) || 0;
+  if (b >= 1 && b <= 3) return b;
+  if (!b) {
+    if (r === 1) return 6;
+    if (r >= 2 && r <= 4) return r - 1; // rooms = bedrooms + 1
+  }
+  return null;
+}
+
+function myHomeDistrictPricesUrl(bedroomTypeId) {
+  const params = ["city_ids[]=1", "deal_type_id=1", "currency_id=2", "square_price=1"];
+  if (bedroomTypeId) params.push(`bedroom_type_id=${bedroomTypeId}`);
+  return `${MYHOME_DISTRICT_PRICES_URL}?${params.join("&")}`;
+}
+
+// data.items = [{ "<group name>": price, "<urban_id>": { "<urban name>": price }, ... }, ...]
+// flattened to { name: price } for groups and urbans alike; null when nothing is usable.
+function parseMyHomePriceTable(payload) {
+  if (!payload || payload.result !== true) return null;
+  const items = payload.data && payload.data.items;
+  if (!Array.isArray(items)) return null;
+  const table = {};
+  let count = 0;
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    for (const [key, value] of Object.entries(item)) {
+      if (value && typeof value === "object") {
+        for (const [name, price] of Object.entries(value)) {
+          if (typeof price === "number") { table[name] = price; count++; }
+        }
+      } else if (typeof value === "number") {
+        table[key] = value;
+        count++;
+      }
+    }
+  }
+  return count ? table : null;
+}
+
+// First of `names` MyHome has a figure for; the caller orders them most specific first.
+function lookupMyHomePrice(table, names) {
+  if (!table) return null;
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(table, name)) return table[name];
+  }
+  return null;
+}
+
+async function fetchMyHomeDistrictPrices(bedroomTypeId) {
+  try {
+    const res = await fetch(myHomeDistrictPricesUrl(bedroomTypeId), {
+      headers: {
+        "Accept": "application/json, text/plain, */*",
+        "X-Website-Key": "myhome",
+        "locale": "ka",
+        "Origin": "https://www.myhome.ge",
+        "Referer": "https://www.myhome.ge/"
+      },
+      // Cache good answers at the edge; never pin an error for hours.
+      cf: { cacheEverything: true, cacheTtlByStatus: { "200-299": MYHOME_PRICES_CACHE_SECONDS, "300-599": 0 } }
+    });
+    if (!res.ok) return null;
+    return parseMyHomePriceTable(await res.json());
+  } catch (err) {
+    console.error("MyHome price statistics error:", err);
+    return null;
+  }
+}
+
 function formatOwnerBadge(isOwner) {
   if (isOwner === true || isOwner === 1 || isOwner === "1") return "მესაკუთრე ✅";
   if (isOwner === false || isOwner === 0 || isOwner === "0") return "სააგენტო 🕵️‍♂️";
@@ -2057,26 +2134,13 @@ async function handleXRayQuery(text, env) {
 
     const verdict = evaluateWorkerBrokerVerdict(verdictTarget, Array.from(relatedMap.values()));
 
-    // District benchmark (with alias fallback for subdistricts like ნუცუბიძე -> საბურთალო)
+    // District benchmark: MyHome's own average $/m² for this district and bedroom count.
+    // Nothing falls back to our own rows: they are only what this bot happened to scrape.
     let bench = null;
     if (target.district) {
-      let bRow = await db
-        .prepare("SELECT ROUND(AVG(price_per_m2)) AS avg_m2, COUNT(*) AS cnt FROM properties WHERE district = ? AND price_per_m2 > 300 AND price_per_m2 < 6000")
-        .bind(target.district)
-        .first();
-      if ((!bRow || !bRow.avg_m2 || Number(bRow.cnt) < 1)) {
-        const aliases = expandDistrictAliases(target.district);
-        if (aliases.length > 1) {
-          const placeholders = aliases.map(() => "?").join(", ");
-          bRow = await db
-            .prepare(`SELECT ROUND(AVG(price_per_m2)) AS avg_m2, COUNT(*) AS cnt FROM properties WHERE district IN (${placeholders}) AND price_per_m2 > 300 AND price_per_m2 < 6000`)
-            .bind(...aliases)
-            .first();
-        }
-      }
-      if (bRow && bRow.avg_m2 && Number(bRow.cnt) >= 1) {
-        bench = { avg_m2: Math.round(Number(bRow.avg_m2)), count: Number(bRow.cnt) };
-      }
+      const table = await fetchMyHomeDistrictPrices(workerBedroomTypeFor(target.rooms, target.bedrooms));
+      const price = lookupMyHomePrice(table, expandDistrictAliases(target.district));
+      if (price) bench = { avg_m2: Math.round(price) };
     }
 
     const currPrice = Number(target.price_usd) || 0;

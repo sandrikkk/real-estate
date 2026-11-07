@@ -1,9 +1,11 @@
+import json
 import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
 
 from core.database import DatabaseEngine
+from core.district_prices import parse_price_table
 from core.models import PropertyListing
 from core.xray import (
     parse_xray_input,
@@ -52,6 +54,21 @@ def _make_listing(
         group_id=group_id,
         scraped_at=datetime.now(timezone.utc),
     )
+
+
+def _myhome_price_provider(asked: list):
+    """Stands in for MyHome's price statistics (real 2-bedroom response, 2026-10-07)."""
+    with open(
+        os.path.join(os.path.dirname(__file__), "fixtures", "myhome_district_prices_bed2.json"),
+        encoding="utf-8",
+    ) as f:
+        table = parse_price_table(json.load(f))
+
+    def provider(bedroom_type_id):
+        asked.append(bedroom_type_id)
+        return table
+
+    return provider
 
 
 class TestXRayEngine(unittest.TestCase):
@@ -212,22 +229,54 @@ class TestXRayEngine(unittest.TestCase):
         self.db.save_listing(
             _make_listing("4001", price_usd=88000.0, area_m2=60.0, district="საბურთალო")
         )
-        # Add another Saburtalo listing so district benchmark has multiple samples
+
+        asked: list = []
+        report = run_xray_on_db(
+            self.db,
+            "https://www.myhome.ge/ka/pr/4001/iyideba-bina/",
+            price_table_provider=_myhome_price_provider(asked),
+        )
+        self.assertIsNotNone(report)
+        self.assertIn("პირვანდელი ფასი: <b>$95,000</b>", report)
+        self.assertIn("დაკლებულია: <b>-$7,000", report)
+        # MyHome's 2-bedroom Saburtalo figure (1577.81), not an average of our own rows;
+        # 3 rooms = 2 bedrooms. $88,000 / 60 m² = $1,467/m² is 7% below it.
+        self.assertIn(
+            "📊 <b>უბნის საშუალო ფასი (საბურთალო):</b> $1,578/მ² (-7% საბაზროსთან)", report
+        )
+        self.assertEqual(asked, [2])
+
+    def test_district_benchmark_is_omitted_when_myhome_has_no_figure(self):
+        self.db.save_listing(
+            _make_listing("4101", price_usd=88000.0, area_m2=60.0, district="საბურთალო")
+        )
+        # Rows of our own in the same district must not stand in for the missing figure
         self.db.save_listing(
             _make_listing(
-                "4002",
+                "4102",
                 price_usd=102000.0,
                 area_m2=60.0,
                 district="საბურთალო",
                 phone_number="+995 591 00 00 02",
             )
         )
+        url = "https://www.myhome.ge/ka/pr/4101/iyideba-bina/"
 
-        report = run_xray_on_db(self.db, "https://www.myhome.ge/ka/pr/4001/iyideba-bina/")
-        self.assertIsNotNone(report)
-        self.assertIn("პირვანდელი ფასი: <b>$95,000</b>", report)
-        self.assertIn("დაკლებულია: <b>-$7,000", report)
-        self.assertIn("უბნის საშუალო ფასი", report)
+        no_provider = run_xray_on_db(self.db, url)
+        self.assertNotIn("უბნის საშუალო ფასი", no_provider)
+
+        api_down = run_xray_on_db(self.db, url, price_table_provider=lambda _bedroom: None)
+        self.assertNotIn("უბნის საშუალო ფასი", api_down)
+
+        self.db.save_listing(
+            _make_listing("4103", price_usd=88000.0, area_m2=60.0, district="არარსებული უბანი")
+        )
+        unknown = run_xray_on_db(
+            self.db,
+            "https://www.myhome.ge/ka/pr/4103/iyideba-bina/",
+            price_table_provider=_myhome_price_provider([]),
+        )
+        self.assertNotIn("უბნის საშუალო ფასი", unknown)
 
     def test_facebook_text_xray_finds_matching_portal_listing(self):
         # Real owner listing exists in DB at $78,000 on floor 7

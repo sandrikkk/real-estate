@@ -45,14 +45,15 @@ class RealEstateOrchestrator:
         print(f"[Init]: Loading search criteria from {settings.FILTERS_CONFIG_PATH}...")
         self.filter_engine = ListingFilter.from_json(settings.FILTERS_CONFIG_PATH)
 
-        print("[Init]: Initializing Market Analytics Engine...")
-        self.analytics = MarketAnalytics()
-
         print("[Init]: Initializing Scraper Modules (MyHome.ge, SS.ge)...")
+        myhome_scraper = MyHomeScraper(timeout=settings.REQUEST_TIMEOUT_SECONDS)
         self.scrapers = [
-            MyHomeScraper(timeout=settings.REQUEST_TIMEOUT_SECONDS),
+            myhome_scraper,
             SSGeScraper(timeout=settings.REQUEST_TIMEOUT_SECONDS),
         ]
+
+        print("[Init]: Initializing Market Analytics Engine...")
+        self.analytics = MarketAnalytics(fetch_price_table=myhome_scraper.fetch_district_prices)
 
         print(
             f"[Init]: Initializing Telegram Bot Notifier (Chat ID: {settings.TELEGRAM_CHAT_ID})..."
@@ -260,8 +261,7 @@ class RealEstateOrchestrator:
                 u
                 for u in active_users
                 if (
-                    is_price_drop
-                    or listing.id in unnotified_ids_by_user.get(str(u.chat_id), set())
+                    is_price_drop or listing.id in unnotified_ids_by_user.get(str(u.chat_id), set())
                 )
                 and self.filter_engine.matches_user(u, listing, tentative=True)
             ]
@@ -270,8 +270,7 @@ class RealEstateOrchestrator:
             if not matching_users and not getattr(settings, "ENABLE_MULTI_USER", True):
                 admin_cid = str(settings.TELEGRAM_CHAT_ID)
                 if (
-                    is_price_drop
-                    or listing.id in unnotified_ids_by_user.get(admin_cid, set())
+                    is_price_drop or listing.id in unnotified_ids_by_user.get(admin_cid, set())
                 ) and self.filter_engine.matches(listing):
                     matching_users = [u for u in active_users if str(u.chat_id) == admin_cid]
 
@@ -361,9 +360,7 @@ class RealEstateOrchestrator:
                     if "is_owner" in details and details["is_owner"] is not None:
                         listing.is_owner = bool(details["is_owner"])
                     elif (
-                        details.get("agency_name")
-                        or details.get("broker")
-                        or details.get("agency")
+                        details.get("agency_name") or details.get("broker") or details.get("agency")
                     ):
                         listing.is_owner = False
 
@@ -389,9 +386,7 @@ class RealEstateOrchestrator:
                     if details.get("price_label"):
                         myhome_label = details.get("price_label")
                     if not listing.author_id:
-                        raw_uid = details.get("user_id") or (
-                            details.get("user") or {}
-                        ).get("id")
+                        raw_uid = details.get("user_id") or (details.get("user") or {}).get("id")
                         if raw_uid is not None:
                             listing.author_id = str(raw_uid)
                     if listing.author_listings_count is None:
@@ -493,6 +488,7 @@ class RealEstateOrchestrator:
                     unmatched_to_save.append(listing)
                     continue
 
+                await self.analytics.load_price_table(listing)
                 self.analytics.evaluate_listing(
                     listing,
                     db=self.db,
