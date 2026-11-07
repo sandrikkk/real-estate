@@ -894,7 +894,7 @@ GOLDEN_BASELINE = {
     "price_usd": 26,
 }
 
-# Incident 2026-11-06 (docs/incidents/2026-11-06-xray-false-duplicate.md), FB text reconstructed.
+# Incident 2026-11-06 (docs/production-fixes.md §5.5), FB text reconstructed.
 INCIDENT_FB = (
     "იყიდება ქალაქური პროექტის ბინა თემქაზე, 3 მ/რ, 4 კვარტალი. 62 კვ.მ, 1 სართული 8 სართულიანი კორპუსის. "
     "ერთი საძინებელი, მისაღები და ლოჯი. ფასი 79 000$ ტელ: 599 90 90 01"
