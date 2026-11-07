@@ -11,6 +11,54 @@ from typing import Dict, Optional, Set
 from config import settings
 from core.models import DistrictPriceStats, PropertyListing
 
+# X-Ray MyHome lookups (ADR 0003, ADR 0004). xray_jobs holds what the Worker queued for the
+# GitHub Actions job (kind "phone" or "listing"); xray_live_listings holds what it found. Live hits stay out of
+# `properties`, which decides whether a scraped listing is new: a row there is never alerted.
+XRAY_TABLES_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS xray_live_listings (
+        id TEXT PRIMARY KEY,
+        source TEXT,
+        source_id TEXT,
+        phone9 TEXT,
+        author_id TEXT,
+        user_type TEXT,
+        is_owner INTEGER,
+        district TEXT,
+        subdistrict TEXT,
+        street TEXT,
+        area_m2 REAL,
+        floor TEXT,
+        total_floors INTEGER,
+        rooms INTEGER,
+        bedrooms INTEGER,
+        price_usd REAL,
+        deal_type TEXT,
+        url TEXT,
+        phone_number TEXT,
+        author_listings_count INTEGER,
+        seen_at TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_xray_live_phone9 ON xray_live_listings(phone9)",
+    "CREATE INDEX IF NOT EXISTS idx_xray_live_author_id ON xray_live_listings(author_id)",
+    """
+    CREATE TABLE IF NOT EXISTS xray_jobs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT 'phone',
+        phone9 TEXT,
+        listing_id TEXT,
+        chat_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        found INTEGER,
+        page_full INTEGER,
+        created_at TEXT NOT NULL,
+        done_at TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_xray_jobs_phone9 ON xray_jobs(phone9, done_at)",
+)
+
 
 class DatabaseUnavailableError(RuntimeError):
     """Raised when Cloudflare D1 connection fails and fail-closed circuit breaker trips."""
@@ -319,6 +367,8 @@ class DatabaseEngine:
                     cursor.execute(
                         "CREATE INDEX IF NOT EXISTS idx_properties_author_id ON properties(author_id)"
                     )
+                    for stmt in XRAY_TABLES_DDL:
+                        cursor.execute(stmt)
                 except Exception as e:
                     print(f"[D1 Migration Warning]: {e}")
             else:
@@ -442,6 +492,8 @@ class DatabaseEngine:
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_properties_group_id ON properties(group_id)"
                 )
+                for stmt in XRAY_TABLES_DDL:
+                    cursor.execute(stmt)
 
                 conn.commit()
 
@@ -728,7 +780,9 @@ class DatabaseEngine:
                         if listing.is_owner is True
                         else (0 if listing.is_owner is False else None),
                         listing.user_type,
-                        listing.initial_price_usd if listing.initial_price_usd is not None else listing.price_usd,
+                        listing.initial_price_usd
+                        if listing.initial_price_usd is not None
+                        else listing.price_usd,
                         listing.author_id,
                         listing.author_listings_count,
                     ),
@@ -819,7 +873,9 @@ class DatabaseEngine:
                     listing.phone_number,
                     1 if listing.is_owner is True else (0 if listing.is_owner is False else None),
                     listing.user_type,
-                    listing.initial_price_usd if listing.initial_price_usd is not None else listing.price_usd,
+                    listing.initial_price_usd
+                    if listing.initial_price_usd is not None
+                    else listing.price_usd,
                     listing.author_id,
                     listing.author_listings_count,
                 )
@@ -849,9 +905,7 @@ class DatabaseEngine:
             cursor.execute("UPDATE properties SET is_notified = 1 WHERE id = ?", (listing_id,))
             conn.commit()
 
-    def rollback_unsent_listing(
-        self, listing_id: str, previous_price_usd: Optional[float] = None
-    ):
+    def rollback_unsent_listing(self, listing_id: str, previous_price_usd: Optional[float] = None):
         """Rolls back a listing whose Telegram notification failed so the next cycle retries it."""
         if not listing_id:
             return

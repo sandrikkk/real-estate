@@ -116,7 +116,7 @@ Each rule says what enforces it. "Honour system" means nothing in the repo stops
 - Code, comments, docs, and commit messages are in English. Reply to the user in the language they write in.
 - Settings come from `config/settings.py` (`pydantic-settings`, reads `.env`). Search rules come from `config/filters.json`. `SearchFilters()` defaults in `core/models.py` differ from that file and are what many tests build directly: say which one a change targets.
 - Price, area, and room rules exist in both `ListingFilter.matches` and `ListingFilter.matches_user`. Change both.
-- X-Ray logic exists twice: `cloudflare/worker.js` runs in production, and `core/xray.py` is its Python twin, used only by `tests/test_xray.py`. Change both. The golden-set baselines in `tests/js/xray_worker.test.mjs` and `tests/test_xray.py` must stay equal.
+- X-Ray logic exists twice: `cloudflare/worker.js` runs in production, and `core/xray.py` is its Python twin, used by the tests. Change both. MyHome answers the Worker with a Cloudflare challenge, so MyHome is read by `scripts/xray_lookup.py` in GitHub Actions, which the Worker queues ([ADR 0004](docs/adr/0004-myhome-live-reads-on-github-actions.md)). The MyHome helpers in `core/xray.py` that it uses are production code. The golden-set baselines in `tests/js/xray_worker.test.mjs` and `tests/test_xray.py` must stay equal.
 
 ## Run and test
 
@@ -134,6 +134,8 @@ Without `--once`, `main.py` loops every `CHECK_INTERVAL_SECONDS`. A live cycle n
 
 - [`.github/workflows/scrape.yml`](.github/workflows/scrape.yml): cron, runs `python main.py --once`, Python 3.11, 6-minute timeout, `contents: read`. Read the file for the schedule; do not copy numbers from prose. Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `CLOUDFLARE_PROXY_URL`, `CLOUDFLARE_SYNC_KEY`.
 - [`.github/workflows/deploy-worker.yml`](.github/workflows/deploy-worker.yml): deploys the Worker on a push to `master` that touches `cloudflare/worker.js`, `scripts/deploy_worker.py`, or the workflow itself. Before deploying it runs `node --check`, the Node suite, and the Python suite. Setup and bindings: [`cloudflare/README.md`](cloudflare/README.md).
+- [`.github/workflows/xray-lookup.yml`](.github/workflows/xray-lookup.yml): started by the Worker (`workflow_dispatch`, input: an opaque job id) to read MyHome for one X-Ray lookup. Secrets: `CLOUDFLARE_PROXY_URL`, `CLOUDFLARE_SYNC_KEY`.
+- [`.github/workflows/xray-canary.yml`](.github/workflows/xray-canary.yml): daily live check of the MyHome behaviour X-Ray relies on; on failure it messages the admin chat. Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 - There is no PR or staging pipeline. The deploy job above is the only CI test gate; `scrape.yml` runs no tests.
 
 ## Key files
@@ -148,13 +150,15 @@ Without `--once`, `main.py` loops every `CHECK_INTERVAL_SECONDS`. A live cycle n
 | `core/dedup.py` | Photo-hash duplicate groups and best-price tracking |
 | `core/analytics.py` | District medians, bargain detection, valuation scale |
 | `core/user_sync.py` | Active subscribers from the Worker, with an on-disk cache |
-| `core/xray.py` | Python twin of the Worker's X-Ray (listing, phone, Facebook text), used only by tests |
+| `core/xray.py` | Python twin of the Worker's X-Ray (listing, phone, Facebook text) for the tests; its MyHome helpers also run in `scripts/xray_lookup.py` |
 | `tests/js/` | Node tests that execute the real `cloudflare/worker.js` (X-Ray, webhook) |
 | `scrapers/` | `myhome.py` (TNET API + `__NEXT_DATA__`), `ss_ge.py`, `area_ge.py`, `base.py` |
 | `notifier/` | `telegram_bot.py` (alert HTML), `ntfy_notifier.py` |
 | `cloudflare/worker.js` | Telegram webhook, KV filters, D1 proxy, X-Ray |
 | `scripts/deploy_worker.py` | Worker deploy that never commits `wrangler.toml` |
-| `docs/adr/` | ADRs (one so far); `docs/production-fixes.md` is the incident report |
+| `scripts/xray_lookup.py` | GitHub Actions job that reads MyHome for a queued X-Ray lookup (ADR 0004) |
+| `scripts/xray_canary.py` | Live check of the MyHome behaviour X-Ray relies on (uses the network) |
+| `docs/adr/` | ADRs; `docs/production-fixes.md` is the incident report |
 
 ## Skills
 

@@ -1,0 +1,43 @@
+name: X-Ray MyHome lookup
+
+# Started by the Worker for one queued phone lookup (ADR 0004). The only input is an opaque
+# job id: the repository is public, so the phone number and the chat id stay in D1.
+# No concurrency group: GitHub keeps one pending run per group and cancels the others,
+# which would drop a user's follow-up.
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "xray_jobs id"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  lookup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install "pydantic>=2.0.0" "pydantic-settings>=2.0.0" "python-dotenv>=1.0.0" "curl_cffi>=0.7.0"
+
+      - name: Run the lookup
+        env:
+          PYTHONUNBUFFERED: "1"
+          JOB_ID: ${{ inputs.job_id }}
+          CLOUDFLARE_PROXY_URL: ${{ secrets.CLOUDFLARE_PROXY_URL }}
+          CLOUDFLARE_SYNC_KEY: ${{ secrets.CLOUDFLARE_SYNC_KEY }}
+        run: python scripts/xray_lookup.py --job "$JOB_ID"
