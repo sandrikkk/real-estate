@@ -178,6 +178,11 @@ export default {
       return handleDbRequest(request, env);
     }
 
+    // 2.2 Protected X-Ray follow-up from the MyHome lookup job (ADR 0004): POST /api/xray/followup
+    if (url.pathname === "/api/xray/followup" && request.method === "POST") {
+      return handleXRayFollowup(request, env);
+    }
+
     // Debug status endpoint
     if (url.pathname === "/api/debug") {
       if (!isSyncKeyValid(request, env)) return unauthorizedResponse();
@@ -708,7 +713,7 @@ async function handleMessage(msg, token, kv, env) {
   }
 
   // On-Demand X-Ray for MyHome/SS.ge URLs, Georgian phone numbers, or Facebook apartment texts
-  const xrayReply = await handleXRayQuery(text, env);
+  const xrayReply = await handleXRayQuery(text, env, { chatId });
   if (xrayReply) {
     await sendTelegram(token, "sendMessage", {
       chat_id: chatId,
@@ -1226,6 +1231,35 @@ function extractMaskedPhone(text) {
   return (digits.length === 6 && digits.startsWith("5")) ? `${digits}***` : null;
 }
 
+function romanToInt(s) {
+  const val = { I: 1, V: 5, X: 10 };
+  let total = 0;
+  for (let i = 0; i < s.length; i++) {
+    const v = val[s[i]];
+    const next = val[s[i + 1]] || 0;
+    total += v < next ? -v : v;
+  }
+  return total;
+}
+
+// Micro-district number: "მე-6 მიკრო", "6-ე მიკრორაიონი", "3 მ/რ", and MyHome's "გლდანი - VI მ/რ".
+function extractMicroDistrict(text) {
+  if (!text) return null;
+  const m = String(text).match(
+    /(?<![\dA-Za-z\u10A0-\u10FF])(?:მე[-\s]*)?(\d{1,2}|[IVX]{1,5})(?:[-\s]*(?:ე|ლი))?[-\s]*(?:მ\s*\/\s*რ|მ\.\s*რ\.?|მიკრო)/i
+  );
+  if (!m) return null;
+  const n = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : romanToInt(m[1].toUpperCase());
+  return n > 0 ? n : null;
+}
+
+// A parsed post carries `micro`; a listing row names its micro-district in subdistrict or street.
+function microOf(listing) {
+  const own = parseInt(listing?.micro, 10);
+  if (own > 0) return own;
+  return extractMicroDistrict(`${listing?.subdistrict || ""} ${listing?.street || ""}`);
+}
+
 function parseXRayInput(text) {
   if (!text || typeof text !== "string") return null;
   const stripped = text.trim();
@@ -1343,6 +1377,16 @@ function parseXRayInput(text) {
 
   const phone9 = extract9DigitPhone(stripped);
   const maskedPhone = phone9 ? `${phone9.slice(0, 6)}***` : extractMaskedPhone(stripped);
+  const flat = {
+    area_m2: areaM2,
+    floor,
+    rooms,
+    bedrooms,
+    total_floors: totalFloors,
+    price_usd: priceUsd,
+    district,
+    micro: extractMicroDistrict(stripped)
+  };
   const hasFbSignal = areaM2 !== null && (district !== null || priceUsd !== null || floor !== null || rooms !== null);
   if (hasFbSignal) {
     return {
@@ -1350,22 +1394,19 @@ function parseXRayInput(text) {
       phone9,
       formattedPhone: phone9 ? formatGeorgianPhone(phone9) : maskedPhone,
       maskedPhone,
-      area_m2: areaM2,
-      floor,
-      rooms,
-      bedrooms,
-      total_floors: totalFloors,
-      price_usd: priceUsd,
-      district
+      ...flat
     };
   }
 
+  // Without an area the post is not confirmed as a flat listing (it may be a buyer or a house),
+  // so what it names is kept apart as a hint for the owner search (ADR 0003), not as parsed facts.
   if (phone9 || maskedPhone) {
     return {
       kind: "phone",
       phone9,
       formattedPhone: phone9 ? formatGeorgianPhone(phone9) : maskedPhone,
-      maskedPhone
+      maskedPhone,
+      flat
     };
   }
 
@@ -1648,7 +1689,160 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
   }
 }
 
-function evaluateWorkerBrokerVerdict(target, relatedRows) {
+// MyHome answers the Worker with a Cloudflare challenge (403), so the live MyHome lookup runs
+// in GitHub Actions (scripts/xray_lookup.py, ADR 0004). The Worker queues the job, shows what
+// the last finished lookup saved, and sends the job's result as a follow-up message.
+const MYHOME_SEARCH_URL = "https://www.myhome.ge/ka/s/udzravi-qoneba/";
+const MYHOME_LOOKUP_WORKFLOW = "xray-lookup.yml";
+const MYHOME_LOOKUP_FRESH_MINUTES = 30; // a lookup this recent is shown again, not repeated
+
+function myHomeSearchUrl(params) {
+  const url = new URL(MYHOME_SEARCH_URL);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+  return url.toString();
+}
+
+function isFreshIso(iso, minutes) {
+  const t = Date.parse(iso || "");
+  return Number.isFinite(t) && Date.now() - t <= minutes * 60 * 1000;
+}
+
+async function latestMyHomeLookup(db, phone9) {
+  try {
+    return await db
+      .prepare(
+        "SELECT * FROM xray_jobs WHERE phone9 = ? AND status IN ('done', 'failed') ORDER BY done_at DESC LIMIT 1"
+      )
+      .bind(phone9)
+      .first();
+  } catch (err) {
+    return null;
+  }
+}
+
+// Rows the lookup job saved for this phone; with `since`, only those saved by that job.
+async function loadSavedLiveListings(db, phone9, since = null) {
+  try {
+    const { results } = since
+      ? await db
+          .prepare("SELECT * FROM xray_live_listings WHERE phone9 = ? AND seen_at >= ? ORDER BY seen_at DESC LIMIT 30")
+          .bind(phone9, since)
+          .all()
+      : await db
+          .prepare("SELECT * FROM xray_live_listings WHERE phone9 = ? ORDER BY seen_at DESC LIMIT 30")
+          .bind(phone9)
+          .all();
+    return results || [];
+  } catch (err) {
+    return [];
+  }
+}
+
+// The lookup job's row for one MyHome listing (a "listing" job), if it read that listing.
+async function loadSavedListing(db, listingId) {
+  try {
+    return await db.prepare("SELECT * FROM xray_live_listings WHERE id = ?").bind(listingId).first();
+  } catch (err) {
+    return null;
+  }
+}
+
+// Records the job and dispatches the workflow. `job` is { kind: "phone", phone9 } or
+// { kind: "listing", listingId }. Returns the job id, or null when it cannot run.
+async function queueMyHomeLookup(env, chatId, job) {
+  const token = env && (env.GITHUB_PAT || env.GITHUB_TOKEN);
+  if (!env || !env.DB || !token || !chatId) return null;
+  const id = crypto.randomUUID();
+  try {
+    await env.DB
+      .prepare(
+        "INSERT INTO xray_jobs (id, kind, phone9, listing_id, chat_id, status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)"
+      )
+      .bind(id, job.kind, job.phone9 || null, job.listingId || null, String(chatId), new Date().toISOString())
+      .run();
+    const repo = env.GITHUB_REPO || "sandrikkk/real-estate";
+    const ref = env.GITHUB_REF || "master";
+    const res = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/${MYHOME_LOOKUP_WORKFLOW}/dispatches`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "tbilisi-real-estate-worker",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json"
+      },
+      // Only the opaque job id: the repository is public, and so are workflow inputs.
+      body: JSON.stringify({ ref, inputs: { job_id: id } })
+    });
+    if (res.status === 204) return id;
+    console.error(`MyHome lookup dispatch failed: HTTP ${res.status}`);
+  } catch (err) {
+    console.error("MyHome lookup queue error:", err);
+  }
+  return null;
+}
+
+// How the phone report covers MyHome: "fresh" (a finished lookup's rows), "queued" (a job
+// was started), "failed" (no lookup possible now), or "none" (no full number to look up).
+async function myHomeLiveState(env, parsed, chatId) {
+  if (!parsed.phone9) return { mode: "none", rows: [], full: false };
+  const db = env.DB;
+  const last = await latestMyHomeLookup(db, parsed.phone9);
+  if (last && last.status === "done" && isFreshIso(last.done_at, MYHOME_LOOKUP_FRESH_MINUTES)) {
+    return {
+      mode: "fresh",
+      rows: await loadSavedLiveListings(db, parsed.phone9, last.created_at),
+      full: Boolean(last.page_full)
+    };
+  }
+  const saved = await loadSavedLiveListings(db, parsed.phone9);
+  const jobId = await queueMyHomeLookup(env, chatId, { kind: "phone", phone9: parsed.phone9 });
+  return { mode: jobId ? "queued" : "failed", rows: saved, full: false };
+}
+
+// POST /api/xray/followup {job_id}: called by the lookup job when it has finished.
+async function handleXRayFollowup(request, env) {
+  if (!isSyncKeyValid(request, env)) return unauthorizedResponse();
+  const json = (body, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  try {
+    const { job_id: jobId } = await request.json();
+    const job = env.DB && jobId
+      ? await env.DB.prepare("SELECT * FROM xray_jobs WHERE id = ?").bind(String(jobId)).first()
+      : null;
+    if (!job) return json({ success: false, error: "job not found" }, 404);
+    let text;
+    if (job.kind === "listing") {
+      // The job saved the listing's row, so the X-Ray now reads it without queueing again.
+      text = job.status === "done"
+        ? `🔄 <b>myhome-ის შედეგი</b>\n\n${await handleXRayQuery(`https://www.myhome.ge/ka/pr/${job.listing_id}/`, env)}`
+        : "⚠️ myhome-ზე განცხადების შემოწმება ვერ მოხერხდა. ზემოთ ნაჩვენებია ჩვენი ბაზის შედეგი.";
+    } else if (job.status === "done") {
+      const fmt = formatGeorgianPhone(job.phone9);
+      const parsed = { kind: "phone", phone9: job.phone9, formattedPhone: fmt, maskedPhone: `${job.phone9.slice(0, 6)}***` };
+      const live = {
+        mode: "fresh",
+        rows: await loadSavedLiveListings(env.DB, job.phone9, job.created_at),
+        full: Boolean(job.page_full)
+      };
+      text = `🔄 <b>myhome-ის შედეგი</b>\n\n${await buildPhoneReport(env.DB, parsed, live)}`;
+    } else {
+      text = `⚠️ myhome-ზე ძებნა ვერ მოხერხდა (<code>${formatGeorgianPhone(job.phone9)}</code>). ზემოთ ნაჩვენებია ჩვენი ბაზის შედეგი.`;
+    }
+    await sendTelegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
+      chat_id: job.chat_id,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true
+    });
+    return json({ success: true });
+  } catch (err) {
+    return json({ success: false, error: err.message }, 500);
+  }
+}
+
+// `where` names the sources the rows came from, for the count in the reason line.
+function evaluateWorkerBrokerVerdict(target, relatedRows, where = "ბაზაში") {
   const allRows = [];
   const seen = new Set();
   const isPhonelessFb = Boolean(
@@ -1731,7 +1925,7 @@ function evaluateWorkerBrokerVerdict(target, relatedRows) {
   if (isBroker) {
     const reasons = [];
     if (uniqueApartments >= 2 || allRows.length >= 2) {
-      reasons.push(`ბაზაში ამ ნომრით/ავტორით იძებნება <b>${allRows.length} განცხადება</b> (${uniqueApartments} სხვადასხვა ბინა)`);
+      reasons.push(`${where} ამ ნომრით/ავტორით იძებნება <b>${allRows.length} განცხადება</b> (${uniqueApartments} სხვადასხვა ბინა)`);
     } else if (maxAuthorCount >= 3) {
       reasons.push(`პორტალზე ავტორს უფიქსირდება <b>${maxAuthorCount} განცხადება</b>`);
     }
@@ -1804,26 +1998,33 @@ function compareTotalFloors(target, cand) {
 }
 
 // A row filed under the parent district is not evidence of the child district;
-// only the child named in its subdistrict or street is.
+// only the child named in its subdistrict or street is. Two different micro-district
+// numbers are two different flats.
 function compareLocation(target, cand) {
+  const tm = microOf(target);
+  const cm = microOf(cand);
+  if (tm && cm && tm !== cm) return "conflict";
   const d = String(target?.district || "").trim();
   if (!d) return "unknown";
   const stems = XRAY_DISTRICT_KEYWORDS.filter(([, canonical]) => canonical === d).map(([stem]) => stem);
   stems.push(d);
   const hay = `${cand?.subdistrict || ""} ${cand?.street || ""}`.toLowerCase();
-  return stems.some(s => hay.includes(s)) ? "agree" : "unknown";
+  if (stems.some(s => hay.includes(s))) return "agree";
+  if (tm && cm && expandDistrictAliases(d).includes(String(cand?.district || "").trim())) return "agree";
+  return "unknown";
 }
 
 function workerCandidateMatchesTarget(target, cand) {
   const layout = compareLayout(target, cand);
   const height = compareTotalFloors(target, cand);
-  if (layout === "conflict" || height === "conflict") return false;
+  const location = compareLocation(target, cand);
+  if (layout === "conflict" || height === "conflict" || location === "conflict") return false;
   const tf = cleanFloorStr(target?.floor);
   const cf = cleanFloorStr(cand?.floor);
   if (tf) {
     if (cf !== tf) return false;
     // Floor and area alone fit many unrelated flats: require one more agreeing fact.
-    return [layout, height, compareLocation(target, cand)].includes("agree");
+    return [layout, height, location].includes("agree");
   }
   const tr = parseInt(target?.rooms, 10) || 0;
   const cr = parseInt(cand?.rooms, 10) || 0;
@@ -1922,7 +2123,149 @@ async function enrichDuplicatesIfNeeded(db, dups, maxCount = 3) {
   );
 }
 
-async function handleXRayQuery(text, env) {
+// The phone report. `live` is myHomeLiveState(): { mode: "fresh" | "queued" | "failed" | "none", rows, full }.
+async function buildPhoneReport(db, parsed, live) {
+  const fmtParam = parsed.formattedPhone || parsed.maskedPhone || "";
+  const p9Param = parsed.phone9 || fmtParam;
+  const maskParam = parsed.maskedPhone || fmtParam;
+  const { results } = await db
+    .prepare("SELECT * FROM properties WHERE phone_number IN (?, ?, ?) ORDER BY scraped_at DESC LIMIT 30")
+    .bind(fmtParam, p9Param, maskParam)
+    .all();
+  const fetched = results || [];
+  let rows = fetched;
+  if (parsed.phone9) {
+    const exactRows = fetched.filter(
+      r => r.phone_number === parsed.formattedPhone || r.phone_number === parsed.phone9
+    );
+    if (exactRows.length > 0) rows = exactRows;
+    // Masked-prefix rows may be other people; do not mix them into an exact MyHome answer.
+    else if (live.mode === "fresh" && live.rows.length > 0) rows = [];
+  }
+
+  const liveRows = live.rows || [];
+  const indexById = new Map(rows.map((r, i) => [r.id, i]));
+  for (const lr of liveRows) {
+    if (!lr || !lr.id) continue;
+    if (indexById.has(lr.id)) {
+      const i = indexById.get(lr.id);
+      rows[i] = mergeLiveIntoRow(rows[i], lr);
+    } else {
+      indexById.set(lr.id, rows.length);
+      rows.push(lr);
+    }
+  }
+
+  const header = `🔎 <b>ტელეფონის რენტგენი:</b> <code>${parsed.formattedPhone}</code>`;
+  const searching = "🔄 myhome-ზე ვეძებ, დაახლოებით 1 წუთში მოგწერ.";
+  if (rows.length === 0) {
+    if (live.mode === "fresh") {
+      return `${header}\n\nℹ️ ამ ნომერზე განცხადება ვერ მოიძებნა ვერც myhome-ზე და ვერც ჩვენს ბაზაში.`;
+    }
+    const note = { queued: `\n${searching}`, failed: "\n⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ." }[live.mode] || "";
+    return `${header}\n\nℹ️ ჩვენს ბაზაში ამ ნომერზე განცხადებები ჯერ არ ფიქსირდება.${note}`;
+  }
+
+  // A row from the lookup job already carries what MyHome's listing page said.
+  const liveIds = new Set(liveRows.map(r => r && r.id));
+  if (
+    !liveIds.has(rows[0].id) &&
+    rows.length <= 5 &&
+    (rows[0].is_owner === null ||
+      rows[0].is_owner === undefined ||
+      isMaskedPhone(rows[0].phone_number) ||
+      !rows[0].author_id ||
+      rows[0].author_listings_count === null ||
+      rows[0].author_listings_count === undefined ||
+      rows[0].source === "ss_ge")
+  ) {
+    const srcId = rows[0].source_id || String(rows[0].id || "").replace(/^(?:myhome|ss_ge)_/, "");
+    const details = await fetchLiveStatementDetails(rows[0].source, srcId, rows[0].url);
+    if (details) {
+      rows[0] = mergeLiveIntoRow(rows[0], details);
+      await persistLiveEnrichment(db, rows[0].id, rows[0]);
+    }
+  }
+
+  if (rows[0].author_id) {
+    const { results: authorRows } = await db
+      .prepare("SELECT * FROM properties WHERE author_id = ? ORDER BY scraped_at DESC LIMIT 30")
+      .bind(String(rows[0].author_id))
+      .all();
+    const seenIds = new Set(rows.map(r => r.id));
+    for (const ar of authorRows || []) {
+      if (ar && ar.id && !seenIds.has(ar.id)) {
+        rows.push(ar);
+        seenIds.add(ar.id);
+      }
+    }
+  }
+
+  const verdict = evaluateWorkerBrokerVerdict(rows[0], rows, liveRows.length ? "myhome-ზე და ბაზაში" : "ბაზაში");
+  const more = live.mode === "fresh" && live.full ? "+" : "";
+  const lines = [header, `👤 <b>სტატუსი:</b> ${verdict.badge}`, `📌 ${verdict.reason}`];
+  if (live.mode === "fresh") {
+    lines.push(`🌐 myhome-ზე ამ ნომერზე <b>${liveRows.length}${more}</b> აქტიური განცხადებაა`);
+  } else if (live.mode === "queued") {
+    lines.push(liveRows.length ? `${searching} ქვემოთ ბოლოს ნანახიც ჩანს.` : searching);
+  } else if (live.mode === "failed") {
+    lines.push(
+      liveRows.length
+        ? "⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ, ნაჩვენებია ბოლოს ნანახი."
+        : "⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ, ნაჩვენებია მხოლოდ ჩვენი ბაზა."
+    );
+  }
+  lines.push("", `📋 <b>ნაპოვნი განცხადებები (${rows.length}${more}):</b>`);
+  for (const r of rows.slice(0, 5)) {
+    const p = Math.round(Number(r.price_usd) || 0).toLocaleString();
+    const area = Number(r.area_m2) || 0;
+    const dist = r.district || "უცნობი უბანი";
+    const src = r.source === "myhome" ? "MyHome" : "SS.ge";
+    lines.push(`• <a href="${r.url || "#"}">${src}</a> — <b>$${p}</b> | ${area} მ² | ${dist}`);
+  }
+  if (live.mode === "fresh" && liveRows.length > 0) {
+    lines.push(`🔗 <a href="${myHomeSearchUrl({ q: parsed.phone9 })}">ყველა განცხადება myhome-ზე</a>`);
+  }
+
+  // Surface same-apartment duplicates (e.g. real owner listing) for matched listings
+  const relatedIds = new Set(rows.map(r => r.id));
+  const phoneDupMap = new Map();
+  for (const r of rows.slice(0, 5)) {
+    const refPrice = Number(r.price_usd) || 0;
+    const rDups = await queryWorkerExactDuplicates(db, r, 15);
+    for (const d of rDups) {
+      if (d && d.id && !relatedIds.has(d.id) && !phoneDupMap.has(d.id)) {
+        phoneDupMap.set(d.id, { dup: d, refPrice });
+      }
+    }
+  }
+  if (phoneDupMap.size > 0) {
+    const sortedPhoneDups = Array.from(phoneDupMap.values()).sort(
+      (a, b) => (Number(a.dup.price_usd) || 0) - (Number(b.dup.price_usd) || 0)
+    );
+    await enrichDuplicatesIfNeeded(db, sortedPhoneDups.map(item => item.dup), 3);
+    lines.push("");
+    lines.push("🎯 <b>იგივე ბინა სხვაგან:</b>");
+    for (const { dup, refPrice } of sortedPhoneDups.slice(0, 4)) {
+      const dPrice = Math.round(Number(dup.price_usd) || 0);
+      const dSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
+      const dOwner = formatOwnerBadge(dup.is_owner);
+      const dPhonePart = dup.phone_number ? ` | 📞 <code>${dup.phone_number}</code>` : "";
+      let diffStr = "";
+      if (refPrice > 0 && dPrice > 0) {
+        const delta = Math.round(dPrice - refPrice);
+        if (delta < 0) diffStr = ` (<b>-$${Math.abs(delta).toLocaleString()} უფრო იაფად!</b>)`;
+        else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
+        else diffStr = " (იგივე ფასი)";
+      }
+      lines.push(`• <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}${dPhonePart}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+async function handleXRayQuery(text, env, opts = {}) {
   const parsed = parseXRayInput(text);
   if (!parsed) return null;
 
@@ -1933,115 +2276,13 @@ async function handleXRayQuery(text, env) {
 
   try {
     if (parsed.kind === "phone") {
-      const fmtParam = parsed.formattedPhone || parsed.maskedPhone || "";
-      const p9Param = parsed.phone9 || fmtParam;
-      const maskParam = parsed.maskedPhone || fmtParam;
-      const { results } = await db
-        .prepare("SELECT * FROM properties WHERE phone_number IN (?, ?, ?) ORDER BY scraped_at DESC LIMIT 30")
-        .bind(fmtParam, p9Param, maskParam)
-        .all();
-      const fetched = results || [];
-      let rows = fetched;
-      if (parsed.phone9) {
-        const exactRows = fetched.filter(
-          r => r.phone_number === parsed.formattedPhone || r.phone_number === parsed.phone9
-        );
-        if (exactRows.length > 0) rows = exactRows;
-      }
-      if (rows.length === 0) {
-        return (
-          `🔎 <b>ტელეფონის რენტგენი:</b> <code>${parsed.formattedPhone}</code>\n\n` +
-          `ℹ️ ჩვენს ბაზაში ამ ნომერზე განცხადებები ჯერ არ ფიქსირდება.`
-        );
-      }
-
-      if (
-        rows.length <= 5 &&
-        (rows[0].is_owner === null ||
-          rows[0].is_owner === undefined ||
-          isMaskedPhone(rows[0].phone_number) ||
-          !rows[0].author_id ||
-          rows[0].author_listings_count === null ||
-          rows[0].author_listings_count === undefined ||
-          rows[0].source === "ss_ge")
-      ) {
-        const srcId = rows[0].source_id || String(rows[0].id || "").replace(/^(?:myhome|ss_ge)_/, "");
-        const live = await fetchLiveStatementDetails(rows[0].source, srcId, rows[0].url);
-        if (live) {
-          rows[0] = mergeLiveIntoRow(rows[0], live);
-          await persistLiveEnrichment(db, rows[0].id, rows[0]);
-        }
-      }
-
-      if (rows[0].author_id) {
-        const { results: authorRows } = await db
-          .prepare("SELECT * FROM properties WHERE author_id = ? ORDER BY scraped_at DESC LIMIT 30")
-          .bind(String(rows[0].author_id))
-          .all();
-        const seenIds = new Set(rows.map(r => r.id));
-        for (const ar of authorRows || []) {
-          if (ar && ar.id && !seenIds.has(ar.id)) {
-            rows.push(ar);
-            seenIds.add(ar.id);
-          }
-        }
-      }
-
-      const verdict = evaluateWorkerBrokerVerdict(rows[0], rows);
-      const lines = [
-        `🔎 <b>ტელეფონის რენტგენი:</b> <code>${parsed.formattedPhone}</code>`,
-        `👤 <b>სტატუსი:</b> ${verdict.badge}`,
-        `📌 ${verdict.reason}`,
-        "",
-        `📋 <b>ნაპოვნი განცხადებები (${rows.length}):</b>`
-      ];
-      for (const r of rows.slice(0, 5)) {
-        const p = Math.round(Number(r.price_usd) || 0).toLocaleString();
-        const area = Number(r.area_m2) || 0;
-        const dist = r.district || "უცნობი უბანი";
-        const src = r.source === "myhome" ? "MyHome" : "SS.ge";
-        lines.push(`• <a href="${r.url || "#"}">${src}</a> — <b>$${p}</b> | ${area} მ² | ${dist}`);
-      }
-
-      // Surface same-apartment duplicates (e.g. real owner listing) for matched listings
-      const relatedIds = new Set(rows.map(r => r.id));
-      const phoneDupMap = new Map();
-      for (const r of rows.slice(0, 5)) {
-        const refPrice = Number(r.price_usd) || 0;
-        const rDups = await queryWorkerExactDuplicates(db, r, 15);
-        for (const d of rDups) {
-          if (d && d.id && !relatedIds.has(d.id) && !phoneDupMap.has(d.id)) {
-            phoneDupMap.set(d.id, { dup: d, refPrice });
-          }
-        }
-      }
-      if (phoneDupMap.size > 0) {
-        const sortedPhoneDups = Array.from(phoneDupMap.values()).sort(
-          (a, b) => (Number(a.dup.price_usd) || 0) - (Number(b.dup.price_usd) || 0)
-        );
-        await enrichDuplicatesIfNeeded(db, sortedPhoneDups.map(item => item.dup), 3);
-        lines.push("");
-        lines.push("🎯 <b>იგივე ბინა სხვაგან:</b>");
-        for (const { dup, refPrice } of sortedPhoneDups.slice(0, 4)) {
-          const dPrice = Math.round(Number(dup.price_usd) || 0);
-          const dSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
-          const dOwner = formatOwnerBadge(dup.is_owner);
-          const dPhonePart = dup.phone_number ? ` | 📞 <code>${dup.phone_number}</code>` : "";
-          let diffStr = "";
-          if (refPrice > 0 && dPrice > 0) {
-            const delta = Math.round(dPrice - refPrice);
-            if (delta < 0) diffStr = ` (<b>-$${Math.abs(delta).toLocaleString()} უფრო იაფად!</b>)`;
-            else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
-            else diffStr = " (იგივე ფასი)";
-          }
-          lines.push(`• <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}${dPhonePart}`);
-        }
-      }
-
-      return lines.join("\n");
+      // MyHome is read by a GitHub Actions job (ADR 0004); D1 holds only what matched subscriber filters.
+      return await buildPhoneReport(db, parsed, await myHomeLiveState(env, parsed, opts.chatId));
     }
 
     let target = null;
+    // "queued" or "failed" when a MyHome listing page has to be read by the lookup job (ADR 0004).
+    let myhomeCheck = null;
     if (parsed.kind === "url") {
       const row = await db
         .prepare("SELECT * FROM properties WHERE id = ?")
@@ -2050,7 +2291,7 @@ async function handleXRayQuery(text, env) {
       if (row) {
         target = row;
       }
-      if (
+      const needsLive =
         !target ||
         target.is_owner === null ||
         target.is_owner === undefined ||
@@ -2058,8 +2299,18 @@ async function handleXRayQuery(text, env) {
         !target.author_id ||
         target.author_listings_count === null ||
         target.author_listings_count === undefined ||
-        target.source === "ss_ge"
-      ) {
+        target.source === "ss_ge";
+      if (parsed.source === "myhome") {
+        // MyHome answers the Worker with a challenge page, so the lookup job reads the listing.
+        const saved = await loadSavedListing(db, parsed.listingId);
+        if (saved && isFreshIso(saved.seen_at, MYHOME_LOOKUP_FRESH_MINUTES)) {
+          target = target ? mergeLiveIntoRow(target, saved) : saved;
+        } else if (needsLive) {
+          if (!target && saved) target = saved;
+          const jobId = await queueMyHomeLookup(env, opts.chatId, { kind: "listing", listingId: parsed.sourceId });
+          myhomeCheck = jobId ? "queued" : "failed";
+        }
+      } else if (needsLive) {
         const live = await fetchLiveStatementDetails(parsed.source, parsed.sourceId, parsed.url || target?.url);
         if (live) {
           target = target ? mergeLiveIntoRow(target, live) : live;
@@ -2086,6 +2337,13 @@ async function handleXRayQuery(text, env) {
     }
 
     if (!target) {
+      if (myhomeCheck === "queued") {
+        return (
+          "🔎 <b>განცხადების რენტგენი</b>\n\n" +
+          "ℹ️ ეს განცხადება ჩვენს ბაზაში ჯერ არ არის.\n" +
+          "🔄 myhome-ზე ვამოწმებ, დაახლოებით 1 წუთში მოგწერ."
+        );
+      }
       return (
         "🔎 <b>განცხადების რენტგენი</b>\n\n" +
         "ℹ️ ეს განცხადება ჩვენს ბაზაში ჯერ არ იძებნება და პორტალიდან მონაცემების წამოღება ვერ მოხერხდა."
@@ -2156,6 +2414,11 @@ async function handleXRayQuery(text, env) {
       `👤 <b>გამყიდველი:</b> ${verdict.badge}`,
       `📌 ${verdict.reason}`
     ];
+    if (myhomeCheck === "queued") {
+      lines.push("🔄 myhome-ზე ვამოწმებ განცხადებას, დაახლოებით 1 წუთში მოგწერ ზუსტ სტატუსს.");
+    } else if (myhomeCheck === "failed") {
+      lines.push("⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ, სტატუსი ჩვენი ბაზით არის.");
+    }
     const displayPhone = target.phone_number || (duplicates.find(d => d && d.phone_number)?.phone_number) || null;
     if (displayPhone) {
       lines.push(`📞 <b>ტელეფონი:</b> <code>${displayPhone}</code>`);

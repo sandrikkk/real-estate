@@ -1,0 +1,46 @@
+name: X-Ray live canary
+
+# Daily check that MyHome still behaves the way the X-Ray phone lookup relies on
+# (ADR 0003, ADR 0004). On failure the admin chat gets a Telegram message.
+on:
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install "pydantic>=2.0.0" "pydantic-settings>=2.0.0" "python-dotenv>=1.0.0" "curl_cffi>=0.7.0"
+
+      - name: Check MyHome
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python scripts/xray_canary.py
+
+      - name: Tell the admin on Telegram
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sS -o /dev/null -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=⚠️ X-Ray canary: myhome-მა რაღაც შეცვალა და ნომრით ძებნა შეიძლება აღარ მუშაობდეს. ${RUN_URL}"

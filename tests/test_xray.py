@@ -498,7 +498,7 @@ class TestXRayEngine(unittest.TestCase):
         # 2. awaiting_price and awaiting_area state handlers precede handleXRayQuery
         idx_price = worker_src.find('user.state === "awaiting_price"')
         idx_area = worker_src.find('user.state === "awaiting_area"')
-        idx_xray = worker_src.find("await handleXRayQuery(text, env)")
+        idx_xray = worker_src.find("await handleXRayQuery(text, env, { chatId })")
         self.assertGreater(idx_price, 0)
         self.assertGreater(idx_area, idx_price)
         self.assertGreater(idx_xray, idx_area)
@@ -506,7 +506,7 @@ class TestXRayEngine(unittest.TestCase):
         # 3. Core X-Ray functions defined in cloudflare/worker.js
         self.assertIn("function parseXRayInput(text)", worker_src)
         self.assertIn("async function fetchLiveStatementDetails(", worker_src)
-        self.assertIn("async function handleXRayQuery(text, env)", worker_src)
+        self.assertIn("async function handleXRayQuery(text, env, opts = {})", worker_src)
 
         # 4. Uses indexed phone_number IN (?, ?, ?) with maskedPhone and never unindexed LIKE '%...'
         self.assertIn("phone_number IN (?, ?, ?)", worker_src)
@@ -531,7 +531,8 @@ class TestXRayEngine(unittest.TestCase):
         # 8. Missing SYNC_KEY fails closed on every protected route
         self.assertIn("if (!expectedKey) return false;", worker_src)
         self.assertNotIn("if (!expectedKey) return true;", worker_src)
-        self.assertEqual(worker_src.count("isSyncKeyValid(request, env)"), 5)
+        # the definition, plus proxy, /api/debug, /api/users, /api/db/query, /api/xray/followup
+        self.assertEqual(worker_src.count("isSyncKeyValid(request, env)"), 6)
 
         # 9. MyHome API headers and numeric is_owner === 0 handling in Worker
         self.assertIn('"X-Website-Key": "myhome"', worker_src)
@@ -894,7 +895,7 @@ GOLDEN_BASELINE = {
     "price_usd": 26,
 }
 
-# Incident 2026-11-06 (docs/incidents/2026-11-06-xray-false-duplicate.md), FB text reconstructed.
+# Incident 2026-11-06 (docs/production-fixes.md §5.5), FB text reconstructed.
 INCIDENT_FB = (
     "იყიდება ქალაქური პროექტის ბინა თემქაზე, 3 მ/რ, 4 კვარტალი. 62 კვ.მ, 1 სართული 8 სართულიანი კორპუსის. "
     "ერთი საძინებელი, მისაღები და ლოჯი. ფასი 79 000$ ტელ: 599 90 90 01"

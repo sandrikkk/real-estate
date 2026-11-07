@@ -1,5 +1,8 @@
+import json
 import re
 import sqlite3
+import urllib.parse
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from core.database import DatabaseEngine
@@ -198,6 +201,47 @@ def _extract_masked_phone(text: str) -> Optional[str]:
     return None
 
 
+def _roman_to_int(s: str) -> int:
+    val = {"I": 1, "V": 5, "X": 10}
+    total = 0
+    for i, ch in enumerate(s):
+        nxt = val.get(s[i + 1], 0) if i + 1 < len(s) else 0
+        total += -val[ch] if val[ch] < nxt else val[ch]
+    return total
+
+
+# Micro-district number: "მე-6 მიკრო", "6-ე მიკრორაიონი", "3 მ/რ", and MyHome's "გლდანი - VI მ/რ".
+_MICRO_RE = re.compile(
+    r"(?<![\dA-Za-z\u10A0-\u10FF])(?:მე[-\s]*)?(\d{1,2}|[IVX]{1,5})(?:[-\s]*(?:ე|ლი))?[-\s]*"
+    r"(?:მ\s*/\s*რ|მ\.\s*რ\.?|მიკრო)",
+    re.IGNORECASE,
+)
+
+
+def _extract_micro_district(text: Any) -> Optional[int]:
+    if not text:
+        return None
+    match = _MICRO_RE.search(str(text))
+    if not match:
+        return None
+    raw = match.group(1)
+    n = int(raw) if raw.isdigit() else _roman_to_int(raw.upper())
+    return n if n > 0 else None
+
+
+def _micro_of(listing: Dict[str, Any]) -> Optional[int]:
+    # A parsed post carries `micro`; a listing row names it in subdistrict or street.
+    try:
+        own = int(listing.get("micro") or 0)
+    except (ValueError, TypeError):
+        own = 0
+    if own > 0:
+        return own
+    return _extract_micro_district(
+        f"{listing.get('subdistrict') or ''} {listing.get('street') or ''}"
+    )
+
+
 def _extract_fb_attributes(text: str) -> Dict[str, Any]:
     area_m2: Optional[float] = None
     floor: Optional[str] = None
@@ -372,7 +416,7 @@ def parse_xray_input(text: str) -> Optional[Dict[str, Any]]:
         }
 
     # 3. Extract FB text attributes and phone
-    fb_attrs = _extract_fb_attributes(stripped)
+    fb_attrs = {**_extract_fb_attributes(stripped), "micro": _extract_micro_district(stripped)}
     phone_9 = _extract_9digit_phone(stripped)
     masked_phone = f"{phone_9[:6]}***" if phone_9 else _extract_masked_phone(stripped)
     has_fb_signal = bool(
@@ -394,20 +438,26 @@ def parse_xray_input(text: str) -> Optional[Dict[str, Any]]:
             **fb_attrs,
         }
 
+    # Without an area the post is not confirmed as a flat listing (it may be a buyer or a house),
+    # so what it names is kept apart as a hint for the owner search (ADR 0003), not as parsed facts.
     if phone_9 or masked_phone:
         return {
             "kind": "phone",
             "phone_9": phone_9,
             "formatted_phone": _format_georgian_phone(phone_9) if phone_9 else masked_phone,
             "masked_phone": masked_phone,
+            "flat": fb_attrs,
         }
 
     return None
 
 
 def evaluate_broker_verdict(
-    target: Optional[Dict[str, Any]], related_rows: List[Dict[str, Any]]
+    target: Optional[Dict[str, Any]],
+    related_rows: List[Dict[str, Any]],
+    where: str = "ბაზაში",
 ) -> Dict[str, Any]:
+    # `where` names the sources the rows came from, for the count in the reason line.
     all_rows: List[Dict[str, Any]] = []
     seen_ids = set()
     is_phoneless_fb = bool(
@@ -529,7 +579,7 @@ def evaluate_broker_verdict(
         reasons = []
         if unique_apartments >= 2 or len(all_rows) >= 2:
             reasons.append(
-                f"ბაზაში ამ ნომრით/ავტორით იძებნება <b>{len(all_rows)} განცხადება</b> ({unique_apartments} სხვადასხვა ბინა)"
+                f"{where} ამ ნომრით/ავტორით იძებნება <b>{len(all_rows)} განცხადება</b> ({unique_apartments} სხვადასხვა ბინა)"
             )
         elif max_author_count >= 3:
             reasons.append(f"პორტალზე ავტორს უფიქსირდება <b>{max_author_count} განცხადება</b>")
@@ -618,19 +668,29 @@ def _compare_total_floors(target: Dict[str, Any], cand: Dict[str, Any]) -> str:
 
 def _compare_location(target: Dict[str, Any], cand: Dict[str, Any]) -> str:
     # A row filed under the parent district is not evidence of the child district;
-    # only the child named in its subdistrict or street is.
+    # only the child named in its subdistrict or street is. Two different micro-district
+    # numbers are two different flats.
+    tm = _micro_of(target)
+    cm = _micro_of(cand)
+    if tm and cm and tm != cm:
+        return "conflict"
     d = str(target.get("district") or "").strip()
     if not d:
         return "unknown"
     stems = [stem for stem, canonical in DISTRICT_KEYWORDS if canonical == d] + [d]
     hay = f"{cand.get('subdistrict') or ''} {cand.get('street') or ''}".lower()
-    return "agree" if any(s in hay for s in stems) else "unknown"
+    if any(s in hay for s in stems):
+        return "agree"
+    if tm and cm and str(cand.get("district") or "").strip() in _expand_district_aliases(d):
+        return "agree"
+    return "unknown"
 
 
 def _candidate_matches_target(target: Dict[str, Any], cand: Dict[str, Any]) -> bool:
     layout = _compare_layout(target, cand)
     height = _compare_total_floors(target, cand)
-    if "conflict" in (layout, height):
+    location = _compare_location(target, cand)
+    if "conflict" in (layout, height, location):
         return False
     tf = _clean_floor(target.get("floor"))
     cf = _clean_floor(cand.get("floor"))
@@ -638,7 +698,7 @@ def _candidate_matches_target(target: Dict[str, Any], cand: Dict[str, Any]) -> b
         if cf != tf:
             return False
         # Floor and area alone fit many unrelated flats: require one more agreeing fact.
-        return "agree" in (layout, height, _compare_location(target, cand))
+        return "agree" in (layout, height, location)
     # When floor is omitted on target (e.g. in an FB post), require explicit matching rooms
     # AND price within ±10% so unrelated apartments on other floors do not match.
     try:
@@ -817,12 +877,209 @@ def _merge_live_into_row(row: Dict[str, Any], live: Optional[Dict[str, Any]]) ->
     return merged
 
 
+# MyHome search page (SSR), read by the GitHub Actions lookup job scripts/xray_lookup.py (ADR 0004).
+MYHOME_SEARCH_URL = "https://www.myhome.ge/ka/s/udzravi-qoneba/"
+MYHOME_SEARCH_PAGE_SIZE = 24  # MyHome's own page size; the live canary checks it
+MYHOME_PARENT_DISTRICTS = (
+    "ვაკე-საბურთალო",
+    "გლდანი-ნაძალადევი",
+    "დიდუბე-ჩუღურეთი",
+    "ისანი-სამგორი",
+    "ძველი თბილისი",
+    "თბილისის შემოგარენი",
+)
+# Same order as the xray_live_listings table in core/database.py.
+XRAY_LIVE_COLUMNS = (
+    "id",
+    "source",
+    "source_id",
+    "phone9",
+    "author_id",
+    "user_type",
+    "is_owner",
+    "district",
+    "subdistrict",
+    "street",
+    "area_m2",
+    "floor",
+    "total_floors",
+    "rooms",
+    "bedrooms",
+    "price_usd",
+    "deal_type",
+    "url",
+    "phone_number",
+    "author_listings_count",
+    "seen_at",
+)
+
+
+def myhome_search_url(params: Dict[str, Any]) -> str:
+    return f"{MYHOME_SEARCH_URL}?{urllib.parse.urlencode({k: str(v) for k, v in params.items()})}"
+
+
+def extract_next_data(html: Optional[str]) -> Optional[Dict[str, Any]]:
+    match = re.search(r'<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)</script>', html or "")
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except ValueError:
+        return None
+
+
+def find_statements_list(
+    next_data: Optional[Dict[str, Any]], params: Dict[str, Any]
+) -> Optional[List[Dict[str, Any]]]:
+    # The page carries other lists too (developer projects): take the one whose echoed
+    # query is exactly what was asked for.
+    want = {k: str(v) for k, v in params.items()}
+    page_props = ((next_data or {}).get("props") or {}).get("pageProps") or {}
+    for q in (page_props.get("dehydratedState") or {}).get("queries") or []:
+        key = q.get("queryKey") if isinstance(q, dict) else None
+        if not isinstance(key, list) or key[:2] != ["statements", "list"]:
+            continue
+        query = (key[2].get("query") if len(key) > 2 and isinstance(key[2], dict) else None) or {}
+        items = (((q.get("state") or {}).get("data") or {}).get("data") or {}).get("data")
+        if {k: str(v) for k, v in query.items()} == want and isinstance(items, list):
+            return items
+    return None
+
+
+def parse_myhome_list_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    # A MyHome list item in the shape of a properties row, by the rules of scrapers/myhome.py.
+    urban = item.get("urban_name") or ""
+    district_name = item.get("district_name") or ""
+    price = item.get("price") if isinstance(item.get("price"), dict) else {}
+    usd = price.get("2") or price.get(2) or {}
+    user_type = item.get("user_type") if isinstance(item.get("user_type"), dict) else {}
+    floor = item.get("floor")
+    return {
+        "id": f"myhome_{item.get('id')}",
+        "source": "myhome",
+        "source_id": str(item.get("id")),
+        "url": f"https://www.myhome.ge/ka/pr/{item.get('id')}/",
+        "price_usd": float(usd.get("price_total") or 0),
+        "area_m2": float(item.get("area") or 0),
+        "floor": str(floor) if floor is not None else "",
+        "total_floors": _as_int(item.get("total_floors")) or None,
+        "rooms": _as_int(item.get("room")) or 0,
+        "bedrooms": _as_int(item.get("bedroom")) or None,
+        "district": urban or district_name,
+        "subdistrict": district_name
+        if urban
+        and district_name
+        and district_name != urban
+        and district_name not in MYHOME_PARENT_DISTRICTS
+        else None,
+        "street": item.get("address") or "",
+        "deal_type": "rent" if str(item.get("deal_type_id")) in ("2", "4") else "sale",
+        "user_type": user_type.get("type"),
+        "is_owner": None,
+        "phone_number": None,
+        "author_id": str(item["user_id"]) if item.get("user_id") else None,
+        "author_listings_count": None,
+    }
+
+
+def phone_prefix_matches(statement_phone: Any, phone_9: Optional[str]) -> bool:
+    digits = re.sub(r"\D", "", str(statement_phone or ""))
+    return len(digits) >= 6 and digits[:6] == str(phone_9 or "")[:6]
+
+
+def live_phone_result(
+    phone_9: str,
+    items: Optional[List[Dict[str, Any]]],
+    first_statement: Optional[Dict[str, Any]],
+    first_details: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    # The lookup job's verdict on one search. ok=False means show nothing from MyHome: the page failed,
+    # or its first hit has another number because MyHome ignored the filter.
+    failed: Dict[str, Any] = {"ok": False, "rows": [], "full": False, "checked_ids": []}
+    if items is None:
+        return failed
+    rows = [parse_myhome_list_item(i) for i in items]
+    if not rows:
+        return {"ok": True, "rows": [], "full": False, "checked_ids": []}
+    if not first_statement or not phone_prefix_matches(
+        first_statement.get("user_phone_number"), phone_9
+    ):
+        return failed
+    rows[0] = _merge_live_into_row(rows[0], first_details)
+    return {
+        "ok": True,
+        "rows": rows,
+        "full": len(items) >= MYHOME_SEARCH_PAGE_SIZE,
+        "checked_ids": [rows[0]["id"]],
+    }
+
+
+def utc_now_iso() -> str:
+    # Same format as JavaScript's toISOString(), so the Worker can compare the strings.
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def save_live_listings(conn: Any, phone_9: Optional[str], rows: List[Dict[str, Any]]) -> None:
+    """Writes the lookup job's MyHome rows (scripts/xray_lookup.py); `conn` is SQLite or D1.
+
+    Live hits stay out of `properties`: the scraper treats every id there as already seen.
+    A "listing" job passes no phone and keeps the phone a "phone" job stored for that row.
+    """
+    if not rows:
+        return
+    seen_at = utc_now_iso()
+    updates = ", ".join(
+        "phone9 = COALESCE(excluded.phone9, xray_live_listings.phone9)"
+        if c == "phone9"
+        else f"{c} = excluded.{c}"
+        for c in XRAY_LIVE_COLUMNS
+        if c != "id"
+    )
+    sql = (
+        f"INSERT INTO xray_live_listings ({', '.join(XRAY_LIVE_COLUMNS)}) "
+        f"VALUES ({', '.join('?' for _ in XRAY_LIVE_COLUMNS)}) "
+        f"ON CONFLICT(id) DO UPDATE SET {updates}"
+    )
+    params = [
+        tuple({**r, "phone9": phone_9, "seen_at": seen_at}.get(c) for c in XRAY_LIVE_COLUMNS)
+        for r in rows
+    ]
+    conn.cursor().executemany(sql, params)
+    conn.commit()
+
+
+def load_saved_live_listings(
+    conn: Any, phone_9: str, since: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    # Mirrors loadSavedLiveListings: with `since`, only the rows that lookup saved.
+    try:
+        if since:
+            cur = conn.execute(
+                "SELECT * FROM xray_live_listings WHERE phone9 = ? AND seen_at >= ?"
+                " ORDER BY seen_at DESC LIMIT 30",
+                (phone_9, since),
+            )
+        else:
+            cur = conn.execute(
+                "SELECT * FROM xray_live_listings WHERE phone9 = ? ORDER BY seen_at DESC LIMIT 30",
+                (phone_9,),
+            )
+        return [dict(row) for row in cur.fetchall()]
+    except sqlite3.Error:
+        return []
+
+
 def run_xray_on_db(
     db: DatabaseEngine,
     text: str,
     live_details: Optional[Dict[str, Any]] = None,
     price_table_provider: Optional[Callable[[Optional[int]], Optional[Dict[str, float]]]] = None,
+    live_phone: Optional[Dict[str, Any]] = None,
+    myhome_check: Optional[str] = None,
 ) -> Optional[str]:
+    # `myhome_check` mirrors the Worker's link path: "queued" when a listing job was started for
+    # a MyHome link, "failed" when none could be (ADR 0004). `live_details` then stands for the
+    # listing job's saved row.
     parsed = parse_xray_input(text)
     if not parsed:
         return None
@@ -843,12 +1100,48 @@ def run_xray_on_db(
                 formatted_phone=fmt_phone,
                 masked_phone=masked_phone,
             )
+            # `live_phone` mirrors the Worker's myHomeLiveState(): {"mode": "fresh" | "queued" |
+            # "failed" | "none", "rows": [...], "full": bool}. None means "none".
+            live = live_phone or {"mode": "none", "rows": [], "full": False}
+            mode = live.get("mode") or "none"
+            live_rows: List[Dict[str, Any]] = list(live.get("rows") or [])
+            if (
+                phone_9
+                and mode == "fresh"
+                and live_rows
+                and not any(r.get("phone_number") in (fmt_phone, phone_9) for r in related)
+            ):
+                # Masked-prefix rows may be other people; do not mix them into an exact MyHome answer.
+                related = []
+            index_by_id = {r["id"]: i for i, r in enumerate(related)}
+            for lr in live_rows:
+                if not lr or not lr.get("id"):
+                    continue
+                if lr["id"] in index_by_id:
+                    i = index_by_id[lr["id"]]
+                    related[i] = _merge_live_into_row(related[i], lr)
+                else:
+                    index_by_id[lr["id"]] = len(related)
+                    related.append(lr)
+
+            header = f"🔎 <b>ტელეფონის რენტგენი:</b> <code>{fmt_phone}</code>"
+            searching = "🔄 myhome-ზე ვეძებ, დაახლოებით 1 წუთში მოგწერ."
             if not related:
+                if mode == "fresh":
+                    return (
+                        f"{header}\n\n"
+                        "ℹ️ ამ ნომერზე განცხადება ვერ მოიძებნა ვერც myhome-ზე და ვერც ჩვენს ბაზაში."
+                    )
+                note = {
+                    "queued": f"\n{searching}",
+                    "failed": "\n⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ.",
+                }.get(mode, "")
                 return (
-                    f"🔎 <b>ტელეფონის რენტგენი:</b> <code>{fmt_phone}</code>\n\n"
-                    "ℹ️ ჩვენს ბაზაში ამ ნომერზე განცხადებები ჯერ არ ფიქსირდება."
+                    f"{header}\n\nℹ️ ჩვენს ბაზაში ამ ნომერზე განცხადებები ჯერ არ ფიქსირდება.{note}"
                 )
-            if live_details:
+            # A row from the lookup job already carries what MyHome's listing page said.
+            live_ids = {r.get("id") for r in live_rows if r}
+            if live_details and related[0].get("id") not in live_ids:
                 related[0] = _merge_live_into_row(related[0], live_details)
             discovered_author = related[0].get("author_id")
             if discovered_author:
@@ -864,14 +1157,24 @@ def run_xray_on_db(
                     if ar["id"] not in seen_r:
                         related.append(ar)
                         seen_r[ar["id"]] = ar
-            verdict = evaluate_broker_verdict(related[0], related)
-            lines = [
-                f"🔎 <b>ტელეფონის რენტგენი:</b> <code>{fmt_phone}</code>",
-                f"👤 <b>სტატუსი:</b> {verdict['badge']}",
-                f"📌 {verdict['reason']}",
-                "",
-                f"📋 <b>ნაპოვნი განცხადებები ({len(related)}):</b>",
-            ]
+            verdict = evaluate_broker_verdict(
+                related[0], related, "myhome-ზე და ბაზაში" if live_rows else "ბაზაში"
+            )
+            more = "+" if mode == "fresh" and live.get("full") else ""
+            lines = [header, f"👤 <b>სტატუსი:</b> {verdict['badge']}", f"📌 {verdict['reason']}"]
+            if mode == "fresh":
+                lines.append(
+                    f"🌐 myhome-ზე ამ ნომერზე <b>{len(live_rows)}{more}</b> აქტიური განცხადებაა"
+                )
+            elif mode == "queued":
+                lines.append(f"{searching} ქვემოთ ბოლოს ნანახიც ჩანს." if live_rows else searching)
+            elif mode == "failed":
+                lines.append(
+                    "⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ, ნაჩვენებია ბოლოს ნანახი."
+                    if live_rows
+                    else "⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ, ნაჩვენებია მხოლოდ ჩვენი ბაზა."
+                )
+            lines += ["", f"📋 <b>ნაპოვნი განცხადებები ({len(related)}{more}):</b>"]
             for r in related[:5]:
                 p_usd = int(float(r.get("price_usd") or 0))
                 area = r.get("area_m2") or 0
@@ -880,6 +1183,10 @@ def run_xray_on_db(
                 url = r.get("url") or "#"
                 lines.append(
                     f'• <a href="{url}">{src}</a> — <b>${p_usd:,}</b> | {area:g} მ² | {dist}'
+                )
+            if mode == "fresh" and live_rows:
+                lines.append(
+                    f'🔗 <a href="{myhome_search_url({"q": phone_9})}">ყველა განცხადება myhome-ზე</a>'
                 )
 
             dup_by_id: Dict[str, tuple[Dict[str, Any], float]] = {}
@@ -947,6 +1254,12 @@ def run_xray_on_db(
             }
 
         if not target:
+            if myhome_check == "queued":
+                return (
+                    "🔎 <b>განცხადების რენტგენი</b>\n\n"
+                    "ℹ️ ეს განცხადება ჩვენს ბაზაში ჯერ არ არის.\n"
+                    "🔄 myhome-ზე ვამოწმებ, დაახლოებით 1 წუთში მოგწერ."
+                )
             return (
                 "🔎 <b>განცხადების რენტგენი</b>\n\n"
                 "ℹ️ ეს განცხადება ჩვენს ბაზაში ჯერ არ იძებნება და პორტალიდან მონაცემების წამოღება ვერ მოხერხდა."
@@ -1000,6 +1313,12 @@ def run_xray_on_db(
             f"👤 <b>გამყიდველი:</b> {verdict['badge']}",
             f"📌 {verdict['reason']}",
         ]
+        if myhome_check == "queued":
+            lines.append(
+                "🔄 myhome-ზე ვამოწმებ განცხადებას, დაახლოებით 1 წუთში მოგწერ ზუსტ სტატუსს."
+            )
+        elif myhome_check == "failed":
+            lines.append("⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ, სტატუსი ჩვენი ბაზით არის.")
         display_phone = target.get("phone_number") or next(
             (d.get("phone_number") for d in duplicates if d.get("phone_number")), None
         )

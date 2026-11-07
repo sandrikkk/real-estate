@@ -32,14 +32,9 @@ git status
 git branch --show-current
 ```
 
-- On `master` with uncommitted changes, or while another agent is editing this checkout: do not `git checkout -b` here. That moves the shared `HEAD` and carries their uncommitted files onto the new branch. Use a separate worktree:
-
-  ```bash
-  git fetch origin master
-  git worktree add ../real-estate-<slug> -b feat/<slug> origin/master
-  ```
-
-  Do the edits in that directory.
+- **One repo, one folder.** All work happens in this checkout. Never create a git worktree, a second clone, or a copy of the project folder.
+- On `master` with only untracked files: create the branch here, as below. Untracked files stay where they are, and they are not committed.
+- On `master` with uncommitted changes to tracked files, or while another agent is editing this checkout: stop and ask the user. Do not stash, commit, or move their work.
 
 - On a clean `master`: create the branch, naming the start point. A bare `git checkout -b <slug>` branches from whatever `HEAD` happens to be.
 
@@ -64,6 +59,7 @@ Slug: kebab-case, short, no ticket numbers.
 ## Do not
 
 - Edit tracked files on `master`.
+- Create a git worktree, a second clone, or a copy of the project folder.
 - Push the branch, open a PR, or deploy, unless the user asks.
 - Force-push `master`.
 - Commit the dirty tree that was already on `master` just to get onto a branch. Leave another agent's uncommitted files where they are.

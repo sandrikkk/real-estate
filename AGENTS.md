@@ -102,7 +102,8 @@ Each rule says what enforces it. "Honour system" means nothing in the repo stops
 - **Owner/agent classification: agent signals win.** `user_type: "physical"` is not proof of an owner. Enforced by `tests/test_owner_agent_filtering.py` and `tests/test_fixes.py`.
 - **Same-class sweep on every bug fix or behaviour change.** Name the defect shape, search every other instance (other portals, both filter paths, both runners, the Worker), then fix, defer with a reference, or rule out with a reason. Procedure: [`root-cause-sweep`](.agents/skills/root-cause-sweep/SKILL.md). Honour system.
 - **Test first when the behaviour is well-specified.** Pick the test file from the [`tdd`](.agents/skills/tdd/SKILL.md) matrix, watch it fail, then fix. Full suite: `python -m unittest discover tests` and `node --test tests/js/*.test.mjs`. Files that use real credentials or the live network are manual scripts (`tests/test_telegram_live.py`, `tests/test_live_alert.py`, `tests/test_real_live_alert.py`, `tests/test_dry_run.py`, `test_ss_live.py`): do not run them unless the user asks.
-- **A new change starts on its own branch, not on `master`.** Before the first edit of a tracked file, follow [`git-workflow`](.agents/skills/git-workflow/SKILL.md). Reading, explaining, running tests, and editing gitignored `.env` do not get a branch. If this checkout already has uncommitted work, do not `git checkout -b` here — that moves the shared `HEAD`. Honour system.
+- **A new change starts on its own branch, not on `master`.** Before the first edit of a tracked file, follow [`git-workflow`](.agents/skills/git-workflow/SKILL.md). Reading, explaining, running tests, and editing gitignored `.env` do not get a branch. If tracked files have uncommitted changes, ask the user before switching branches. Honour system.
+- **One repo, one project folder.** Never create a git worktree, a second clone, or a copy of the project (such as `../real-estate-<slug>`). Work on a branch in this checkout. Honour system.
 - **Commit, push, and deploy only when the user asks.** That includes `scripts/deploy_worker.py` and the [`deploy-action`](.agents/skills/deploy-action/SKILL.md) skill. Never force-push `master`. Pushing to `master` is what the scraper cron checks out, so a push is a release.
 - **Commit messages follow Conventional Commits** ([`git-commits`](.agents/skills/git-commits/SKILL.md)). Never `--no-verify`. **No AI attribution anywhere**: no `Co-authored-by` trailers, no "Generated with ..." footers, no session links in commits, PR or issue text, or files, even when a tool's template asks for them ([`no-ai-traces`](.agents/skills/no-ai-traces/SKILL.md)). Enforced by `scripts/git/check_ai_traces.py` (commit-msg and pre-commit hooks, the Claude Code hook in `.claude/settings.json`, `tests/test_ai_traces.py`).
 - **Documentation is written on request only.** Do not create, rewrite, or "keep fresh" any markdown (`README.md`, `docs/`, ADRs, skills) unless the user asks. Never create a new `.md` file without asking first. If a code change makes a doc wrong, say which doc and ask. The "MUST update docs" table in [`docs-standards`](.agents/skills/docs-standards/SKILL.md) applies only while the user has asked for a doc edit; it does not override this rule.
@@ -115,7 +116,7 @@ Each rule says what enforces it. "Honour system" means nothing in the repo stops
 - Code, comments, docs, and commit messages are in English. Reply to the user in the language they write in.
 - Settings come from `config/settings.py` (`pydantic-settings`, reads `.env`). Search rules come from `config/filters.json`. `SearchFilters()` defaults in `core/models.py` differ from that file and are what many tests build directly: say which one a change targets.
 - Price, area, and room rules exist in both `ListingFilter.matches` and `ListingFilter.matches_user`. Change both.
-- X-Ray logic exists twice: `cloudflare/worker.js` runs in production, and `core/xray.py` is its Python twin, used only by `tests/test_xray.py`. Change both. The golden-set baselines in `tests/js/xray_worker.test.mjs` and `tests/test_xray.py` must stay equal.
+- X-Ray logic exists twice: `cloudflare/worker.js` runs in production, and `core/xray.py` is its Python twin, used by the tests. Change both. MyHome answers the Worker with a Cloudflare challenge, so MyHome is read by `scripts/xray_lookup.py` in GitHub Actions, which the Worker queues ([ADR 0004](docs/adr/0004-myhome-live-reads-on-github-actions.md)). The MyHome helpers in `core/xray.py` that it uses are production code. The golden-set baselines in `tests/js/xray_worker.test.mjs` and `tests/test_xray.py` must stay equal.
 
 ## Run and test
 
@@ -133,6 +134,8 @@ Without `--once`, `main.py` loops every `CHECK_INTERVAL_SECONDS`. A live cycle n
 
 - [`.github/workflows/scrape.yml`](.github/workflows/scrape.yml): cron, runs `python main.py --once`, Python 3.11, 6-minute timeout, `contents: read`. Read the file for the schedule; do not copy numbers from prose. Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `CLOUDFLARE_PROXY_URL`, `CLOUDFLARE_SYNC_KEY`.
 - [`.github/workflows/deploy-worker.yml`](.github/workflows/deploy-worker.yml): deploys the Worker on a push to `master` that touches `cloudflare/worker.js`, `scripts/deploy_worker.py`, or the workflow itself. Before deploying it runs `node --check`, the Node suite, and the Python suite. Setup and bindings: [`cloudflare/README.md`](cloudflare/README.md).
+- [`.github/workflows/xray-lookup.yml`](.github/workflows/xray-lookup.yml): started by the Worker (`workflow_dispatch`, input: an opaque job id) to read MyHome for one X-Ray lookup. Secrets: `CLOUDFLARE_PROXY_URL`, `CLOUDFLARE_SYNC_KEY`.
+- [`.github/workflows/xray-canary.yml`](.github/workflows/xray-canary.yml): daily live check of the MyHome behaviour X-Ray relies on; on failure it messages the admin chat. Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 - There is no PR or staging pipeline. The deploy job above is the only CI test gate; `scrape.yml` runs no tests.
 
 ## Key files
@@ -147,13 +150,15 @@ Without `--once`, `main.py` loops every `CHECK_INTERVAL_SECONDS`. A live cycle n
 | `core/dedup.py` | Photo-hash duplicate groups and best-price tracking |
 | `core/analytics.py` | District medians, bargain detection, valuation scale |
 | `core/user_sync.py` | Active subscribers from the Worker, with an on-disk cache |
-| `core/xray.py` | Python twin of the Worker's X-Ray (listing, phone, Facebook text), used only by tests |
+| `core/xray.py` | Python twin of the Worker's X-Ray (listing, phone, Facebook text) for the tests; its MyHome helpers also run in `scripts/xray_lookup.py` |
 | `tests/js/` | Node tests that execute the real `cloudflare/worker.js` (X-Ray, webhook) |
 | `scrapers/` | `myhome.py` (TNET API + `__NEXT_DATA__`), `ss_ge.py`, `area_ge.py`, `base.py` |
 | `notifier/` | `telegram_bot.py` (alert HTML), `ntfy_notifier.py` |
 | `cloudflare/worker.js` | Telegram webhook, KV filters, D1 proxy, X-Ray |
 | `scripts/deploy_worker.py` | Worker deploy that never commits `wrangler.toml` |
-| `docs/adr/` | ADRs (one so far); `docs/production-fixes.md` is the incident report |
+| `scripts/xray_lookup.py` | GitHub Actions job that reads MyHome for a queued X-Ray lookup (ADR 0004) |
+| `scripts/xray_canary.py` | Live check of the MyHome behaviour X-Ray relies on (uses the network) |
+| `docs/adr/` | ADRs; `docs/production-fixes.md` is the incident report |
 
 ## Skills
 

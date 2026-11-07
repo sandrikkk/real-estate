@@ -67,3 +67,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+**Project rule: one repo, one folder.** Never create a git worktree, a second clone, or a copy of this project. Work on a branch in this checkout. The other project rules are in `AGENTS.md`.
