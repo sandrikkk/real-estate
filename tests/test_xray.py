@@ -515,7 +515,6 @@ class TestXRayEngine(unittest.TestCase):
 
         # 5. MyHome dehydratedState searches all queries (not hardcoded queries?.[0])
         self.assertNotIn("queries?.[0]?.state?.data?.data?.statement", worker_src)
-        self.assertIn("function parseMyHomeStatementDetails(", worker_src)
         self.assertIn("function extractMaskedPhone(", worker_src)
         self.assertIn("phoneDupMap", worker_src)
 
@@ -534,12 +533,12 @@ class TestXRayEngine(unittest.TestCase):
         # the definition, plus proxy, /api/debug, /api/users, /api/db/query, /api/xray/followup
         self.assertEqual(worker_src.count("isSyncKeyValid(request, env)"), 6)
 
-        # 9. MyHome API headers and numeric is_owner === 0 handling in Worker
+        # 9. MyHome blocks the Worker (ADR 0004): the Worker reads only SS.ge listings live,
+        # and MyHome owner fields come from the lookup job (scripts/xray_lookup.py).
+        self.assertIn('if (source !== "ss_ge") return null;', worker_src)
+        self.assertNotIn("api-statements.tnet.ge/v1/statements/${sourceId}", worker_src)
         self.assertIn('"X-Website-Key": "myhome"', worker_src)
-        self.assertIn("isOwnerExplicitFalse", worker_src)
-        self.assertIn("st.urban_name || st.district_name", worker_src)
         self.assertIn("formatOwnerBadge(", worker_src)
-        self.assertNotIn('ut === "physical" || ut === "owner" || isOwnerExplicitTrue', worker_src)
 
     def test_owner_with_60m2_and_61m2_cross_portal_listings_not_flagged_as_broker(self):
         # Real owner listed the same apartment on MyHome as 60 m² and on SS.ge as 61 m²

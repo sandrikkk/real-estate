@@ -163,15 +163,6 @@ test("parser reads bedrooms and building height", () => {
   }
 });
 
-test("owner signal: empty broker/agency objects are not agent evidence", () => {
-  for (const empty of [{}, [], { id: null }, { name: "" }]) {
-    const d = w.parseMyHomeStatementDetails({ is_owner: true, user_type: { type: "physical" }, user_statements_count: 2, broker: empty, agency: empty }, "1", "");
-    assert.equal(d.is_owner, 1, `broker=${JSON.stringify(empty)}`);
-  }
-  const real = w.parseMyHomeStatementDetails({ is_owner: true, user_statements_count: 1, agency: { id: 55, name: "X" } }, "1", "");
-  assert.equal(real.is_owner, 0);
-});
-
 test("merge: a live portal answer replaces the stored one, and a full phone replaces a masked one", () => {
   const healed = w.mergeLiveIntoRow(
     { is_owner: 0, user_type: "agent", phone_number: "555000***" },
@@ -194,9 +185,24 @@ test("enrichment re-fetches a duplicate whose stored phone is masked", async () 
   let calls = 0;
   w.fetch = async () => { calls++; return new Response("offline", { status: 503 }); };
   try {
-    const dup = { id: "myhome_1", source: "myhome", source_id: "1", url: "https://www.myhome.ge/ka/pr/1/", phone_number: "555000***", is_owner: 0, author_id: "a" };
+    const dup = { id: "ss_ge_1", source: "ss_ge", source_id: "1", url: "https://home.ss.ge/ka/udzravi-qoneba/1", phone_number: "555000***", is_owner: 0, author_id: "a" };
     await w.enrichDuplicatesIfNeeded(fakeD1(), [dup], 3);
     assert.ok(calls > 0, "masked phone was treated as complete");
+  } finally {
+    w.fetch = async () => new Response("offline", { status: 503 });
+  }
+});
+
+// myhome.ge answers the Worker with a Cloudflare challenge and its API with 401 (ADR 0004),
+// so a MyHome read from the Worker can only fail and only slows the reply down.
+test("the Worker never calls MyHome to enrich a listing", async () => {
+  const hosts = [];
+  w.fetch = async url => { hosts.push(new URL(String(url)).hostname); return new Response("offline", { status: 503 }); };
+  try {
+    const dup = { id: "myhome_1", source: "myhome", source_id: "1", url: "https://www.myhome.ge/ka/pr/1/", phone_number: "555000***", is_owner: 0, author_id: "a" };
+    await w.enrichDuplicatesIfNeeded(fakeD1(), [dup], 3);
+    assert.equal(await w.fetchLiveStatementDetails("myhome", "1", "https://www.myhome.ge/ka/pr/1/"), null);
+    assert.deepEqual(hosts.filter(h => /myhome\.ge$|tnet\.ge$/.test(h)), []);
   } finally {
     w.fetch = async () => new Response("offline", { status: 503 });
   }
