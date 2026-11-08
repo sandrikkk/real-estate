@@ -357,10 +357,22 @@ class RealEstateOrchestrator:
                         if listing.area_m2 and listing.area_m2 > 0:
                             listing.price_per_m2 = round(listing.price_usd / listing.area_m2, 2)
 
-                    if "is_owner" in details and details["is_owner"] is not None:
-                        listing.is_owner = bool(details["is_owner"])
-                    elif (
-                        details.get("agency_name") or details.get("broker") or details.get("agency")
+                    # MyHome's own `is_owner` is false on every page an anonymous visitor gets,
+                    # owners' included (ADR 0004). Agent signals come from the user type, the
+                    # account's listing count and a named agency instead (agent signals win).
+                    detail_type = details.get("user_type")
+                    if isinstance(detail_type, dict):
+                        detail_type = detail_type.get("type")
+                    try:
+                        detail_count = int(details.get("user_statements_count") or 0)
+                    except (TypeError, ValueError):
+                        detail_count = 0
+                    if (
+                        detail_type in ("agency", "developer", "agent", "broker", "company")
+                        or detail_count >= 3
+                        or details.get("agency_name")
+                        or details.get("broker")
+                        or details.get("agency")
                     ):
                         listing.is_owner = False
 
