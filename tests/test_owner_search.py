@@ -12,8 +12,8 @@ import tempfile
 import unittest
 
 from core.database import DatabaseEngine
-from core.owner_search import Sources, owner_report, search_owner
-from core.xray import myhome_search_url
+from core.owner_search import SSGE_PAGE_SIZE, Sources, owner_report, search_owner
+from core.xray import MYHOME_SEARCH_PAGE_SIZE, myhome_search_url
 
 AGENT = "555000111"
 GLDANI = {"district": "გლდანი", "micro": 6, "rooms": 3, "floor": "1", "phone9": AGENT}
@@ -58,6 +58,9 @@ OWNER_PARAMS = {
     "floor_from": "1",
     "floor_to": "1",
 }
+# The agent's own listing gives the target 72 m²; the search then asks for the duplicate
+# finder's window around it (72 m² ± 15% = 61.2..82.8, rounded outwards).
+WINDOW = {"area_from": "61", "area_to": "83"}
 
 
 class FakeWeb:
@@ -79,25 +82,30 @@ class FakeWeb:
                 {"state": {"data": {"data": {"statement": statement}}}},
             ]
         )
-        for p in ("1", "2"):
-            params = {**OWNER_PARAMS, "page": p}
-            self.pages[myhome_search_url(params)] = search_page(
-                params, myhome_owner_items if p == "1" else []
-            )
+        # The same answers with and without the area window, so a test can tell which was asked.
+        for narrowing in ({}, WINDOW):
+            for p in ("1", "2"):
+                params = {**OWNER_PARAMS, **narrowing, "page": p}
+                self.pages[myhome_search_url(params)] = search_page(
+                    params, myhome_owner_items if p == "1" else []
+                )
         for user_id, rows in accounts.items():
             params = {"users": str(user_id)}
             self.pages[myhome_search_url(params)] = search_page(params, rows)
         self.ssge_items = list(ssge_items)
+        self.ssge_every_page = False
         self.ssge_details_by_id = ssge_details or {}
         self.payloads = []
+        self.requested = []
 
     def sources(self, myhome_down=False):
         async def myhome_html(url):
+            self.requested.append(url)
             return None if myhome_down else self.pages.get(url)
 
         async def ssge_search(payload):
             self.payloads.append(payload)
-            return self.ssge_items if payload["page"] == 1 else []
+            return self.ssge_items if payload["page"] == 1 or self.ssge_every_page else []
 
         async def ssge_details(source_id):
             return self.ssge_details_by_id.get(source_id)
@@ -192,6 +200,50 @@ class TestOwnerSearch(unittest.TestCase):
         self.assertEqual(first["advancedSearch"], {"individualEntityOnly": True})
         self.assertEqual((first["rooms"], first["subdistrictIds"]), ([3], [32, 33]))
 
+    # Production, 2026-11-08: a private seller on the same street, 58 m², floor 3 was never
+    # read. The search took the first 48 MyHome listings of twelve urbans and filtered by area
+    # afterwards. The portals now get the window in the request, so the pages cover it.
+    def test_the_portals_are_asked_only_for_the_duplicate_finders_area_window(self):
+        web = self.gldani_web()
+        self.run_search(web)
+        searched = [u for u in web.requested if "owner_type=physical" in u]
+        self.assertTrue(searched)
+        self.assertTrue(all("area_from=61&area_to=83" in u for u in searched), searched)
+        self.assertTrue(web.payloads)
+        self.assertTrue(all((p["areaFrom"], p["areaTo"]) == (61, 83) for p in web.payloads))
+
+    def test_without_an_area_the_portals_are_not_narrowed(self):
+        web = self.gldani_web()
+        self.run_search(web, target={"district": "გლდანი", "micro": 6, "rooms": 3, "floor": "1"})
+        self.assertFalse(any("area_from" in u for u in web.requested))
+        self.assertFalse(any("areaFrom" in p for p in web.payloads))
+
+    # A "nothing found" that stopped at the page cap must not read like a complete search.
+    def test_a_full_last_myhome_page_is_reported_as_not_read_to_the_end(self):
+        web = self.gldani_web()
+        for p in ("1", "2"):
+            params = {**OWNER_PARAMS, **WINDOW, "page": p}
+            rows = [item(100 * int(p) + n, 900 + n) for n in range(MYHOME_SEARCH_PAGE_SIZE)]
+            web.pages[myhome_search_url(params)] = search_page(params, rows)
+        found = self.run_search(web)
+        self.assertEqual(found["truncated"], {"myhome": 2 * MYHOME_SEARCH_PAGE_SIZE})
+        self.assertIn(
+            f"myhome: მხოლოდ პირველი {2 * MYHOME_SEARCH_PAGE_SIZE} განცხადება", owner_report(found)
+        )
+
+    def test_a_full_last_ssge_page_is_reported_too(self):
+        web = self.gldani_web()
+        web.ssge_every_page = True
+        web.ssge_items = [ssge_row(300 + n) for n in range(SSGE_PAGE_SIZE)]
+        found = self.run_search(web)
+        self.assertEqual(found["truncated"], {"ss.ge": 2 * SSGE_PAGE_SIZE})
+        self.assertIn(f"ss.ge: მხოლოდ პირველი {2 * SSGE_PAGE_SIZE} განცხადება", owner_report(found))
+
+    def test_a_short_last_page_is_not_reported(self):
+        found = self.run_search(self.gldani_web())
+        self.assertEqual(found["truncated"], {})
+        self.assertNotIn("მხოლოდ პირველი", owner_report(found))
+
     def test_a_photo_match_in_d1_comes_first(self):
         self.conn.execute(
             "INSERT INTO properties (id, source, source_id, title, price_usd, area_m2, price_per_m2,"
@@ -223,9 +275,9 @@ class TestOwnerSearch(unittest.TestCase):
     def test_an_area_outside_the_duplicate_finders_window_is_another_flat(self):
         web = self.gldani_web()
         near = item(5, 555, area=80)  # 72 m² target: 11% off
-        far = item(6, 666, area=90)  # 25% off
-        web.pages[myhome_search_url({**OWNER_PARAMS, "page": "1"})] = search_page(
-            {**OWNER_PARAMS, "page": "1"}, [near, far]
+        far = item(6, 666, area=90)  # 25% off: the portal would not send it, the rule drops it
+        web.pages[myhome_search_url({**OWNER_PARAMS, **WINDOW, "page": "1"})] = search_page(
+            {**OWNER_PARAMS, **WINDOW, "page": "1"}, [near, far]
         )
         for user_id, row in ((555, near), (666, far)):
             web.pages[myhome_search_url({"users": str(user_id)})] = search_page(
@@ -236,13 +288,27 @@ class TestOwnerSearch(unittest.TestCase):
         self.assertIn("myhome_5", ids)
         self.assertNotIn("myhome_6", ids)
 
+    # Production, 2026-11-08: with the area window in the request, a 51 m² Saburtalo flat reached
+    # the rules for a 58 m² Didi Dighomi one. The query includes the parent district's urbans, and
+    # the shared location rule only says "unknown" for a row filed under another district.
+    def test_a_flat_filed_under_another_named_district_is_another_flat(self):
+        web = self.gldani_web()
+        owner = item(1, 111, price={"2": {"price_total": 68000}})
+        elsewhere = item(8, 888, urban_name="საბურთალო", address="გოთუას ქ. 26")
+        params = {**OWNER_PARAMS, **WINDOW, "page": "1"}
+        web.pages[myhome_search_url(params)] = search_page(params, [owner, elsewhere])
+        web.pages[myhome_search_url({"users": "888"})] = search_page({"users": "888"}, [elsewhere])
+        ids = [c["id"] for c in self.run_search(web)["owners"]]
+        self.assertIn("myhome_1", ids)
+        self.assertNotIn("myhome_8", ids)
+
     # Production, 2026-11-08: one seller's flat, posted three times, was listed as three owners.
     def test_one_sellers_flat_posted_twice_is_one_line(self):
         web = self.gldani_web()
         owner = item(1, 111, price={"2": {"price_total": 68000}})
         repost = item(7, 111, price={"2": {"price_total": 68000}})
-        web.pages[myhome_search_url({**OWNER_PARAMS, "page": "1"})] = search_page(
-            {**OWNER_PARAMS, "page": "1"}, [owner, repost]
+        web.pages[myhome_search_url({**OWNER_PARAMS, **WINDOW, "page": "1"})] = search_page(
+            {**OWNER_PARAMS, **WINDOW, "page": "1"}, [owner, repost]
         )
         web.pages[myhome_search_url({"users": "111"})] = search_page(
             {"users": "111"}, [owner, repost]

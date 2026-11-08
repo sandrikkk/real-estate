@@ -25,10 +25,13 @@ Network access goes through `Sources`, so tests run on fakes.
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from core.xray import (
+    DISTRICT_KEYWORDS,
+    MYHOME_SEARCH_PAGE_SIZE,
     SAME_FLAT_AREA_RATIO,
     _candidate_matches_target,
     _clean_floor,
@@ -53,6 +56,8 @@ from core.xray import (
 PAGES_PER_PORTAL = 2
 MAX_VERIFIED = 8
 MAX_SHOWN = 5
+# The pageSize sent to SS.ge: a page of exactly this size may have more listings behind it.
+SSGE_PAGE_SIZE = 16
 
 
 @dataclass
@@ -71,9 +76,30 @@ def _digits(value: Any) -> str:
     return "".join(ch for ch in str(value or "") if ch.isdigit())
 
 
+_NAMED_DISTRICTS = {canonical for _, canonical in DISTRICT_KEYWORDS}
+
+
+def _in_other_named_district(target: Dict[str, Any], cand: Dict[str, Any]) -> bool:
+    """True when the candidate is filed under a district the X-Ray names and the target's
+    alias list does not contain.
+
+    The portal queries include the parent district's urbans (Didi Dighomi's aliases hold
+    Vake-Saburtalo), and the shared location rule says only "unknown" for a row filed under
+    another district, so a Saburtalo flat passed for a Didi Dighomi one. A label the X-Ray
+    does not name (a parent such as Vake-Saburtalo) stays "unknown".
+    """
+    district = str(cand.get("district") or "").strip()
+    return district in _NAMED_DISTRICTS and district not in _expand_district_aliases(
+        target.get("district")
+    )
+
+
 def _same_flat(target: Dict[str, Any], cand: Dict[str, Any]) -> bool:
-    """The X-Ray's rule, plus area: it compares none, and a 70 m² flat passed for 51 m²."""
-    if not _candidate_matches_target(target, cand):
+    """The X-Ray's rule, plus area and district: it compares neither as a veto.
+
+    A 70 m² flat passed for 51 m², and a Saburtalo flat for a Didi Dighomi one.
+    """
+    if _in_other_named_district(target, cand) or not _candidate_matches_target(target, cand):
         return False
     try:
         ta, ca = float(target.get("area_m2") or 0), float(cand.get("area_m2") or 0)
@@ -94,6 +120,24 @@ def _same_seller(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
         return True
     pa, pb = _digits(a.get("phone_number"))[-9:], _digits(b.get("phone_number"))[-9:]
     return len(pa) == 9 and pa == pb
+
+
+def _area_window(target: Dict[str, Any]) -> Optional[Tuple[int, int]]:
+    """The duplicate finder's area window around the target, rounded outwards.
+
+    `_same_flat` keeps a candidate only inside this window, so asking the portal for it can
+    never drop a flat the rule would have kept. It makes the page cap cover the right flats.
+    """
+    try:
+        area = float(target.get("area_m2") or 0)
+    except (TypeError, ValueError):
+        return None
+    if area <= 0:
+        return None
+    return (
+        math.floor(area * (1 - SAME_FLAT_AREA_RATIO)),
+        math.ceil(area * (1 + SAME_FLAT_AREA_RATIO)),
+    )
 
 
 def _ids_for(district: str, mapping: Dict[str, List[int]]) -> List[int]:
@@ -145,10 +189,13 @@ async def strengthen_target(target: Dict[str, Any], sources: Sources) -> Dict[st
     return strengthened
 
 
-async def _myhome_candidates(target: Dict[str, Any], sources: Sources) -> Optional[List[dict]]:
+async def _myhome_candidates(
+    target: Dict[str, Any], sources: Sources
+) -> Tuple[Optional[List[dict]], bool]:
+    """The candidates (None when MyHome is down) and whether the last page read was full."""
     urbans = _ids_for(target.get("district") or "", sources.myhome_urbans)
     if not urbans:
-        return []
+        return [], False
     params = {
         "deal_types": "2" if target.get("deal_type") == "rent" else "1",
         "real_estate_types": "1",
@@ -161,42 +208,57 @@ async def _myhome_candidates(target: Dict[str, Any], sources: Sources) -> Option
     floor = _clean_floor(target.get("floor"))
     if floor:
         params["floor_from"] = params["floor_to"] = floor
+    window = _area_window(target)
+    if window:
+        params["area_from"], params["area_to"] = str(window[0]), str(window[1])
     found: List[dict] = []
+    last_page_size = 0
     for page in range(1, PAGES_PER_PORTAL + 1):
         rows = await _myhome_rows(sources, {**params, "page": str(page)})
         if rows is None:
-            return None if page == 1 else found
+            if page == 1:
+                return None, False
+            return found, last_page_size >= MYHOME_SEARCH_PAGE_SIZE
         found.extend(rows)
+        last_page_size = len(rows)
         if not rows:
             break
-    return found
+    return found, last_page_size >= MYHOME_SEARCH_PAGE_SIZE
 
 
-async def _ssge_candidates(target: Dict[str, Any], sources: Sources) -> Optional[List[dict]]:
+async def _ssge_candidates(
+    target: Dict[str, Any], sources: Sources
+) -> Tuple[Optional[List[dict]], bool]:
+    """The candidates (None when SS.ge is down) and whether the last page read was full."""
     subdistricts = _ids_for(target.get("district") or "", sources.ssge_subdistricts)
     if not subdistricts:
-        return []
+        return [], False
     payload: Dict[str, Any] = {
         "realEstateType": 5,
         "realEstateDealType": 1 if target.get("deal_type") == "rent" else 4,
         "cityIdList": [95],
         "currencyId": 2,
-        "pageSize": 16,
+        "pageSize": SSGE_PAGE_SIZE,
         "order": 1,
         "subdistrictIds": subdistricts,
         "advancedSearch": {"individualEntityOnly": True},
     }
     if target.get("rooms"):
         payload["rooms"] = [int(target["rooms"])]
+    window = _area_window(target)
+    if window:
+        payload["areaFrom"], payload["areaTo"] = window
     found: List[dict] = []
+    last_page_size = 0
     for page in range(1, PAGES_PER_PORTAL + 1):
         items = await sources.ssge_search({**payload, "page": page})
         if items is None:
-            return None if page == 1 else found
+            return (None, False) if page == 1 else (found, last_page_size >= SSGE_PAGE_SIZE)
         found.extend(r for r in (sources.ssge_normalize(i) for i in items) if r)
+        last_page_size = len(items)
         if not items:
             break
-    return found
+    return found, last_page_size >= SSGE_PAGE_SIZE
 
 
 def _d1_candidates(target: Dict[str, Any], conn: Any) -> List[dict]:
@@ -282,10 +344,16 @@ async def _verified_owner(cand: Dict[str, Any], sources: Sources) -> Optional[Di
 
 async def search_owner(target: Dict[str, Any], conn: Any, sources: Sources) -> Dict[str, Any]:
     target = await strengthen_target(target, sources)
-    myhome, ssge = await asyncio.gather(
+    (myhome, myhome_full), (ssge, ssge_full) = await asyncio.gather(
         _myhome_candidates(target, sources), _ssge_candidates(target, sources)
     )
     failed = [name for name, rows in (("myhome", myhome), ("ss.ge", ssge)) if rows is None]
+    # A portal whose last page was full has more listings than were read: the search is partial.
+    truncated = {
+        name: len(rows)
+        for name, rows, full in (("myhome", myhome, myhome_full), ("ss.ge", ssge, ssge_full))
+        if full and rows
+    }
     pool: Dict[str, dict] = {}
     for cand in [*(myhome or []), *(ssge or []), *_d1_candidates(target, conn)]:
         if not cand.get("id") or cand["id"] in pool or _is_agents_own(target, cand):
@@ -306,7 +374,13 @@ async def search_owner(target: Dict[str, Any], conn: Any, sources: Sources) -> D
         if len(owners) == MAX_SHOWN:
             break
     weak = not target.get("area_m2") and not target.get("agent_listing_id")
-    return {"target": target, "owners": owners, "weak": weak, "failed": failed}
+    return {
+        "target": target,
+        "owners": owners,
+        "weak": weak,
+        "failed": failed,
+        "truncated": truncated,
+    }
 
 
 def target_summary(target: Dict[str, Any]) -> str:
@@ -376,4 +450,9 @@ def owner_report(result: Dict[str, Any]) -> str:
         )
     for name in result.get("failed") or []:
         lines.append(f"⚠️ {name} ახლა არ პასუხობს, მისი შედეგი აქ არ არის.")
+    for name, read in (result.get("truncated") or {}).items():
+        lines.append(
+            f"ℹ️ {name}: მხოლოდ პირველი {read} განცხადება შევამოწმე, მეტიც არსებობს, "
+            "ამიტომ ეს ძებნა სრული არ არის."
+        )
     return "\n".join(lines)

@@ -715,7 +715,12 @@ async function handleMessage(msg, token, kv, env) {
   // "მეპატრონე": the owner search for the last flat this chat X-Rayed (ADR 0003 stage 2)
   if (OWNER_WORDS.test(text)) {
     const targetRow = await latestOwnerTarget(env, chatId);
-    if (targetRow) {
+    if (targetRow && isEmptyOwnerTarget(targetRow)) {
+      await sendTelegram(token, "sendMessage", {
+        chat_id: chatId,
+        text: "ℹ️ ბოლო განცხადებიდან ბინა ვერ ამოვიცანი (უბანი და ოთახი/სართული/ფართი არ წერია), ამიტომ მესაკუთრეს ვერ ვეძებ. ჩამიგდე პოსტი, სადაც უბანი წერია."
+      });
+    } else if (targetRow) {
       await startOwnerSearch(env, token, chatId, targetRow);
     } else {
       await sendTelegram(token, "sendMessage", {
@@ -730,7 +735,7 @@ async function handleMessage(msg, token, kv, env) {
   const collect = {};
   const xrayReply = await handleXRayQuery(text, env, { chatId, collect });
   if (xrayReply) {
-    const targetId = collect.ownerTarget ? await saveOwnerTarget(env, chatId, collect.ownerTarget) : null;
+    const targetId = await rememberOwnerTarget(env, chatId, collect.ownerTarget, text);
     await sendTelegram(token, "sendMessage", {
       chat_id: chatId,
       text: xrayReply,
@@ -1862,6 +1867,31 @@ async function saveOwnerTarget(env, chatId, target) {
   } catch (err) {
     return null;
   }
+}
+
+function isEmptyOwnerTarget(row) {
+  try {
+    return Object.keys(JSON.parse(row.target)).length === 0;
+  } catch (err) {
+    return true;
+  }
+}
+
+// What the next "მეპატრონე" searches for. An X-Ray that names a flat saves it (and gets the
+// button). One that names none still replaces the chat's earlier flat with an empty one, so
+// the word cannot search a flat the user has moved on from, unless the message is about the
+// number of that earlier flat. Returns the saved flat's id, or null when there is no button.
+async function rememberOwnerTarget(env, chatId, target, text) {
+  if (target) return saveOwnerTarget(env, chatId, target);
+  const last = await latestOwnerTarget(env, chatId);
+  const phone9 = extract9DigitPhone(text);
+  let lastPhone9 = null;
+  try {
+    lastPhone9 = last ? JSON.parse(last.target).phone9 || null : null;
+  } catch (err) {}
+  if (phone9 && phone9 === lastPhone9) return null;
+  await saveOwnerTarget(env, chatId, {});
+  return null;
 }
 
 function ownerButton(targetId) {
