@@ -2019,10 +2019,15 @@ function evaluateWorkerBrokerVerdict(target, relatedRows, where = "ბაზა�
 
   const uniqueApartments = clusters.length;
   const isBroker = anyNonOwner || anyAgentType || maxAuthorCount >= 3 || uniqueApartments >= 2;
+  // A Facebook post is a flat the seller offers, not a listing found under the number.
+  const postIsRow = allRows.length > 0 && allRows[0].id === "fb_input";
 
   if (isBroker) {
     const reasons = [];
-    if (uniqueApartments >= 2 || allRows.length >= 2) {
+    if (postIsRow && allRows.length >= 2) {
+      const flats = uniqueApartments === 1 ? "იგივე ბინა" : `ამ პოსტთან ერთად ${uniqueApartments} სხვადასხვა ბინა`;
+      reasons.push(`${where} ამ ნომრით/ავტორით კიდევ <b>${allRows.length - 1} განცხადება</b> (${flats})`);
+    } else if (uniqueApartments >= 2 || allRows.length >= 2) {
       reasons.push(`${where} ამ ნომრით/ავტორით იძებნება <b>${allRows.length} განცხადება</b> (${uniqueApartments} სხვადასხვა ბინა)`);
     } else if (maxAuthorCount >= 3) {
       reasons.push(`პორტალზე ავტორს უფიქსირდება <b>${maxAuthorCount} განცხადება</b>`);
@@ -2475,6 +2480,13 @@ async function handleXRayQuery(text, env, opts = {}) {
       maskedPhone = phone9 ? `${phone9.slice(0, 6)}***` : extractMaskedPhone(verdictTarget.phone_number || "");
     }
 
+    // A post with its own full number is looked up on MyHome like a bare number (ADR 0004),
+    // so the verdict does not rest on rows that only carry the masked number.
+    let live = null;
+    if (parsed.kind === "fb_text" && parsed.phone9 && opts.chatId) {
+      live = await myHomeLiveState(env, parsed, opts.chatId);
+    }
+
     const relatedMap = new Map();
     if (phone9 || maskedPhone) {
       const fmt = phone9 ? formatGeorgianPhone(phone9) : maskedPhone;
@@ -2489,8 +2501,13 @@ async function handleXRayQuery(text, env, opts = {}) {
       if (phone9) {
         const exactRows = fetched.filter(r => r.phone_number === fmt || r.phone_number === phone9);
         if (exactRows.length > 0) chosen = exactRows;
+        // Masked-prefix rows may be other people; do not mix them into an exact MyHome answer.
+        else if (live && live.mode === "fresh" && live.rows.length > 0) chosen = [];
       }
       for (const r of chosen) relatedMap.set(r.id, r);
+    }
+    for (const lr of (live && live.rows) || []) {
+      if (lr && lr.id) relatedMap.set(lr.id, relatedMap.has(lr.id) ? mergeLiveIntoRow(relatedMap.get(lr.id), lr) : lr);
     }
     if (verdictTarget.author_id) {
       const { results } = await db
@@ -2500,7 +2517,11 @@ async function handleXRayQuery(text, env, opts = {}) {
       for (const r of results || []) relatedMap.set(r.id, r);
     }
 
-    const verdict = evaluateWorkerBrokerVerdict(verdictTarget, Array.from(relatedMap.values()));
+    const verdict = evaluateWorkerBrokerVerdict(
+      verdictTarget,
+      Array.from(relatedMap.values()),
+      live && live.rows.length ? "myhome-ზე და ბაზაში" : "ბაზაში"
+    );
 
     // District benchmark: MyHome's own average $/m² for this district and bedroom count.
     // Nothing falls back to our own rows: they are only what this bot happened to scrape.
@@ -2527,6 +2548,11 @@ async function handleXRayQuery(text, env, opts = {}) {
     if (myhomeCheck === "queued") {
       lines.push("🔄 myhome-ზე ვამოწმებ განცხადებას, დაახლოებით 1 წუთში მოგწერ ზუსტ სტატუსს.");
     } else if (myhomeCheck === "failed") {
+      lines.push("⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ, სტატუსი ჩვენი ბაზით არის.");
+    }
+    if (live && live.mode === "queued") {
+      lines.push("🔄 myhome-ზე ამ ნომერს ვამოწმებ, დაახლოებით 1 წუთში მოგწერ.");
+    } else if (live && live.mode === "failed") {
       lines.push("⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ, სტატუსი ჩვენი ბაზით არის.");
     }
     const displayPhone = target.phone_number || (duplicates.find(d => d && d.phone_number)?.phone_number) || null;

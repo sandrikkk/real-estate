@@ -865,6 +865,42 @@ class TestXRayEngine(unittest.TestCase):
         self.assertTrue(verdict_diff_rooms["is_broker"])
         self.assertEqual(verdict_diff_rooms["unique_apartments"], 2)
 
+    def test_the_facebook_post_is_not_counted_among_the_listings_found_under_its_number(self):
+        from core.xray import evaluate_broker_verdict
+
+        # Production, 2026-11-08: "2 listings (2 different flats)" counted the post itself.
+        post = {
+            "id": "fb_input",
+            "district": "გლდანი",
+            "area_m2": 72.0,
+            "floor": "1",
+            "rooms": 3,
+            "phone_number": "+995 555 00 01 11",
+        }
+        other = {
+            "id": "myhome_3",
+            "district": "გლდანი",
+            "area_m2": 110.0,
+            "floor": "7",
+            "rooms": 4,
+            "is_owner": 0,
+            "user_type": "agent",
+        }
+        verdict = evaluate_broker_verdict(post, [other])
+        self.assertTrue(verdict["is_broker"])
+        self.assertIn(
+            "კიდევ <b>1 განცხადება</b> (ამ პოსტთან ერთად 2 სხვადასხვა ბინა)", verdict["reason"]
+        )
+        self.assertNotIn("<b>2 განცხადება</b>", verdict["reason"])
+
+        same_flat = dict(other, area_m2=71.0, floor="1", rooms=3)
+        again = evaluate_broker_verdict(post, [same_flat])
+        self.assertIn("კიდევ <b>1 განცხადება</b> (იგივე ბინა)", again["reason"])
+
+        # Without a post in the rows, the count and wording are the old ones.
+        listing = evaluate_broker_verdict(other, [dict(other, id="myhome_4", area_m2=50.0)])
+        self.assertIn("იძებნება <b>2 განცხადება</b> (2 სხვადასხვა ბინა)", listing["reason"])
+
     def test_worker_webhook_secret_stack_scrubbing_and_scheduled_trigger(self):
         from pathlib import Path
 
