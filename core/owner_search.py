@@ -38,11 +38,13 @@ from core.xray import (
     _expand_district_aliases,
     _merge_live_into_row,
     _micro_of,
+    dig,
     evaluate_broker_verdict,
     extract_next_data,
     find_statements_list,
     live_phone_result,
     myhome_search_url,
+    page_queries,
     parse_myhome_list_item,
 )
 
@@ -108,9 +110,8 @@ async def _myhome_rows(sources: Sources, params: Dict[str, str]) -> Optional[Lis
 
 
 def _statement_from_html(html: Optional[str]) -> Optional[Dict[str, Any]]:
-    page_props = ((extract_next_data(html) or {}).get("props") or {}).get("pageProps") or {}
-    for q in (page_props.get("dehydratedState") or {}).get("queries") or []:
-        statement = (((q.get("state") or {}).get("data") or {}).get("data") or {}).get("statement")
+    for q in page_queries(extract_next_data(html)):
+        statement = dig(q, "state", "data", "data", "statement")
         if isinstance(statement, dict):
             return statement
     return None
