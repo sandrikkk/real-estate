@@ -53,10 +53,34 @@ XRAY_TABLES_DDL = (
         found INTEGER,
         page_full INTEGER,
         created_at TEXT NOT NULL,
-        done_at TEXT
+        done_at TEXT,
+        target_id TEXT,
+        result TEXT
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_xray_jobs_phone9 ON xray_jobs(phone9, done_at)",
+    # The flat behind an X-Ray reply's "მესაკუთრის ძებნა" button (ADR 0003 stage 2).
+    """
+    CREATE TABLE IF NOT EXISTS xray_targets (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        target TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_xray_targets_chat ON xray_targets(chat_id, created_at)",
+    # ✅/❌ answers on owner-search results: the labels ADR 0002 learns from.
+    """
+    CREATE TABLE IF NOT EXISTS xray_feedback (
+        job_id TEXT NOT NULL,
+        candidate_id TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        target_id TEXT,
+        label INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (job_id, candidate_id, chat_id)
+    )
+    """,
 )
 
 # Columns added after the X-Ray tables first shipped. CREATE TABLE IF NOT EXISTS never adds a
@@ -64,6 +88,8 @@ XRAY_TABLES_DDL = (
 XRAY_ADDED_COLUMNS = (
     ("xray_jobs", "kind", "TEXT NOT NULL DEFAULT 'phone'"),
     ("xray_jobs", "listing_id", "TEXT"),
+    ("xray_jobs", "target_id", "TEXT"),
+    ("xray_jobs", "result", "TEXT"),
     ("xray_live_listings", "phone_number", "TEXT"),
     ("xray_live_listings", "author_listings_count", "INTEGER"),
 )

@@ -8,6 +8,8 @@ curl_cffi, the way the scraper does, and hands the result back:
    keeps the rows only if that listing's account phone starts like the queried number, because
    MyHome ignores a filter it does not know and then returns unrelated listings;
    a "listing" job fetches one listing's page and counts its account's listings (users=<id>);
+   an "owner" job searches MyHome, SS.ge and D1 for the private seller of one flat
+   (core/owner_search.py) and stores the follow-up text with its ✅/❌ candidates;
 3. save the rows to `xray_live_listings`, fill the owner fields of a listing already in
    `properties` (the Worker's persistLiveEnrichment did this before), and never insert there;
 4. mark the job done or failed and ask the Worker to send the follow-up message
@@ -33,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings  # noqa: E402
 from core.database import D1Client, D1Connection  # noqa: E402
+from core.owner_search import Sources, owner_report, search_owner  # noqa: E402
 from core.xray import (  # noqa: E402
     MYHOME_SEARCH_PAGE_SIZE,
     _merge_live_into_row,
@@ -45,7 +48,8 @@ from core.xray import (  # noqa: E402
     save_live_listings,
     utc_now_iso,
 )
-from scrapers.myhome import MyHomeScraper  # noqa: E402
+from scrapers.myhome import MYHOME_URBAN_MAP, MyHomeScraper  # noqa: E402
+from scrapers.ss_ge import SS_GE_SUBDISTRICT_MAP, SSGeScraper  # noqa: E402
 
 JOB_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 PHONE_RE = re.compile(r"^5\d{8}$")
@@ -160,33 +164,72 @@ async def run_job(
     fetch_html: FetchHtml,
     scraper: MyHomeScraper,
     notify: Callable[[str], None],
+    owner_sources: Optional[Sources] = None,
 ) -> Dict[str, Any]:
-    row = conn.execute(
-        "SELECT kind, phone9, listing_id FROM xray_jobs WHERE id = ?", (job_id,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM xray_jobs WHERE id = ?", (job_id,)).fetchone()
     if row is None:
         return {"status": "missing"}
-    kind = row["kind"] or "phone"
-    phone9 = str(row["phone9"] or "")
-    listing_id = str(row["listing_id"] or "")
+    job = dict(row)
+    kind = job.get("kind") or "phone"
+    phone9 = str(job.get("phone9") or "")
+    listing_id = str(job.get("listing_id") or "")
     result: Dict[str, Any] = {"ok": False, "rows": [], "full": False}
-    if kind == "phone" and PHONE_RE.match(phone9):
-        result = await lookup_phone(phone9, fetch_html, scraper)
-        if result["ok"]:
-            save_live_listings(conn, phone9, result["rows"])
-    elif kind == "listing" and LISTING_ID_RE.match(listing_id):
-        result = await lookup_listing(listing_id, fetch_html, scraper)
-        if result["ok"]:
-            save_live_listings(conn, None, result["rows"])
-            enrich_property(conn, result["rows"][0])
+    try:
+        if kind == "phone" and PHONE_RE.match(phone9):
+            result = await lookup_phone(phone9, fetch_html, scraper)
+            if result["ok"]:
+                save_live_listings(conn, phone9, result["rows"])
+        elif kind == "listing" and LISTING_ID_RE.match(listing_id):
+            result = await lookup_listing(listing_id, fetch_html, scraper)
+            if result["ok"]:
+                save_live_listings(conn, None, result["rows"])
+                enrich_property(conn, result["rows"][0])
+        elif kind == "owner" and job.get("target_id") and owner_sources is not None:
+            result = await lookup_owner(conn, str(job["target_id"]), owner_sources)
+    except Exception as e:  # the user is told either way
+        # The type only: the logs are public, and a message can carry the phone number.
+        print(f"X-Ray lookup error: {type(e).__name__}")
+        result = {"ok": False, "rows": [], "full": False}
     status = "done" if result["ok"] else "failed"
+    stored = json.dumps(result["result"], ensure_ascii=False) if result.get("result") else None
     conn.execute(
-        "UPDATE xray_jobs SET status = ?, found = ?, page_full = ?, done_at = ? WHERE id = ?",
-        (status, len(result["rows"]), 1 if result["full"] else 0, utc_now_iso(), job_id),
+        "UPDATE xray_jobs SET status = ?, found = ?, page_full = ?, done_at = ?, result = ?"
+        " WHERE id = ?",
+        (status, len(result["rows"]), 1 if result["full"] else 0, utc_now_iso(), stored, job_id),
     )
     conn.commit()
     notify(job_id)
     return {"status": status, "found": len(result["rows"]), "full": result["full"]}
+
+
+def scraper_sources(myhome: MyHomeScraper, ssge: SSGeScraper) -> Sources:
+    """What the owner search reads in production: the scrapers' own clients."""
+
+    async def ssge_search(payload: dict) -> Optional[list]:
+        return await ssge._fetch_api_listings(None, payload=payload)
+
+    def ssge_normalize(item: dict) -> Optional[dict]:
+        listing = ssge._normalize_item(item)
+        return listing.model_dump() if listing else None
+
+    return Sources(
+        myhome_html=myhome.fetch_html,
+        ssge_search=ssge_search,
+        ssge_details=ssge.fetch_statement_details,
+        ssge_normalize=ssge_normalize,
+        myhome_urbans=MYHOME_URBAN_MAP,
+        ssge_subdistricts=SS_GE_SUBDISTRICT_MAP,
+    )
+
+
+async def lookup_owner(conn: Any, target_id: str, sources: Sources) -> Dict[str, Any]:
+    row = conn.execute("SELECT target FROM xray_targets WHERE id = ?", (target_id,)).fetchone()
+    if row is None:
+        return {"ok": False, "rows": [], "full": False}
+    found = await search_owner(json.loads(row["target"]), conn, sources)
+    candidates = [{"id": c["id"], "url": c.get("url")} for c in found["owners"]]
+    message = {"text": owner_report(found), "candidates": candidates}
+    return {"ok": True, "rows": found["owners"], "full": False, "result": message}
 
 
 def notify_worker(job_id: str) -> None:
@@ -216,7 +259,10 @@ def main(argv: Optional[list] = None) -> int:
         return 2
     conn = D1Connection(D1Client(settings.CLOUDFLARE_PROXY_URL, settings.CLOUDFLARE_SYNC_KEY))
     scraper = MyHomeScraper()
-    outcome = asyncio.run(run_job(args.job, conn, scraper.fetch_html, scraper, notify_worker))
+    sources = scraper_sources(scraper, SSGeScraper())
+    outcome = asyncio.run(
+        run_job(args.job, conn, scraper.fetch_html, scraper, notify_worker, sources)
+    )
     full = " (first page full)" if outcome.get("full") else ""
     print(f"X-Ray lookup {outcome['status']}: {outcome.get('found', 0)} listing(s){full}")
     return 0 if outcome["status"] in ("done", "failed") else 1

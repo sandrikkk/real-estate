@@ -498,7 +498,7 @@ class TestXRayEngine(unittest.TestCase):
         # 2. awaiting_price and awaiting_area state handlers precede handleXRayQuery
         idx_price = worker_src.find('user.state === "awaiting_price"')
         idx_area = worker_src.find('user.state === "awaiting_area"')
-        idx_xray = worker_src.find("await handleXRayQuery(text, env, { chatId })")
+        idx_xray = worker_src.find("await handleXRayQuery(text, env, { chatId, collect })")
         self.assertGreater(idx_price, 0)
         self.assertGreater(idx_area, idx_price)
         self.assertGreater(idx_xray, idx_area)

@@ -366,10 +366,11 @@ class SSGeScraper(BaseScraper):
         return self._access_token
 
     async def _fetch_api_listings(
-        self, filters: SearchFilters, page: int = 1
+        self, filters: Optional[SearchFilters], page: int = 1, payload: Optional[dict] = None
     ) -> Optional[List[dict]]:
         api_url = f"{self.API_BASE_URL}/v1/RealEstate/LegendSearch"
-        payload = self._build_api_payload(filters, page=page)
+        # The X-Ray owner search (core/owner_search.py) sends its own payload.
+        payload = payload or self._build_api_payload(filters, page=page)
         body_str = json.dumps(payload)
 
         for use_origin in (True, False):
@@ -386,9 +387,7 @@ class SSGeScraper(BaseScraper):
 
                     for target in targets:
                         try:
-                            headers = self._build_api_headers(
-                                token, via_proxy=target != api_url
-                            )
+                            headers = self._build_api_headers(token, via_proxy=target != api_url)
                             resp = await session.post(
                                 target, data=body_str, headers=headers, timeout=self.timeout
                             )
@@ -464,15 +463,9 @@ class SSGeScraper(BaseScraper):
             or agent_info.get("companyName")
         )
         user_entity_type = str(
-            app_data.get("userEntityType")
-            or agent_info.get("userEntityType")
-            or ""
+            app_data.get("userEntityType") or agent_info.get("userEntityType") or ""
         ).lower()
-        app_count = (
-            app_data.get("userApplicationCount")
-            or agent_info.get("applicationCount")
-            or 0
-        )
+        app_count = app_data.get("userApplicationCount") or agent_info.get("applicationCount") or 0
 
         is_owner = None
         if (
@@ -520,10 +513,7 @@ class SSGeScraper(BaseScraper):
         condition_id = None
         if cond_name:
             for cid, cname in CONDITIONS.items():
-                if (
-                    cname.lower() in cond_name.lower()
-                    or cond_name.lower() in cname.lower()
-                ):
+                if cname.lower() in cond_name.lower() or cond_name.lower() in cname.lower():
                     condition_id = cid
                     break
 
@@ -702,9 +692,7 @@ class SSGeScraper(BaseScraper):
             if ret_id is not None and str(ret_id) != "1":
                 return None
             ss_type = (
-                item.get("type")
-                if item.get("type") is not None
-                else item.get("realEstateTypeId")
+                item.get("type") if item.get("type") is not None else item.get("realEstateTypeId")
             )
             if ss_type is not None and str(ss_type) != "5":
                 return None
