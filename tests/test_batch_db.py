@@ -355,6 +355,27 @@ class TestBatchDatabaseOperations(unittest.TestCase):
         self.assertEqual((client.requests, client.rows_read, client.rows_written), (3, 8, 5))
         self.assertEqual(client.usage_line(), "[D1 usage]: 3 requests, 8 rows read, 5 rows written")
 
+    def test_save_hashes_batch_d1_chunks_at_50(self):
+        from core.dedup import DuplicateDetector
+
+        mock_client = MagicMock(spec=D1Client)
+        mock_client.batch.return_value = []
+        d1_db = DatabaseEngine(db_path=self.db_path, use_d1=False)
+        d1_db.use_d1 = True
+        d1_db.d1_client = mock_client
+
+        detector = DuplicateDetector(d1_db)
+        by_listing = {f"listing_{i}": [f"hash_{i}_{j}" for j in range(3)] for i in range(20)}
+        detector.save_hashes_batch(by_listing)
+
+        self.assertEqual(mock_client.query.call_count, 0)
+        self.assertEqual(mock_client.batch.call_count, 2)
+        for call_args in mock_client.batch.call_args_list:
+            statements = call_args[0][0]
+            self.assertLessEqual(len(statements), 50)
+        self.assertEqual(len(mock_client.batch.call_args_list[0][0][0]), 50)
+        self.assertEqual(len(mock_client.batch.call_args_list[1][0][0]), 10)
+
 
 if __name__ == "__main__":
     unittest.main()

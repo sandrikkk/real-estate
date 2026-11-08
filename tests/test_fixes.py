@@ -694,6 +694,7 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
         orch.analytics = MagicMock()
         orch.analytics.evaluate_deal = MagicMock(side_effect=lambda x: x)
         orch.dedup = MagicMock()
+        orch.dedup.index_new_listings = AsyncMock(return_value=0)
         orch.telegram_notifier = MagicMock()
         orch.telegram_notifier.send_alert = AsyncMock(return_value=True)
 
@@ -955,6 +956,7 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
         orch.filter_engine = ListingFilter(SearchFilters())
         orch.analytics = MarketAnalytics()
         orch.dedup = MagicMock()
+        orch.dedup.index_new_listings = AsyncMock(return_value=0)
         orch.dedup.check_listing = AsyncMock(return_value=None)
         orch.telegram_notifier = MagicMock()
         orch.telegram_notifier.send_notification = AsyncMock(return_value=True)
@@ -1066,6 +1068,7 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
         orch.filter_engine = ListingFilter(SearchFilters())
         orch.analytics = MarketAnalytics()
         orch.dedup = MagicMock()
+        orch.dedup.index_new_listings = AsyncMock(return_value=0)
         orch.dedup.check_listing = AsyncMock(return_value=None)
         orch.telegram_notifier = MagicMock()
 
@@ -1143,6 +1146,7 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
             orch.filter_engine = ListingFilter(SearchFilters())
             orch.analytics = MarketAnalytics()
             orch.dedup = MagicMock()
+            orch.dedup.index_new_listings = AsyncMock(return_value=0)
             orch.dedup.check_listing = AsyncMock(return_value=None)
             orch.telegram_notifier = MagicMock()
             orch.telegram_notifier.send_notification = AsyncMock(return_value=True)

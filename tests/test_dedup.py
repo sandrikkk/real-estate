@@ -1,9 +1,11 @@
 """Tests for the Duplicate Listing & Agent Network Detector (v2: SQL-based, dHash)."""
 
 import asyncio
-import sys
 import os
+import sys
 import tempfile
+import unittest
+from unittest.mock import AsyncMock, patch
 
 # Ensure UTF-8 output on Windows
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -735,6 +737,55 @@ def test_compute_hashes_downloads_images_concurrently():
         f"Expected concurrent image downloads (>=2), got max_concurrent={max_concurrent_downloads}"
     )
     print("✅ test_compute_hashes_downloads_images_concurrently PASSED")
+
+
+class TestIndexNewListings(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(self.tmp_dir.name, "test.db")
+        self.db = DatabaseEngine(db_path=db_path, use_d1=False)
+        self.db.init_db()
+        self.detector = DuplicateDetector(self.db)
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def test_hashes_only_listings_with_photos_and_without_hashes(self):
+        listing_a = _make_listing(id="a", images=["https://example.com/a1.jpg"])
+        listing_b = _make_listing(id="b", images=["https://example.com/b1.jpg"])
+        _insert_fake_hashes(self.db, "b", ["1" * 16])
+        listing_c = _make_listing(id="c", images=[])
+
+        with patch("core.dedup._compute_hashes", new_callable=AsyncMock) as mock_compute:
+            mock_compute.return_value = ["d" * 16]
+            res = asyncio.run(self.detector.index_new_listings([listing_a, listing_b, listing_c]))
+
+        self.assertEqual(res, 1)
+        mock_compute.assert_awaited_once_with(["https://example.com/a1.jpg"], max_images=3)
+        stored = self.detector._get_hashes("a")
+        self.assertEqual(stored, ["d" * 16])
+
+    def test_caps_at_photo_index_per_run(self):
+        from core.dedup import PHOTO_INDEX_PER_RUN
+
+        listings = [
+            _make_listing(id=f"list_{i}", images=[f"https://example.com/{i}.jpg"])
+            for i in range(PHOTO_INDEX_PER_RUN + 5)
+        ]
+        with patch("core.dedup._compute_hashes", new_callable=AsyncMock) as mock_compute:
+            mock_compute.return_value = ["d" * 16]
+            res = asyncio.run(self.detector.index_new_listings(listings))
+
+        self.assertEqual(res, PHOTO_INDEX_PER_RUN)
+        self.assertEqual(mock_compute.await_count, PHOTO_INDEX_PER_RUN)
+
+    def test_no_downloads_when_no_images(self):
+        listing_c = _make_listing(id="c", images=[])
+        with patch("core.dedup._compute_hashes", new_callable=AsyncMock) as mock_compute:
+            res = asyncio.run(self.detector.index_new_listings([listing_c]))
+
+        self.assertEqual(res, 0)
+        mock_compute.assert_not_called()
 
 
 if __name__ == "__main__":
