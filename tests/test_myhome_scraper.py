@@ -97,6 +97,21 @@ class TestMyHomeScraper(unittest.TestCase):
         self.assertEqual(listing.phone_number, "+995 599 18 01 18")
         self.assertEqual(len(listing.images), 1)
 
+    def test_a_private_seller_who_writes_that_they_are_an_agent_is_no_owner(self):
+        raw_item = {
+            "id": 25908343,
+            "deal_type_id": 1,
+            "price": {"2": {"price_total": 68000}},
+            "area": 51,
+            "room": "2",
+            "floor": 3,
+            "district_name": "ისანი",
+            "comment": "ბინა ნავთლუღზე. ვარ მაკლერი, დამირეკეთ",
+            "user_type": {"type": "physical"},
+        }
+        listing = self.scraper._normalize_item(raw_item, filters=self.filters)
+        self.assertIs(listing.is_owner, False)
+
     def test_fetch_listings_pages_past_promoted_block(self):
         # MyHome returns all Super-VIP/VIP+ listings first; regular new listings
         # only start after them. 3 promoted-only pages must not end pagination.

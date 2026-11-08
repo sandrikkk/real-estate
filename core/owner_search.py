@@ -10,11 +10,14 @@ number with flat details), it
 2. collects private-seller candidates from MyHome (owner_type=physical), SS.ge
    (individualEntityOnly) and D1 `properties`;
 3. keeps a candidate only if the existing agree/conflict/unknown rule accepts it
-   (`_candidate_matches_target`) and it is not the agent's own listing;
+   (`_candidate_matches_target`), its area is inside the duplicate finder's window
+   (`SAME_FLAT_AREA_RATIO`) and it is not the agent's own listing;
 4. drops hidden brokers: a MyHome account whose listings are not all one flat, or an SS.ge
    listing whose page shows an agency;
 5. ranks a shared photo hash first, then more agreeing fields, then the closer area. Price is
-   never a reason to reject; it only orders otherwise equal candidates, cheaper first.
+   never a reason to reject; it only orders otherwise equal candidates, cheaper first;
+6. shows one seller once: a later owner listing with the same photos, account or full phone
+   goes under the first one's line.
 
 Network access goes through `Sources`, so tests run on fakes.
 """
@@ -26,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from core.xray import (
+    SAME_FLAT_AREA_RATIO,
     _candidate_matches_target,
     _clean_floor,
     _compare_layout,
@@ -65,6 +69,31 @@ def _digits(value: Any) -> str:
     return "".join(ch for ch in str(value or "") if ch.isdigit())
 
 
+def _same_flat(target: Dict[str, Any], cand: Dict[str, Any]) -> bool:
+    """The X-Ray's rule, plus area: it compares none, and a 70 m² flat passed for 51 m²."""
+    if not _candidate_matches_target(target, cand):
+        return False
+    try:
+        ta, ca = float(target.get("area_m2") or 0), float(cand.get("area_m2") or 0)
+    except (TypeError, ValueError):
+        return True
+    return ta <= 0 or ca <= 0 or abs(ca - ta) <= ta * SAME_FLAT_AREA_RATIO
+
+
+def _same_seller(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    """Two owner listings from one seller: the same photos, account or full phone number."""
+    if a.get("group_id") and a.get("group_id") == b.get("group_id"):
+        return True
+    if (
+        a.get("author_id")
+        and a.get("source") == b.get("source")
+        and str(a["author_id"]) == str(b.get("author_id"))
+    ):
+        return True
+    pa, pb = _digits(a.get("phone_number"))[-9:], _digits(b.get("phone_number"))[-9:]
+    return len(pa) == 9 and pa == pb
+
+
 def _ids_for(district: str, mapping: Dict[str, List[int]]) -> List[int]:
     ids: set = set()
     for name in _expand_district_aliases(district):
@@ -102,7 +131,7 @@ async def strengthen_target(target: Dict[str, Any], sources: Sources) -> Dict[st
         await sources.myhome_html(f"https://www.myhome.ge/ka/pr/{items[0].get('id')}/")
     )
     agent_rows = live_phone_result(phone9, items, first, None)["rows"]
-    same = [r for r in agent_rows if _candidate_matches_target(target, r)]
+    same = [r for r in agent_rows if _same_flat(target, r)]
     if len(same) != 1:
         return target
     flat = same[0]
@@ -260,14 +289,19 @@ async def search_owner(target: Dict[str, Any], conn: Any, sources: Sources) -> D
     for cand in [*(myhome or []), *(ssge or []), *_d1_candidates(target, conn)]:
         if not cand.get("id") or cand["id"] in pool or _is_agents_own(target, cand):
             continue
-        if _candidate_matches_target(target, cand):
+        if _same_flat(target, cand):
             pool[cand["id"]] = cand
     ranked = sorted(pool.values(), key=lambda c: _rank_key(target, c))
     owners: List[dict] = []
     for cand in ranked[:MAX_VERIFIED]:
         verified = await _verified_owner(cand, sources)
-        if verified:
-            owners.append(verified)
+        if not verified:
+            continue
+        first = next((o for o in owners if _same_seller(o, verified)), None)
+        if first:
+            first["also"].append(verified.get("url"))
+            continue
+        owners.append({**verified, "also": []})
         if len(owners) == MAX_SHOWN:
             break
     weak = not target.get("area_m2") and not target.get("agent_listing_id")
@@ -323,9 +357,14 @@ def owner_report(result: Dict[str, Any]) -> str:
             height = c.get("total_floors")
             floor_str = f" | {floor}{f'/{height}' if height else ''} სართ." if floor else ""
             area = f" | {float(c['area_m2']):g} მ²" if c.get("area_m2") else ""
+            also = c.get("also") or []
+            more = ""
+            if also:
+                links = ", ".join(f'<a href="{u or "#"}">{src}</a>' for u in also)
+                more = f" | კიდევ {len(also)} განცხადება: {links}"
             lines.append(
                 f'{n}. <a href="{c.get("url") or "#"}">{src}</a> — <b>${int(price):,}</b>{diff}'
-                f"{area}{floor_str} | მესაკუთრე"
+                f"{area}{floor_str} | მესაკუთრე{more}"
             )
     if owners:
         lines += ["", "მონიშნე ქვემოთ: ✅ იგივე ბინაა, ❌ სხვაა."]

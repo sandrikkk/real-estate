@@ -804,6 +804,10 @@ class TestXRayEngine(unittest.TestCase):
         self.assertIn('binding = "USERS_KV"', toml_text)
         self.assertIn('binding = "DB"', toml_text)
         self.assertIn('compatibility_date = "2026-08-22"', toml_text)
+        # Workers Logs keeps console.error lines; without it a missing secret leaves no trace
+        import tomllib
+
+        self.assertIs(tomllib.loads(toml_text)["observability"]["enabled"], True)
 
         # wrangler@3 exits silently with code 1 locally, so discovery and deploy must use v4
         deploy_src = (

@@ -686,6 +686,11 @@ def _compare_location(target: Dict[str, Any], cand: Dict[str, Any]) -> str:
     return "unknown"
 
 
+# core/dedup.py compares photos only between flats whose areas are within this share of each
+# other, so no two listings it calls one flat differ by more.
+SAME_FLAT_AREA_RATIO = 0.15
+
+
 def _candidate_matches_target(target: Dict[str, Any], cand: Dict[str, Any]) -> bool:
     layout = _compare_layout(target, cand)
     height = _compare_total_floors(target, cand)

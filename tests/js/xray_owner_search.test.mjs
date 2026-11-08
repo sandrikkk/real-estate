@@ -119,6 +119,26 @@ test("the button queues an owner job, and GitHub gets only the opaque job id", a
   }
 });
 
+// Production ran without GITHUB_PAT: the job was never written and nothing said why.
+test("without GITHUB_PAT the user is told it could not start, and the Worker log names the secret", async () => {
+  const calls = serveNetwork();
+  const logged = [];
+  const realError = console.error;
+  console.error = (...args) => logged.push(args.join(" "));
+  try {
+    const db = recordingD1([targetById]);
+    const { GITHUB_PAT, ...noToken } = env(db);
+    await webhook(noToken, press(`own:${TARGET_ROW.id}`));
+    assert.ok(!db.log.some(e => /INSERT INTO xray_jobs/.test(e.sql)));
+    assert.ok(!calls.some(c => c.url.hostname === "api.github.com"));
+    assert.ok(telegram(calls, "sendMessage").pop().body.text.includes("ვერ დავიწყე"));
+    assert.ok(logged.some(line => line.includes("GITHUB_PAT")), `logged: ${JSON.stringify(logged)}`);
+  } finally {
+    console.error = realError;
+    goOffline();
+  }
+});
+
 test("another chat's button does nothing", async () => {
   const calls = serveNetwork();
   try {

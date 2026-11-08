@@ -1713,7 +1713,10 @@ async function loadSavedListing(db, listingId) {
 // { kind: "listing", listingId } or { kind: "owner", targetId }. Returns the job id, or null.
 async function queueMyHomeLookup(env, chatId, job) {
   const token = env && (env.GITHUB_PAT || env.GITHUB_TOKEN);
-  if (!env || !env.DB || !token || !chatId) return null;
+  if (!env || !env.DB || !token || !chatId) {
+    if (env && !token) console.error("MyHome lookup not queued: the Worker has no GITHUB_PAT secret");
+    return null;
+  }
   const id = crypto.randomUUID();
   try {
     await env.DB
