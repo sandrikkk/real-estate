@@ -115,6 +115,12 @@ async def _compute_hashes(image_urls: List[str], max_images: int = 3) -> List[st
         return []
 
 
+# Budget, not a matching threshold: new listings a run hashes for the X-Ray photo search.
+# Runs see 0-1 new listings (about 184 a day, D1 count 2026-11-09); 30 x 3 photos keeps a
+# 40-second run far below its 6-minute timeout.
+PHOTO_INDEX_PER_RUN = 30
+
+
 class DuplicateDetector:
     """
     SQL-based duplicate detector. No in-memory group state.
@@ -229,19 +235,46 @@ class DuplicateDetector:
                         result[lid].append(phash)
         return result
 
+    def save_hashes_batch(self, by_listing: Dict[str, List[str]]) -> None:
+        """Saves the hashes of several listings in batches of <= 50 statements (AGENTS.md)."""
+        rows = [(lid, idx, h) for lid, hs in by_listing.items() for idx, h in enumerate(hs)]
+        if not rows:
+            return
+        with self.db._connection() as conn:
+            cursor = conn.cursor()
+            for i in range(0, len(rows), 50):
+                cursor.executemany(
+                    "INSERT OR REPLACE INTO image_hashes (listing_id, image_index, phash) "
+                    "VALUES (?, ?, ?)",
+                    rows[i : i + 50],
+                )
+            conn.commit()
+
     def _save_hashes(self, listing_id: str, hashes: List[str]):
         """Saves dHash hex strings to DB using batch executemany."""
         if not hashes:
             return
-        with self.db._connection() as conn:
-            cursor = conn.cursor()
-            rows = [(listing_id, idx, h) for idx, h in enumerate(hashes)]
-            cursor.executemany(
-                "INSERT OR REPLACE INTO image_hashes (listing_id, image_index, phash) "
-                "VALUES (?, ?, ?)",
-                rows,
-            )
-            conn.commit()
+        self.save_hashes_batch({listing_id: hashes})
+
+    async def index_new_listings(self, listings: List[PropertyListing]) -> int:
+        """Hashes the first photos of new listings that have none yet, matched or not, so the
+        X-Ray photo search can find them (ADR 0005). Returns how many were hashed."""
+        with_photos = [listing for listing in listings if listing.images]
+        if not with_photos:
+            return 0
+        stored = self._get_hashes_batch([listing.id for listing in with_photos])
+        todo = [listing for listing in with_photos if not stored.get(listing.id)]
+        todo = todo[:PHOTO_INDEX_PER_RUN]
+        sem = asyncio.Semaphore(3)
+
+        async def _hash(listing: PropertyListing) -> List[str]:
+            async with sem:
+                return await _compute_hashes(listing.images, max_images=3)
+
+        results = await asyncio.gather(*(_hash(listing) for listing in todo))
+        by_listing = {listing.id: hs for listing, hs in zip(todo, results) if hs}
+        self.save_hashes_batch(by_listing)
+        return len(by_listing)
 
     async def _ensure_hashes(
         self,

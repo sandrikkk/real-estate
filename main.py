@@ -570,6 +570,12 @@ class RealEstateOrchestrator:
                 self.db.save_listings_batch(unmatched_to_save)
                 unmatched_to_save.clear()
 
+        # Hash the photos of every new listing, matched or not, for the X-Ray photo search.
+        # After the alerts, so it never delays one.
+        indexed = await self.dedup.index_new_listings(new_listings)
+        if indexed:
+            print(f"[Dedup]: Hashed the photos of {indexed} new listing(s) for the X-Ray")
+
         stats = {
             "total_fetched": len(all_listings),
             "new_listings": new_count,

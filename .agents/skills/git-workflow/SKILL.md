@@ -40,7 +40,7 @@ git branch --show-current
 
   ```bash
   git fetch origin master
-  git checkout -b feat/<slug> origin/master
+  git checkout --no-track -b feat/<slug> origin/master
   ```
 
 - Already on a feature branch that matches this task: stay on it. Do not open a second branch for the same change.

@@ -132,7 +132,7 @@ Without `--once`, `main.py` loops every `CHECK_INTERVAL_SECONDS`. A live cycle n
 
 ## CI/CD
 
-- [`.github/workflows/scrape.yml`](.github/workflows/scrape.yml): cron, runs `python main.py --once`, Python 3.11, 6-minute timeout, `contents: read`. Read the file for the schedule; do not copy numbers from prose. Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `CLOUDFLARE_PROXY_URL`, `CLOUDFLARE_SYNC_KEY`.
+- [`.github/workflows/scrape.yml`](.github/workflows/scrape.yml): runs `python main.py --once`, Python 3.11, 6-minute timeout, `contents: read`. Dispatched by the Worker; cadence comes from the Worker's cron trigger in `wrangler.toml`, which is not in the repo (GitHub Actions cron is the schedule fallback; do not copy numbers from prose). Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `CLOUDFLARE_PROXY_URL`, `CLOUDFLARE_SYNC_KEY`.
 - [`.github/workflows/deploy-worker.yml`](.github/workflows/deploy-worker.yml): deploys the Worker on a push to `master` that touches `cloudflare/worker.js`, `scripts/deploy_worker.py`, or the workflow itself. Before deploying it runs `node --check`, the Node suite, and the Python suite. Setup and bindings: [`cloudflare/README.md`](cloudflare/README.md).
 - [`.github/workflows/xray-lookup.yml`](.github/workflows/xray-lookup.yml): started by the Worker (`workflow_dispatch`, input: an opaque job id) to read MyHome for one X-Ray lookup. Secrets: `CLOUDFLARE_PROXY_URL`, `CLOUDFLARE_SYNC_KEY`.
 - [`.github/workflows/xray-canary.yml`](.github/workflows/xray-canary.yml): daily live check of the MyHome behaviour X-Ray relies on; on failure it messages the admin chat. Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.

@@ -37,6 +37,7 @@ flowchart LR
 ## Consequences
 
 - Only listings with stored hashes are searchable: 3,380 of 18,412 on 2026-11-08. The reply states how many listings it compared.
+- Decided on 2026-11-09: every new listing has its first 3 photos hashed on ingestion (`DuplicateDetector.index_new_listings`) so the X-Ray photo search can find them, growing coverage over time without backfilling old listings.
 - About 10,000 D1 row reads per photo request (`load_listing_hashes` pages through `image_hashes` by primary key). It must never run in a loop. If requests become frequent, hash lookup should move into a table indexed by hash prefix.
 - An answer takes about a minute (job start, the album wait, the download).
 - Telegram recompresses a photo (JPEG, longer side at most 1280). Measured on 2026-11-08 with 36 real listing photos: the dHash of the original equals the stored one (0 bits apart), and a Telegram-like recompression (JPEG quality 70 and 85, and a half-size copy) moves it by at most 3 bits of 64, against the limit of 10.
