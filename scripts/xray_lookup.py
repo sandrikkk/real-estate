@@ -10,12 +10,15 @@ curl_cffi, the way the scraper does, and hands the result back:
    a "listing" job fetches one listing's page and counts its account's listings (users=<id>);
    an "owner" job searches MyHome, SS.ge and D1 for the private seller of one flat
    (core/owner_search.py) and stores the follow-up text with its ✅/❌ candidates;
+   a "photo" job downloads the photos of a post from Telegram, hashes them, compares them with
+   every photo hash in D1 (core/photo_match.py, ADR 0005) and stores the follow-up the same way;
 3. save the rows to `xray_live_listings`, fill the owner fields of a listing already in
    `properties` (the Worker's persistLiveEnrichment did this before), and never insert there;
 4. mark the job done or failed and ask the Worker to send the follow-up message
    (POST /api/xray/followup).
 
-The repository is public, so nothing here prints the phone number or the chat id.
+The repository is public, so nothing here prints the phone number, the chat id, a photo batch
+id or the bot token.
 
 Run: python scripts/xray_lookup.py --job <uuid>
 """
@@ -27,6 +30,7 @@ import asyncio
 import json
 import re
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -35,7 +39,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings  # noqa: E402
 from core.database import D1Client, D1Connection  # noqa: E402
+from core.dedup import MAX_IMAGE_BYTES  # noqa: E402
 from core.owner_search import Sources, owner_report, search_owner  # noqa: E402
+from core.photo_match import lookup_photos  # noqa: E402
 from core.xray import (  # noqa: E402
     MYHOME_SEARCH_PAGE_SIZE,
     _merge_live_into_row,
@@ -56,6 +62,7 @@ PHONE_RE = re.compile(r"^5\d{8}$")
 LISTING_ID_RE = re.compile(r"^\d{4,12}$")
 
 FetchHtml = Callable[[str], Awaitable[Optional[str]]]
+Download = Callable[[str], Awaitable[Optional[bytes]]]
 
 
 def statement_details(
@@ -165,6 +172,7 @@ async def run_job(
     scraper: MyHomeScraper,
     notify: Callable[[str], None],
     owner_sources: Optional[Sources] = None,
+    download: Optional[Download] = None,
 ) -> Dict[str, Any]:
     row = conn.execute("SELECT * FROM xray_jobs WHERE id = ?", (job_id,)).fetchone()
     if row is None:
@@ -186,6 +194,8 @@ async def run_job(
                 enrich_property(conn, result["rows"][0])
         elif kind == "owner" and job.get("target_id") and owner_sources is not None:
             result = await lookup_owner(conn, str(job["target_id"]), owner_sources)
+        elif kind == "photo" and job.get("target_id") and download is not None:
+            result = await lookup_photos(conn, str(job["target_id"]), download)
     except Exception as e:  # the user is told either way
         # The type only: the logs are public, and a message can carry the phone number.
         print(f"X-Ray lookup error: {type(e).__name__}")
@@ -232,6 +242,35 @@ async def lookup_owner(conn: Any, target_id: str, sources: Sources) -> Dict[str,
     return {"ok": True, "rows": found["owners"], "full": False, "result": message}
 
 
+def telegram_downloader(token: str) -> Download:
+    """Fetches one Telegram file by its file_id: getFile, then the file itself.
+
+    Every URL here holds the bot token and the logs are public, so nothing is printed and a
+    failure is only None.
+    """
+    api = f"https://api.telegram.org/bot{token}"
+    files = f"https://api.telegram.org/file/bot{token}"
+
+    def fetch(file_id: str) -> Optional[bytes]:
+        try:
+            with urllib.request.urlopen(
+                f"{api}/getFile?file_id={urllib.parse.quote(file_id, safe='')}", timeout=20
+            ) as resp:
+                path = (json.loads(resp.read()).get("result") or {}).get("file_path")
+            if not path:
+                return None
+            with urllib.request.urlopen(f"{files}/{path}", timeout=30) as resp:
+                data = resp.read(MAX_IMAGE_BYTES + 1)
+            return data if len(data) <= MAX_IMAGE_BYTES else None
+        except Exception:
+            return None
+
+    async def download(file_id: str) -> Optional[bytes]:
+        return await asyncio.to_thread(fetch, file_id)
+
+    return download
+
+
 def notify_worker(job_id: str) -> None:
     req = urllib.request.Request(
         settings.CLOUDFLARE_PROXY_URL.rstrip("/") + "/api/xray/followup",
@@ -260,8 +299,11 @@ def main(argv: Optional[list] = None) -> int:
     conn = D1Connection(D1Client(settings.CLOUDFLARE_PROXY_URL, settings.CLOUDFLARE_SYNC_KEY))
     scraper = MyHomeScraper()
     sources = scraper_sources(scraper, SSGeScraper())
+    download = (
+        telegram_downloader(settings.TELEGRAM_BOT_TOKEN) if settings.TELEGRAM_BOT_TOKEN else None
+    )
     outcome = asyncio.run(
-        run_job(args.job, conn, scraper.fetch_html, scraper, notify_worker, sources)
+        run_job(args.job, conn, scraper.fetch_html, scraper, notify_worker, sources, download)
     )
     full = " (first page full)" if outcome.get("full") else ""
     print(f"X-Ray lookup {outcome['status']}: {outcome.get('found', 0)} listing(s){full}")

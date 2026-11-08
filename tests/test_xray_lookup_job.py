@@ -395,6 +395,186 @@ class TestXRayOwnerJob(unittest.TestCase):
         self.assertEqual(self.notified, [OWNER_JOB])
 
 
+PHOTO_JOB = "55555555-6666-4777-8888-999999999999"
+PHOTO_BATCH = "777:g1"
+
+
+def noise_png(seed):
+    import io
+    import random
+
+    from PIL import Image
+
+    rng = random.Random(seed)
+    img = Image.frombytes("L", (64, 64), bytes(rng.randrange(256) for _ in range(64 * 64)))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+class TestXRayPhotoJob(unittest.TestCase):
+    """A "photo" job: the photos of a post against the listings in the database (ADR 0005)."""
+
+    def setUp(self):
+        from core.dedup import _decode_dhash_sync
+
+        self.temp_dir = tempfile.TemporaryDirectory()
+        path = os.path.join(self.temp_dir.name, "photo.db")
+        DatabaseEngine(db_path=path, use_d1=False).init_db()
+        self.conn = sqlite3.connect(path)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute(
+            "INSERT INTO properties (id, source, source_id, title, price_usd, area_m2,"
+            " price_per_m2, district, street, floor, total_floors, rooms, url, scraped_at)"
+            " VALUES ('myhome_1', 'myhome', '1', 'ბინა', 95000, 58, 1600, 'დიდი დიღომი', 'ქუჩა',"
+            " '3', 18, 3, 'https://www.myhome.ge/ka/pr/1/', '2026-11-08T09:00:00')"
+        )
+        for i, seed in enumerate((1, 2, 3)):
+            self.conn.execute(
+                "INSERT INTO image_hashes (listing_id, image_index, phash) VALUES ('myhome_1', ?, ?)",
+                (i, _decode_dhash_sync(noise_png(seed))),
+            )
+        for n, seed in enumerate((1, 2), 1):
+            self.conn.execute(
+                "INSERT INTO xray_photos (batch_id, message_id, chat_id, file_id, created_at)"
+                " VALUES (?, ?, '777', ?, '2026-01-01T00:00:00.000Z')",
+                (PHOTO_BATCH, n, f"f{n}"),
+            )
+        self.conn.execute(
+            "INSERT INTO xray_photo_batches (batch_id, chat_id, created_at)"
+            " VALUES (?, '777', '2026-01-01T00:00:00.000Z')",
+            (PHOTO_BATCH,),
+        )
+        self.conn.execute(
+            "INSERT INTO xray_jobs (id, kind, phone9, target_id, chat_id, status, created_at)"
+            " VALUES (?, 'photo', '', ?, '777', 'queued', ?)",
+            (PHOTO_JOB, PHOTO_BATCH, a_minute_ago()),
+        )
+        self.conn.commit()
+        self.files = {"f1": noise_png(1), "f2": noise_png(2)}
+        self.notified = []
+
+    def tearDown(self):
+        self.conn.close()
+        self.temp_dir.cleanup()
+
+    async def download(self, file_id):
+        return self.files.get(file_id)
+
+    def run_job(self, download="default"):
+        return asyncio.run(
+            xray_lookup.run_job(
+                PHOTO_JOB,
+                self.conn,
+                None,
+                MyHomeScraper(),
+                self.notified.append,
+                None,
+                self.download if download == "default" else download,
+            )
+        )
+
+    def job(self):
+        return dict(
+            self.conn.execute("SELECT * FROM xray_jobs WHERE id = ?", (PHOTO_JOB,)).fetchone()
+        )
+
+    def test_the_matching_listing_and_its_candidates_are_stored_for_the_follow_up(self):
+        outcome = self.run_job()
+        self.assertEqual((outcome["status"], outcome["found"]), ("done", 1))
+        stored = json.loads(self.job()["result"])
+        self.assertEqual(
+            stored["candidates"], [{"id": "myhome_1", "url": "https://www.myhome.ge/ka/pr/1/"}]
+        )
+        self.assertIn("✅ <b>იგივე ფოტოები:</b>", stored["text"])
+        self.assertEqual(self.notified, [PHOTO_JOB])
+
+    def test_a_photo_job_without_a_downloader_fails_and_still_tells_the_user(self):
+        self.assertEqual(self.run_job(download=None)["status"], "failed")
+        self.assertIsNone(self.job()["result"])
+        self.assertEqual(self.notified, [PHOTO_JOB])
+
+    def test_photos_that_cannot_be_downloaded_fail_the_job(self):
+        self.files.clear()
+        self.assertEqual(self.run_job()["status"], "failed")
+        self.assertEqual(self.notified, [PHOTO_JOB])
+
+
+class _Reply:
+    """What urllib.request.urlopen returns: a context manager with read()."""
+
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size=-1):
+        return self.body if size < 0 else self.body[:size]
+
+
+class TestTelegramDownloader(unittest.TestCase):
+    TOKEN = "123456:SECRET-TOKEN"
+
+    def download(self, replies):
+        import contextlib
+        import io
+        from unittest import mock
+
+        asked = []
+
+        def fake_urlopen(url, timeout=None):
+            asked.append(url)
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        out = io.StringIO()
+        with mock.patch.object(xray_lookup.urllib.request, "urlopen", fake_urlopen):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                data = asyncio.run(xray_lookup.telegram_downloader(self.TOKEN)("AgAC file/id"))
+        return data, asked, out.getvalue()
+
+    def test_a_file_is_fetched_in_two_steps(self):
+        data, asked, _ = self.download(
+            [
+                _Reply(json.dumps({"ok": True, "result": {"file_path": "photos/a.jpg"}}).encode()),
+                _Reply(b"IMAGE-BYTES"),
+            ]
+        )
+        self.assertEqual(data, b"IMAGE-BYTES")
+        self.assertEqual(
+            asked[0], f"https://api.telegram.org/bot{self.TOKEN}/getFile?file_id=AgAC%20file%2Fid"
+        )
+        self.assertEqual(asked[1], f"https://api.telegram.org/file/bot{self.TOKEN}/photos/a.jpg")
+
+    def test_a_failure_gives_none_and_prints_nothing_that_holds_the_token(self):
+        data, _, printed = self.download([OSError(f"failed for bot{self.TOKEN}")])
+        self.assertIsNone(data)
+        self.assertNotIn("SECRET", printed)
+        self.assertEqual(printed, "")
+
+    def test_an_answer_without_a_file_path_gives_none(self):
+        data, asked, _ = self.download([_Reply(json.dumps({"ok": False}).encode())])
+        self.assertIsNone(data)
+        self.assertEqual(len(asked), 1)
+
+    def test_a_file_over_the_size_limit_gives_none(self):
+        from core.dedup import MAX_IMAGE_BYTES
+
+        data, _, _ = self.download(
+            [
+                _Reply(json.dumps({"result": {"file_path": "p.jpg"}}).encode()),
+                _Reply(b"x" * (MAX_IMAGE_BYTES + 5)),
+            ]
+        )
+        self.assertIsNone(data)
+
+
 class TestXRayTablesMigration(unittest.TestCase):
     """Production D1 got the first X-Ray tables; init_db must add the columns that came later."""
 

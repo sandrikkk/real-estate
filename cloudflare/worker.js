@@ -514,7 +514,7 @@ async function handleTelegramWebhook(request, env) {
     }
 
     // 2. Handle Text Messages
-    if (update.message && (update.message.text || update.message.caption)) {
+    if (update.message && (update.message.text || update.message.caption || update.message.photo)) {
       await handleMessage(update.message, token, kv, env);
       return new Response("OK");
     }
@@ -533,6 +533,12 @@ async function handleMessage(msg, token, kv, env) {
   const chatId = msg.chat.id;
   // A forwarded post with a photo carries its text in the caption.
   const text = (msg.text || msg.caption || "").trim();
+  // Photos of a post (ADR 0005): stored, and one comparison job per album. A photo without a
+  // caption has nothing else to do; a captioned one goes on to the X-Ray of its text.
+  if (Array.isArray(msg.photo) && msg.photo.length > 0) {
+    await rememberPhoto(env, token, msg, text);
+    if (!text) return;
+  }
   const userKey = `USER_${chatId}`;
   let user = await kv.get(userKey, "json");
 
@@ -1784,12 +1790,16 @@ async function handleXRayFollowup(request, env) {
     if (!job) return json({ success: false, error: "job not found" }, 404);
     let text;
     let replyMarkup = null;
-    if (job.kind === "owner") {
+    if (job.kind === "owner" || job.kind === "photo") {
       let result = null;
       try {
         result = job.status === "done" && job.result ? JSON.parse(job.result) : null;
       } catch (err) {}
-      text = result ? result.text : "⚠️ მესაკუთრის ძებნა ვერ მოხერხდა, ცოტა ხანში სცადე ხელახლა.";
+      text = result
+        ? result.text
+        : job.kind === "photo"
+          ? "⚠️ ფოტოების შედარება ვერ მოხერხდა, ცოტა ხანში სცადე ხელახლა."
+          : "⚠️ მესაკუთრის ძებნა ვერ მოხერხდა, ცოტა ხანში სცადე ხელახლა.";
       if (result && Array.isArray(result.candidates) && result.candidates.length > 0) {
         replyMarkup = feedbackKeyboard(job.id, result.candidates, []);
       }
@@ -1911,6 +1921,45 @@ async function startOwnerSearch(env, token, chatId, targetRow) {
       : "⚠️ მესაკუთრის ძებნა ახლა ვერ დავიწყე, ცოტა ხანში სცადე.",
     parse_mode: "HTML"
   });
+}
+
+// Telegram sends an album as one message per photo, sharing media_group_id; the caption sits
+// on one of them. One batch is one album, or one single photo.
+function photoBatchId(msg) {
+  const chatId = String(msg.chat.id);
+  return msg.media_group_id ? `${chatId}:${msg.media_group_id}` : `${chatId}:m${msg.message_id}`;
+}
+
+async function rememberPhoto(env, token, msg, caption) {
+  if (!env || !env.DB) return;
+  const chatId = String(msg.chat.id);
+  const batchId = photoBatchId(msg);
+  const largest = msg.photo[msg.photo.length - 1];
+  const now = new Date().toISOString();
+  try {
+    await env.DB
+      .prepare("INSERT OR IGNORE INTO xray_photos (batch_id, message_id, chat_id, file_id, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(batchId, msg.message_id, chatId, largest.file_id, now)
+      .run();
+    const created = await env.DB
+      .prepare("INSERT OR IGNORE INTO xray_photo_batches (batch_id, chat_id, caption, created_at) VALUES (?, ?, ?, ?)")
+      .bind(batchId, chatId, caption || null, now)
+      .run();
+    if (caption) {
+      await env.DB.prepare("UPDATE xray_photo_batches SET caption = ? WHERE batch_id = ?").bind(caption, batchId).run();
+    }
+    // Only the update that created the batch starts the job: the job reads every photo of it.
+    if (!created || !created.meta || created.meta.changes !== 1) return;
+    const jobId = await queueMyHomeLookup(env, chatId, { kind: "photo", targetId: batchId });
+    await sendTelegram(token, "sendMessage", {
+      chat_id: chatId,
+      text: jobId
+        ? "📸 ფოტოებს ვადარებ ჩვენს ბაზას, დაახლოებით 1 წუთში მოგწერ."
+        : "⚠️ ფოტოების შედარება ახლა ვერ დავიწყე, ცოტა ხანში სცადე."
+    });
+  } catch (err) {
+    console.error("X-Ray photo save error:", err && err.message);
+  }
 }
 
 async function latestOwnerTarget(env, chatId) {
