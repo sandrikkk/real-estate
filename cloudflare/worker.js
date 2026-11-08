@@ -1687,7 +1687,8 @@ async function queueMyHomeLookup(env, chatId, job) {
       .prepare(
         "INSERT INTO xray_jobs (id, kind, phone9, listing_id, chat_id, status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)"
       )
-      .bind(id, job.kind, job.phone9 || null, job.listingId || null, String(chatId), new Date().toISOString())
+      // "" not null: the first production xray_jobs declared phone9 NOT NULL.
+      .bind(id, job.kind, job.phone9 || "", job.listingId || null, String(chatId), new Date().toISOString())
       .run();
     const repo = env.GITHUB_REPO || "sandrikkk/real-estate";
     const ref = env.GITHUB_REF || "master";

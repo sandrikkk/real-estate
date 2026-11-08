@@ -289,7 +289,7 @@ test("link X-Ray: an unknown MyHome listing queues a listing job and never fetch
     const report = await w.handleXRayQuery(LINK, ENV(db), { chatId: CHAT });
     const insert = db.log.find(e => /INSERT INTO xray_jobs/.test(e.sql));
     assert.ok(insert, "no listing job was recorded");
-    assert.deepEqual([insert.params[1], insert.params[2], insert.params[3]], ["listing", null, "26574188"]);
+    assert.deepEqual([insert.params[1], insert.params[2], insert.params[3]], ["listing", "", "26574188"]);
     const dispatch = calls.find(c => c.url.hostname === "api.github.com");
     assert.deepEqual(Object.keys(dispatch.body.inputs), ["job_id"]);
     assert.ok(!calls.some(c => /myhome\.ge$|tnet\.ge$/.test(c.url.hostname)), "the Worker still calls MyHome");
