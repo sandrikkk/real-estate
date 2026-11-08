@@ -271,6 +271,67 @@ test("follow-up: a failed job tells the user instead of leaving them waiting", a
   }
 });
 
+test("follow-up for a post phone job keeps post context, flags a different flat as broker, and notes other listing", async () => {
+  const req = (key, body) => new Request("https://worker.example/api/xray/followup", {
+    method: "POST", headers: { "X-Sync-Key": key, "content-type": "application/json" }, body: JSON.stringify(body)
+  });
+  const calls = serveNetwork();
+  try {
+    const postTargetJson = JSON.stringify({
+      district: "დიდი დიღომი",
+      area_m2: 62,
+      rooms: 3,
+      bedrooms: 2,
+      floor: "3",
+      total_floors: 6,
+      deal_type: "sale",
+      phone9: PHONE
+    });
+    const differentMhRow = liveRow(26514393, {
+      district: "მუხიანი",
+      area_m2: 101,
+      rooms: 4,
+      floor: "5",
+      price_usd: 120000,
+      is_owner: 1,
+      user_type: "physical"
+    });
+    const db = recordingD1([
+      [/FROM xray_jobs WHERE id = \?/, () => [{
+        id: "j_fb1",
+        kind: "phone",
+        phone9: PHONE,
+        chat_id: "777",
+        target_id: "t_fb1",
+        status: "done",
+        page_full: 0,
+        created_at: minutesAgo(2),
+        done_at: minutesAgo(1)
+      }]],
+      [/FROM xray_targets WHERE id = \?/, () => [{
+        id: "t_fb1",
+        chat_id: "777",
+        target: postTargetJson,
+        created_at: minutesAgo(2)
+      }]],
+      jobRows([differentMhRow])
+    ]);
+    const res = await w.__worker.fetch(req("k1", { job_id: "j_fb1" }), ENV(db));
+    assert.equal(res.status, 200);
+    const sent = calls.find(c => c.url.hostname === "api.telegram.org");
+    assert.equal(sent.body.chat_id, "777");
+    const text = sent.body.text;
+    assert.ok(text.includes("myhome-ის შედეგი"), text);
+    assert.ok(text.includes("ტელეფონის რენტგენი (პოსტის ნომერზე)"), text);
+    assert.ok(text.includes("სავარაუდო ფარული მაკლერი / სააგენტო"), text);
+    assert.ok(text.includes("ამ პოსტთან ერთად 2 სხვადასხვა ბინა"), text);
+    assert.ok(text.includes("myhome-ზე ნაპოვნი სხვა განცხადებები"), text);
+    assert.ok(text.includes("მუხიანი"), text);
+  } finally {
+    goOffline();
+  }
+});
+
 // A MyHome link: the Worker cannot read the listing page either, so a "listing" job reads it.
 const LINK = "https://www.myhome.ge/ka/pr/26574188/";
 const LISTING_ID = "myhome_26574188";
@@ -382,6 +443,8 @@ test("a Facebook post with a full number queues the MyHome phone lookup and says
     const job = db.log.find(e => /INSERT INTO xray_jobs/.test(e.sql));
     // (id, kind, phone9, listing_id, target_id, chat_id, created_at)
     assert.deepEqual([job.params[1], job.params[2], job.params[5]], ["phone", PHONE, String(CHAT)]);
+    assert.ok(job.params[4], "target_id must be saved on phone job for fb post");
+    assert.ok(db.log.some(e => /INSERT INTO xray_targets/.test(e.sql)), "post target must be saved in xray_targets");
     assert.ok(report.includes("myhome-ზე ამ ნომერს ვამოწმებ"));
   } finally {
     goOffline();

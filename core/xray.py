@@ -1120,6 +1120,7 @@ def run_xray_on_db(
     price_table_provider: Optional[Callable[[Optional[int]], Optional[Dict[str, float]]]] = None,
     live_phone: Optional[Dict[str, Any]] = None,
     myhome_check: Optional[str] = None,
+    post_target: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     # `myhome_check` mirrors the Worker's link path: "queued" when a listing job was started for
     # a MyHome link, "failed" when none could be (ADR 0004). `live_details` then stands for the
@@ -1168,7 +1169,11 @@ def run_xray_on_db(
                     index_by_id[lr["id"]] = len(related)
                     related.append(lr)
 
-            header = f"🔎 <b>ტელეფონის რენტგენი:</b> <code>{fmt_phone}</code>"
+            header = (
+                f"🔎 <b>ტელეფონის რენტგენი (პოსტის ნომერზე):</b> <code>{fmt_phone}</code>"
+                if post_target
+                else f"🔎 <b>ტელეფონის რენტგენი:</b> <code>{fmt_phone}</code>"
+            )
             searching = "🔄 myhome-ზე ვეძებ, დაახლოებით 1 წუთში მოგწერ."
             if not related:
                 if mode == "fresh":
@@ -1201,8 +1206,9 @@ def run_xray_on_db(
                     if ar["id"] not in seen_r:
                         related.append(ar)
                         seen_r[ar["id"]] = ar
+            verdict_target = post_target or related[0]
             verdict = evaluate_broker_verdict(
-                related[0], related, "myhome-ზე და ბაზაში" if live_rows else "ბაზაში"
+                verdict_target, related, "myhome-ზე და ბაზაში" if live_rows else "ბაზაში"
             )
             more = "+" if mode == "fresh" and live.get("full") else ""
             lines = [header, f"👤 <b>სტატუსი:</b> {verdict['badge']}", f"📌 {verdict['reason']}"]
@@ -1218,7 +1224,12 @@ def run_xray_on_db(
                     if live_rows
                     else "⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ, ნაჩვენებია მხოლოდ ჩვენი ბაზა."
                 )
-            lines += ["", f"📋 <b>ნაპოვნი განცხადებები ({len(related)}{more}):</b>"]
+            listings_title = (
+                "📋 <b>myhome-ზე ნაპოვნი სხვა განცხადებები"
+                if (post_target and verdict.get("is_broker"))
+                else "📋 <b>ნაპოვნი განცხადებები"
+            )
+            lines += ["", f"{listings_title} ({len(related)}{more}):</b>"]
             for r in related[:5]:
                 p_usd = int(float(r.get("price_usd") or 0))
                 area = r.get("area_m2") or 0

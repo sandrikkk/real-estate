@@ -228,6 +228,45 @@ class TestLivePhoneXRay(unittest.TestCase):
         report = run_xray_on_db(self.db, GLDANI_POST, live_phone=state("fresh"))
         self.assertIn("ვერც myhome-ზე და ვერც ჩვენს ბაზაში", report)
 
+    def test_post_phone_followup_flags_different_flat_as_broker(self):
+        post_target = {
+            "id": "fb_input",
+            "source": "facebook",
+            "district": "დიდი დიღომი",
+            "area_m2": 62,
+            "rooms": 3,
+            "bedrooms": 2,
+            "floor": "3",
+            "total_floors": 6,
+            "price_usd": 0,
+            "phone_number": "+995 591 96 59 99",
+        }
+        different_mh = {
+            "id": "myhome_26514393",
+            "source": "myhome",
+            "source_id": "26514393",
+            "district": "მუხიანი",
+            "area_m2": 101,
+            "rooms": 4,
+            "floor": "5",
+            "price_usd": 120000,
+            "is_owner": 1,
+            "user_type": "physical",
+            "phone_number": "+995 591 96 59 99",
+            "url": "https://www.myhome.ge/ka/pr/26514393/",
+        }
+        report = run_xray_on_db(
+            self.db,
+            "+995 591 96 59 99",
+            live_phone={"mode": "fresh", "rows": [different_mh], "full": False},
+            post_target=post_target,
+        )
+        self.assertIn("ტელეფონის რენტგენი (პოსტის ნომერზე)", report)
+        self.assertIn("სავარაუდო ფარული მაკლერი / სააგენტო", report)
+        self.assertIn("ამ პოსტთან ერთად 2 სხვადასხვა ბინა", report)
+        self.assertIn("myhome-ზე ნაპოვნი სხვა განცხადებები", report)
+        self.assertIn("მუხიანი", report)
+
     def test_saved_live_rows_never_go_into_properties(self):
         conn = sqlite3.connect(self.db_path)
         save_live_listings(conn, PHONE, state("fresh", (1,))["rows"])
