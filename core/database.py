@@ -59,6 +59,24 @@ XRAY_TABLES_DDL = (
     "CREATE INDEX IF NOT EXISTS idx_xray_jobs_phone9 ON xray_jobs(phone9, done_at)",
 )
 
+# Columns added after the X-Ray tables first shipped. CREATE TABLE IF NOT EXISTS never adds a
+# column to a table that already exists, and production D1 got the first version on 2026-11-07.
+XRAY_ADDED_COLUMNS = (
+    ("xray_jobs", "kind", "TEXT NOT NULL DEFAULT 'phone'"),
+    ("xray_jobs", "listing_id", "TEXT"),
+    ("xray_live_listings", "phone_number", "TEXT"),
+    ("xray_live_listings", "author_listings_count", "INTEGER"),
+)
+
+
+def _add_missing_xray_columns(cursor) -> None:
+    for table in ("xray_jobs", "xray_live_listings"):
+        cursor.execute(f"PRAGMA table_info({table})")
+        have = {row["name"] for row in cursor.fetchall()}
+        for t, column, column_type in XRAY_ADDED_COLUMNS:
+            if t == table and column not in have:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
 
 class DatabaseUnavailableError(RuntimeError):
     """Raised when Cloudflare D1 connection fails and fail-closed circuit breaker trips."""
@@ -369,6 +387,7 @@ class DatabaseEngine:
                     )
                     for stmt in XRAY_TABLES_DDL:
                         cursor.execute(stmt)
+                    _add_missing_xray_columns(cursor)
                 except Exception as e:
                     print(f"[D1 Migration Warning]: {e}")
             else:
@@ -494,6 +513,7 @@ class DatabaseEngine:
                 )
                 for stmt in XRAY_TABLES_DDL:
                     cursor.execute(stmt)
+                _add_missing_xray_columns(cursor)
 
                 conn.commit()
 

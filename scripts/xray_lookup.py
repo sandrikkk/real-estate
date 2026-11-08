@@ -36,6 +36,7 @@ from core.database import D1Client, D1Connection  # noqa: E402
 from core.xray import (  # noqa: E402
     MYHOME_SEARCH_PAGE_SIZE,
     _merge_live_into_row,
+    evaluate_broker_verdict,
     extract_next_data,
     find_statements_list,
     live_phone_result,
@@ -56,8 +57,14 @@ FetchHtml = Callable[[str], Awaitable[Optional[str]]]
 def statement_details(
     scraper: MyHomeScraper, statement: Optional[dict]
 ) -> Optional[Dict[str, Any]]:
-    """Owner fields of a listing page, by the scraper's own rules (scrapers/myhome.py)."""
-    listing = scraper._normalize_item(statement) if statement else None
+    """Owner fields of a listing page, by the scraper's own rules (scrapers/myhome.py).
+
+    MyHome's own `is_owner` is left out. An anonymous visitor gets false on every listing page,
+    owners' and agents' alike (36 of 36 checked on 2026-11-08), so it is no owner signal.
+    """
+    if not statement:
+        return None
+    listing = scraper._normalize_item({k: v for k, v in statement.items() if k != "is_owner"})
     if listing is None:
         return None
     return {
@@ -69,6 +76,18 @@ def statement_details(
     }
 
 
+def owner_by_account(row: Dict[str, Any], account: list) -> Optional[int]:
+    """0 for an agent, 1 for a private seller whose MyHome account is one flat, else unknown."""
+    if row.get("is_owner") == 0:  # agent signals win: user type, listing count, wording
+        return 0
+    verdict = evaluate_broker_verdict(row, account)
+    if verdict["is_broker"]:
+        return 0
+    if row.get("user_type") == "physical" and verdict["unique_apartments"] == 1:
+        return 1
+    return None
+
+
 async def lookup_phone(
     phone9: str, fetch_html: FetchHtml, scraper: MyHomeScraper
 ) -> Dict[str, Any]:
@@ -78,7 +97,11 @@ async def lookup_phone(
     if items:
         page = await fetch_html(f"https://www.myhome.ge/ka/pr/{items[0].get('id')}/")
         statement = scraper.extract_statement_from_html(page)
-    return live_phone_result(phone9, items, statement, statement_details(scraper, statement))
+    result = live_phone_result(phone9, items, statement, statement_details(scraper, statement))
+    if result["ok"] and result["rows"]:
+        # q=<phone> lists every active listing on that number, which is the account test.
+        result["rows"][0]["is_owner"] = owner_by_account(result["rows"][0], result["rows"])
+    return result
 
 
 async def lookup_listing(
@@ -106,6 +129,7 @@ async def lookup_listing(
             row["author_listings_count"] = max(
                 int(row.get("author_listings_count") or 0), len(account)
             )
+            row["is_owner"] = owner_by_account(row, [parse_myhome_list_item(i) for i in account])
     return {"ok": True, "rows": [row], "full": full}
 
 

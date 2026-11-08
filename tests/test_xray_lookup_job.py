@@ -135,6 +135,18 @@ class TestXRayLookupJob(unittest.TestCase):
         self.assertEqual(saved[0]["is_owner"], 0, "the first listing's page marks an agent")
         self.assertEqual(self.notified, [JOB_ID])
 
+    def test_a_private_seller_whose_number_lists_one_flat_is_the_owner(self):
+        fetch_html, _ = fake_myhome([list_item(1, user_type={"type": "physical"})])
+        self.run_job(fetch_html)
+        self.assertEqual(self.saved()[0]["is_owner"], 1)
+
+    def test_a_private_seller_whose_number_lists_two_flats_is_a_broker(self):
+        physical = {"user_type": {"type": "physical"}}
+        items = [list_item(1, **physical), list_item(2, area=110, floor=7, **physical)]
+        fetch_html, _ = fake_myhome(items)
+        self.run_job(fetch_html)
+        self.assertEqual(self.saved()[0]["is_owner"], 0)
+
     def test_first_hit_under_another_number_fails_the_job_and_saves_nothing(self):
         fetch_html, _ = fake_myhome([list_item(1)], masked="599111***")
         self.assertEqual(self.run_job(fetch_html)["status"], "failed")
@@ -166,7 +178,7 @@ LISTING_JOB = "22222222-3333-4444-8555-666666666666"
 LISTING = 26574188
 
 
-def listing_page(extra=None, account_size=24):
+def listing_page(extra=None, account_size=24, account=None):
     """A MyHome listing page (rooms as room_type_id) and its account's search page."""
     statement = {
         "id": LISTING,
@@ -185,7 +197,8 @@ def listing_page(extra=None, account_size=24):
         "comment": "",
         **(extra or {}),
     }
-    account = [list_item(LISTING)] + [list_item(500 + i) for i in range(account_size - 1)]
+    if account is None:
+        account = [list_item(LISTING)] + [list_item(500 + i) for i in range(account_size - 1)]
 
     async def fetch_html(url):
         if url == f"https://www.myhome.ge/ka/pr/{LISTING}/":
@@ -277,7 +290,26 @@ class TestXRayListingJob(unittest.TestCase):
         base = list_item(LISTING, user_type={"type": "physical"}, is_owner=True, comment="")
         for empty in ({}, [], {"id": None}, {"name": ""}, ""):
             st = {**base, "agency": empty, "broker": empty, "user_statements_count": 1}
-            self.assertEqual(xray_lookup.statement_details(scraper, st)["is_owner"], 1, repr(empty))
+            details = xray_lookup.statement_details(scraper, st)
+            self.assertNotEqual(details["is_owner"], 0, repr(empty))
+
+    def test_myhomes_own_is_owner_flag_is_ignored(self):
+        # It is false on every page an anonymous visitor gets, owners' included.
+        scraper = MyHomeScraper()
+        st = list_item(LISTING, user_type={"type": "physical"}, is_owner=False, comment="")
+        self.assertIsNone(xray_lookup.statement_details(scraper, st)["is_owner"])
+
+    def test_a_private_seller_whose_account_is_one_flat_is_the_owner(self):
+        physical = {"user_type": {"type": "physical"}, "is_owner": False}
+        page = listing_page(extra=physical, account=[list_item(LISTING, **physical)])
+        self.run_job(page)
+        self.assertEqual(self.saved()["is_owner"], 1)
+
+    def test_a_private_seller_with_two_different_flats_is_a_broker(self):
+        physical = {"user_type": {"type": "physical"}}
+        account = [list_item(LISTING, **physical), list_item(900, area=110, floor=7, **physical)]
+        self.run_job(listing_page(extra=physical, account=account))
+        self.assertEqual(self.saved()["is_owner"], 0)
 
     def test_a_listing_job_keeps_the_phone_a_phone_job_stored(self):
         xray_lookup.save_live_listings(
@@ -286,6 +318,43 @@ class TestXRayListingJob(unittest.TestCase):
         self.run_job(listing_page())
         self.assertEqual(self.saved()["phone9"], PHONE)
         self.assertEqual(self.saved()["author_listings_count"], 24)
+
+
+class TestXRayTablesMigration(unittest.TestCase):
+    """Production D1 got the first X-Ray tables; init_db must add the columns that came later."""
+
+    def test_old_tables_get_the_new_columns_and_take_a_listing_job(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.db")
+            conn = sqlite3.connect(path)
+            conn.execute(
+                "CREATE TABLE xray_jobs (id TEXT PRIMARY KEY, phone9 TEXT NOT NULL,"
+                " chat_id TEXT NOT NULL, status TEXT NOT NULL, found INTEGER,"
+                " page_full INTEGER, created_at TEXT NOT NULL, done_at TEXT)"
+            )
+            # The columns production D1 reported on 2026-11-08.
+            conn.execute(
+                "CREATE TABLE xray_live_listings (id TEXT PRIMARY KEY, source TEXT, source_id TEXT,"
+                " phone9 TEXT, author_id TEXT, user_type TEXT, is_owner INTEGER, district TEXT,"
+                " subdistrict TEXT, street TEXT, area_m2 REAL, floor TEXT, total_floors INTEGER,"
+                " rooms INTEGER, bedrooms INTEGER, price_usd REAL, deal_type TEXT, url TEXT,"
+                " seen_at TEXT)"
+            )
+            conn.commit()
+            conn.close()
+            DatabaseEngine(db_path=path, use_d1=False).init_db()
+            conn = sqlite3.connect(path)
+            jobs = {r[1] for r in conn.execute("PRAGMA table_info(xray_jobs)")}
+            live = {r[1] for r in conn.execute("PRAGMA table_info(xray_live_listings)")}
+            self.assertTrue({"kind", "listing_id"} <= jobs)
+            self.assertTrue({"phone_number", "author_listings_count"} <= live)
+            # The Worker writes phone9 "" for a listing job, which the old NOT NULL accepts.
+            conn.execute(
+                "INSERT INTO xray_jobs (id, kind, phone9, listing_id, chat_id, status, created_at)"
+                " VALUES ('j', 'listing', '', '1', 'c', 'queued', 't')"
+            )
+            self.assertEqual(conn.execute("SELECT kind FROM xray_jobs").fetchone()[0], "listing")
+            conn.close()
 
 
 if __name__ == "__main__":
