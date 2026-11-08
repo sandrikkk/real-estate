@@ -50,7 +50,7 @@ sequenceDiagram
 - **Gains:** MyHome results come from a path that already works every 15 minutes in production. The Worker stays thin, and running cost stays zero.
 - **Costs:**
   - The MyHome part of the answer arrives as a second message, about a minute later, because of runner start-up.
-  - Dispatch needs the Worker's existing `GITHUB_PAT`. The workflow must be on `master` before the Worker can dispatch it.
+  - Dispatch needs a `GITHUB_PAT` secret on the Worker. This ADR assumed the Worker already had one; on 2026-11-08 it had none, so no job was ever queued (setup: `cloudflare/README.md`). The workflow must be on `master` before the Worker can dispatch it.
   - There is one more table (`xray_jobs`) and two more workflows.
 - **Failure:**
   - Without a token, or if the dispatch fails, the reply says MyHome could not be checked and shows D1 and the last saved rows.

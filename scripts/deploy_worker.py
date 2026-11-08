@@ -118,7 +118,9 @@ def fetch_bindings_via_cf_api(account_id: str, api_token: str, worker_name: str)
             data = json.loads(resp.read().decode("utf-8"))
             return parse_bindings_from_cf_settings(data)
     except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
-        print(f"⚠️ Could not auto-discover bindings from Cloudflare settings API: {exc.__class__.__name__}")
+        print(
+            f"⚠️ Could not auto-discover bindings from Cloudflare settings API: {exc.__class__.__name__}"
+        )
         return {}
 
 
@@ -204,6 +206,8 @@ def render_wrangler_toml(
         f'main = "worker.js"\n'
         f'compatibility_date = "2026-08-22"\n'
         f"keep_vars = true\n\n"
+        f"[observability]\n"
+        f"enabled = true\n\n"
         f"[[kv_namespaces]]\n"
         f'binding = "USERS_KV"\n'
         f'id = "{kv_id}"\n\n'
