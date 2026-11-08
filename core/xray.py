@@ -933,19 +933,36 @@ def extract_next_data(html: Optional[str]) -> Optional[Dict[str, Any]]:
         return None
 
 
+def dig(value: Any, *keys: str) -> Any:
+    """value[k1][k2]... over parsed page JSON, or None as soon as a level is not a dict.
+
+    A MyHome page mixes query kinds, and some carry a plain value as their data
+    (["cardView"] holds a string), so a chain of .get() calls can meet a str.
+    """
+    for key in keys:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def page_queries(next_data: Any) -> List[Any]:
+    queries = dig(next_data, "props", "pageProps", "dehydratedState", "queries")
+    return queries if isinstance(queries, list) else []
+
+
 def find_statements_list(
     next_data: Optional[Dict[str, Any]], params: Dict[str, Any]
 ) -> Optional[List[Dict[str, Any]]]:
     # The page carries other lists too (developer projects): take the one whose echoed
     # query is exactly what was asked for.
     want = {k: str(v) for k, v in params.items()}
-    page_props = ((next_data or {}).get("props") or {}).get("pageProps") or {}
-    for q in (page_props.get("dehydratedState") or {}).get("queries") or []:
-        key = q.get("queryKey") if isinstance(q, dict) else None
+    for q in page_queries(next_data):
+        key = dig(q, "queryKey")
         if not isinstance(key, list) or key[:2] != ["statements", "list"]:
             continue
         query = (key[2].get("query") if len(key) > 2 and isinstance(key[2], dict) else None) or {}
-        items = (((q.get("state") or {}).get("data") or {}).get("data") or {}).get("data")
+        items = dig(q, "state", "data", "data", "data")
         if {k: str(v) for k, v in query.items()} == want and isinstance(items, list):
             return items
     return None

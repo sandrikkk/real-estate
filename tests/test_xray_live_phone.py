@@ -125,6 +125,14 @@ class TestLivePhoneResult(unittest.TestCase):
         self.assertIsNone(find_statements_list(search_page({"q": "599"}, items), {"q": PHONE}))
         self.assertIsNone(find_statements_list(None, {"q": PHONE}))
 
+    def test_statements_list_survives_queries_whose_data_is_a_plain_value(self):
+        page = search_page({"q": PHONE}, [list_item(1)])
+        queries = page["props"]["pageProps"]["dehydratedState"]["queries"]
+        queries.insert(0, {"queryKey": ["cardView"], "state": {"data": "grid"}})
+        queries.insert(1, {"queryKey": ["statements", "list"], "state": "loading"})
+        got = find_statements_list(page, {"q": PHONE})
+        self.assertEqual([i["id"] for i in got], [1])
+
     def test_rows_page_full_flag_and_enriched_first_row(self):
         r = live([list_item(1000 + i) for i in range(24)])
         self.assertTrue(r["ok"])

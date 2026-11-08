@@ -70,8 +70,14 @@ class FakeWeb:
         )
         self.pages[myhome_search_url({"q": AGENT})] = search_page({"q": AGENT}, [agent_listing])
         statement = {**agent_listing, "user_phone_number": f"{AGENT[:6]}***"}
+        # A real listing page also carries queries whose data is a plain value, such as
+        # ["cardView"]; the live owner jobs of 2026-11-08 crashed on those.
         self.pages["https://www.myhome.ge/ka/pr/9000/"] = page(
-            [{"state": {"data": {"data": {"statement": statement}}}}]
+            [
+                {"queryKey": ["cardView"], "state": {"data": "grid"}},
+                {"queryKey": ["flags"], "state": {"data": {"data": "on"}}},
+                {"state": {"data": {"data": {"statement": statement}}}},
+            ]
         )
         for p in ("1", "2"):
             params = {**OWNER_PARAMS, "page": p}
