@@ -736,12 +736,14 @@ async function handleMessage(msg, token, kv, env) {
   const xrayReply = await handleXRayQuery(text, env, { chatId, collect });
   if (xrayReply) {
     const targetId = await rememberOwnerTarget(env, chatId, collect.ownerTarget, text);
+    const resultId = await saveXRayResult(env, chatId, "dup", collect.resultTarget, collect.duplicates, targetId);
+    const markup = xrayReplyMarkup(targetId, resultId, collect.duplicates || [], []);
     await sendTelegram(token, "sendMessage", {
       chat_id: chatId,
       text: xrayReply,
       parse_mode: "HTML",
       disable_web_page_preview: true,
-      ...(targetId ? { reply_markup: ownerButton(targetId) } : {})
+      ...(markup ? { reply_markup: markup } : {})
     });
     return;
   }
@@ -780,6 +782,10 @@ async function handleCallbackQuery(cb, token, kv, env) {
   }
   if (typeof data === "string" && data.startsWith("fb:")) {
     await recordOwnerFeedback(env, token, cb, data);
+    return;
+  }
+  if (typeof data === "string" && data.startsWith("fd:")) {
+    await recordResultFeedback(env, token, cb, data);
     return;
   }
 
@@ -1795,9 +1801,16 @@ async function handleXRayFollowup(request, env) {
       }
     } else if (job.kind === "listing") {
       // The job saved the listing's row, so the X-Ray now reads it without queueing again.
-      text = job.status === "done"
-        ? `🔄 <b>myhome-ის შედეგი</b>\n\n${await handleXRayQuery(`https://www.myhome.ge/ka/pr/${job.listing_id}/`, env)}`
-        : "⚠️ myhome-ზე განცხადების შემოწმება ვერ მოხერხდა. ზემოთ ნაჩვენებია ჩვენი ბაზის შედეგი.";
+      // No chat id is passed on: that could queue another lookup.
+      if (job.status === "done") {
+        const collect = {};
+        const report = await handleXRayQuery(`https://www.myhome.ge/ka/pr/${job.listing_id}/`, env, { collect });
+        text = `🔄 <b>myhome-ის შედეგი</b>\n\n${report}`;
+        const resultId = await saveXRayResult(env, job.chat_id, "dup", collect.resultTarget, collect.duplicates, null);
+        replyMarkup = xrayReplyMarkup(null, resultId, collect.duplicates || [], []);
+      } else {
+        text = "⚠️ myhome-ზე განცხადების შემოწმება ვერ მოხერხდა. ზემოთ ნაჩვენებია ჩვენი ბაზის შედეგი.";
+      }
     } else if (job.status === "done") {
       const fmt = formatGeorgianPhone(job.phone9);
       const parsed = { kind: "phone", phone9: job.phone9, formattedPhone: fmt, maskedPhone: `${job.phone9.slice(0, 6)}***` };
@@ -1926,14 +1939,49 @@ async function latestOwnerTarget(env, chatId) {
 }
 
 // One row per candidate; `answers` are the xray_feedback rows already given, shown with ✓.
-function feedbackKeyboard(jobId, candidates, answers) {
+// `prefix` tells the callback handler which table holds the candidates: "fb" for an owner-search
+// job (xray_jobs.result), "fd" for the duplicate lines of an X-Ray reply (xray_results).
+function feedbackKeyboard(jobId, candidates, answers, prefix = "fb") {
   const label = new Map((answers || []).map(a => [a.candidate_id, Number(a.label)]));
   return {
     inline_keyboard: candidates.map((c, i) => [
-      { text: `${i + 1} ✅ იგივეა${label.get(c.id) === 1 ? " ✓" : ""}`, callback_data: `fb:${jobId}:${i}:y` },
-      { text: `${i + 1} ❌ სხვაა${label.get(c.id) === 0 ? " ✓" : ""}`, callback_data: `fb:${jobId}:${i}:n` }
+      { text: `${i + 1} ✅ იგივეა${label.get(c.id) === 1 ? " ✓" : ""}`, callback_data: `${prefix}:${jobId}:${i}:y` },
+      { text: `${i + 1} ❌ სხვაა${label.get(c.id) === 0 ? " ✓" : ""}`, callback_data: `${prefix}:${jobId}:${i}:n` }
     ])
   };
+}
+
+// The target's fields kept with an X-Ray result, so a ✅/❌ answer can be learned from.
+function xrayResultTarget(target) {
+  const out = {};
+  for (const k of [...OWNER_TARGET_FIELDS, "id", "source"]) {
+    const v = target && target[k];
+    if (v !== null && v !== undefined && v !== "") out[k] = v;
+  }
+  return out;
+}
+
+async function saveXRayResult(env, chatId, kind, target, candidates, ownerTargetId) {
+  if (!env || !env.DB || !chatId || !Array.isArray(candidates) || candidates.length === 0) return null;
+  const id = crypto.randomUUID();
+  try {
+    await env.DB
+      .prepare("INSERT INTO xray_results (id, chat_id, kind, target, candidates, owner_target_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .bind(id, String(chatId), kind, JSON.stringify(target || {}), JSON.stringify(candidates), ownerTargetId || null, new Date().toISOString())
+      .run();
+    return id;
+  } catch (err) {
+    console.error("X-Ray result save error:", err && err.message);
+    return null;
+  }
+}
+
+// The owner button (if any) on top, then one ✅/❌ row per duplicate line.
+function xrayReplyMarkup(ownerTargetId, resultId, candidates, answers) {
+  const rows = [];
+  if (ownerTargetId) rows.push(...ownerButton(ownerTargetId).inline_keyboard);
+  if (resultId) rows.push(...feedbackKeyboard(resultId, candidates, answers, "fd").inline_keyboard);
+  return rows.length ? { inline_keyboard: rows } : null;
 }
 
 // "fb:<job id>:<candidate index>:<y|n>"; a later press replaces an earlier one.
@@ -1966,6 +2014,41 @@ async function recordOwnerFeedback(env, token, cb, data) {
     });
   } catch (err) {
     console.error("X-Ray feedback error:", err && err.message);
+  }
+}
+
+// "fd:<result id>:<candidate index>:<y|n>": the same answer as recordOwnerFeedback, for the
+// duplicate lines of an X-Ray reply. The candidates sit in xray_results, and the owner button
+// of that reply stays under the updated rows.
+async function recordResultFeedback(env, token, cb, data) {
+  const [, resultId, idxText, answer] = String(data).split(":");
+  const chatId = String(cb.message.chat.id);
+  if (!env || !env.DB || (answer !== "y" && answer !== "n")) return;
+  try {
+    const row = await env.DB
+      .prepare("SELECT * FROM xray_results WHERE id = ? AND chat_id = ?")
+      .bind(resultId, chatId)
+      .first();
+    const candidates = row ? JSON.parse(row.candidates || "[]") : [];
+    const cand = candidates[parseInt(idxText, 10)];
+    if (!cand) return;
+    await env.DB
+      .prepare(
+        "INSERT OR REPLACE INTO xray_feedback (job_id, candidate_id, chat_id, target_id, label, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      )
+      .bind(resultId, cand.id, chatId, null, answer === "y" ? 1 : 0, new Date().toISOString())
+      .run();
+    const { results } = await env.DB
+      .prepare("SELECT candidate_id, label FROM xray_feedback WHERE job_id = ? AND chat_id = ?")
+      .bind(resultId, chatId)
+      .all();
+    await sendTelegram(token, "editMessageReplyMarkup", {
+      chat_id: cb.message.chat.id,
+      message_id: cb.message.message_id,
+      reply_markup: xrayReplyMarkup(row.owner_target_id, resultId, candidates, results)
+    });
+  } catch (err) {
+    console.error("X-Ray result feedback error:", err && err.message);
   }
 }
 
@@ -2617,7 +2700,7 @@ async function handleXRayQuery(text, env, opts = {}) {
     lines.push("");
     if (duplicates.length > 0) {
       lines.push("🎯 <b>იგივე ბინა სხვაგან:</b>");
-      for (const dup of duplicates.slice(0, 4)) {
+      for (const [i, dup] of duplicates.slice(0, 4).entries()) {
         const dupPrice = Math.round(Number(dup.price_usd) || 0);
         const dupSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
         const dupOwner = formatOwnerBadge(dup.is_owner);
@@ -2629,10 +2712,16 @@ async function handleXRayQuery(text, env, opts = {}) {
           else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
           else diffStr = " (იგივე ფასი)";
         }
-        lines.push(`• <a href="${dup.url || "#"}">${dupSrc}</a> — <b>$${dupPrice.toLocaleString()}</b>${diffStr} | ${dupOwner}${dupPhonePart}`);
+        lines.push(`${i + 1}. <a href="${dup.url || "#"}">${dupSrc}</a> — <b>$${dupPrice.toLocaleString()}</b>${diffStr} | ${dupOwner}${dupPhonePart}`);
       }
     } else {
       lines.push("🎯 <b>იგივე ბინა სხვაგან:</b> დუბლიკატი სხვა პორტალზე არ იძებნება.");
+    }
+
+    // What the ✅/❌ buttons under the reply refer to (see saveXRayResult).
+    if (opts.collect && duplicates.length > 0) {
+      opts.collect.duplicates = duplicates.slice(0, 4).map(d => ({ id: d.id, url: d.url || null }));
+      opts.collect.resultTarget = xrayResultTarget(target);
     }
 
     return lines.join("\n");
