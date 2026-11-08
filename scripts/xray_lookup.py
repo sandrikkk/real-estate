@@ -325,6 +325,7 @@ def main(argv: Optional[list] = None) -> int:
     )
     full = " (first page full)" if outcome.get("full") else ""
     print(f"X-Ray lookup {outcome['status']}: {outcome.get('found', 0)} listing(s){full}")
+    print(conn.client.usage_line())
     return 0 if outcome["status"] in ("done", "failed") else 1
 
 

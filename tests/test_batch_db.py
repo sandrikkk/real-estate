@@ -1,7 +1,8 @@
+import json
 import os
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from core.database import DatabaseEngine, D1Client
 from core.models import PropertyListing
 
@@ -267,10 +268,14 @@ class TestBatchDatabaseOperations(unittest.TestCase):
         self.db.save_listings_batch([l1_drop])
 
         with self.db._connection() as conn:
-            row = conn.cursor().execute(
-                "SELECT price_usd, initial_price_usd, author_id, author_listings_count FROM properties WHERE id = ?",
-                ("myhome_init_1",),
-            ).fetchone()
+            row = (
+                conn.cursor()
+                .execute(
+                    "SELECT price_usd, initial_price_usd, author_id, author_listings_count FROM properties WHERE id = ?",
+                    ("myhome_init_1",),
+                )
+                .fetchone()
+            )
             self.assertEqual(float(row["price_usd"]), 88000.0)
             self.assertEqual(float(row["initial_price_usd"]), 95000.0)
             self.assertEqual(row["author_id"], "user_777")
@@ -284,10 +289,14 @@ class TestBatchDatabaseOperations(unittest.TestCase):
         self.db.save_listings_batch([l1_inc])
 
         with self.db._connection() as conn:
-            row = conn.cursor().execute(
-                "SELECT price_usd, initial_price_usd FROM properties WHERE id = ?",
-                ("myhome_init_1",),
-            ).fetchone()
+            row = (
+                conn.cursor()
+                .execute(
+                    "SELECT price_usd, initial_price_usd FROM properties WHERE id = ?",
+                    ("myhome_init_1",),
+                )
+                .fetchone()
+            )
             self.assertEqual(float(row["price_usd"]), 99000.0)
             self.assertEqual(float(row["initial_price_usd"]), 95000.0)
 
@@ -306,12 +315,45 @@ class TestBatchDatabaseOperations(unittest.TestCase):
         self.db.save_listing(l1_updated)
 
         with self.db._connection() as conn:
-            row = conn.cursor().execute(
-                "SELECT price_usd, initial_price_usd FROM properties WHERE id = ?",
-                ("myhome_legacy_1",),
-            ).fetchone()
+            row = (
+                conn.cursor()
+                .execute(
+                    "SELECT price_usd, initial_price_usd FROM properties WHERE id = ?",
+                    ("myhome_legacy_1",),
+                )
+                .fetchone()
+            )
             self.assertEqual(float(row["price_usd"]), 92000.0)
             self.assertEqual(float(row["initial_price_usd"]), 100000.0)
+
+    def test_d1_client_adds_up_rows_read_and_written(self):
+        responses = [
+            {"success": True, "results": [], "meta": {"rows_read": 7, "rows_written": 0}},
+            {
+                "success": True,
+                "batch_results": [
+                    {"results": [], "meta": {"rows_read": 1, "rows_written": 2}},
+                    {"results": [], "meta": {"rows_read": 0, "rows_written": 3}},
+                ],
+            },
+            {"success": True, "results": [], "meta": {}},  # fields may be absent
+        ]
+
+        def fake_urlopen(req, timeout=None):
+            resp = MagicMock()
+            resp.read.return_value = json.dumps(responses.pop(0)).encode("utf-8")
+            cm = MagicMock()
+            cm.__enter__.return_value = resp
+            cm.__exit__.return_value = False
+            return cm
+
+        client = D1Client("https://worker.example", "key")
+        with patch("core.database.urllib.request.urlopen", side_effect=fake_urlopen):
+            client.query("SELECT 1")
+            client.batch([{"sql": "SELECT 1", "params": []}] * 2)
+            client.query("SELECT 2")
+        self.assertEqual((client.requests, client.rows_read, client.rows_written), (3, 8, 5))
+        self.assertEqual(client.usage_line(), "[D1 usage]: 3 requests, 8 rows read, 5 rows written")
 
 
 if __name__ == "__main__":

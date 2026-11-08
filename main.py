@@ -651,6 +651,8 @@ async def main():
         print(
             f"[Finished]: Fetched: {stats.get('total_fetched', 0)} | New: {stats.get('new_listings', 0)} | Matched: {stats.get('matched_filters', 0)} | Alerts: {stats.get('notifications_sent', 0)}"
         )
+        if orchestrator.db.d1_client:
+            print(orchestrator.db.d1_client.usage_line())
         return
 
     # Graceful shutdown handler for signals

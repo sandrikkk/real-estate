@@ -239,6 +239,26 @@ class D1Client:
         self.url = worker_url.strip().rstrip("/") + "/api/db/query"
         self.sync_key = sync_key.strip()
         self.timeout = timeout
+        # What this process cost in D1 quota, from the meta D1 returns with each result.
+        self.requests = 0
+        self.rows_read = 0
+        self.rows_written = 0
+
+    def _count(self, parsed: dict) -> None:
+        if "batch_results" in parsed:
+            metas = [r.get("meta") or {} for r in parsed["batch_results"]]
+        else:
+            metas = [parsed.get("meta") or {}]
+        self.requests += 1
+        for meta in metas:
+            self.rows_read += int(meta.get("rows_read") or 0)
+            self.rows_written += int(meta.get("rows_written") or 0)
+
+    def usage_line(self) -> str:
+        return (
+            f"[D1 usage]: {self.requests} requests, {self.rows_read} rows read,"
+            f" {self.rows_written} rows written"
+        )
 
     def query(self, sql: str, params: list = None) -> dict:
         payload = {"sql": sql, "params": params or []}
@@ -266,6 +286,7 @@ class D1Client:
                 parsed = json.loads(res_body)
                 if not parsed.get("success", False) and "error" in parsed:
                     raise DatabaseUnavailableError(f"D1 Query Error: {parsed.get('error')}")
+                self._count(parsed)
                 return parsed
         except urllib.error.HTTPError as e:
             err_msg = e.read().decode("utf-8", errors="ignore")
