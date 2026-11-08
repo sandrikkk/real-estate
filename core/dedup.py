@@ -53,6 +53,38 @@ def hamming(a: str, b: str) -> int:
     return bin(int(a, 16) ^ int(b, 16)).count("1")
 
 
+# The Hamming distance up to which two photos count as the same photo.
+HASH_THRESHOLD = 10
+
+
+def count_image_matches(
+    hashes_a: List[str], hashes_b: List[str], threshold: int = HASH_THRESHOLD
+) -> int:
+    """Counts unique matching image pairs within Hamming distance threshold."""
+    count = 0
+    used_b: set = set()
+    for ha in hashes_a:
+        for j, hb in enumerate(hashes_b):
+            if j not in used_b and hamming(ha, hb) <= threshold:
+                count += 1
+                used_b.add(j)
+                break
+    return count
+
+
+def is_photo_duplicate(matches: int, price_a, price_b, area_a, area_b) -> bool:
+    """The duplicate rule: two photos, or one photo that price (within 25%) and area (within
+    10%) confirm. A missing value counts as 0, which cannot confirm."""
+    if matches >= 2:
+        return True
+    if matches != 1:
+        return False
+    price_a, price_b, area_a, area_b = (float(x or 0) for x in (price_a, price_b, area_a, area_b))
+    price_diff = abs(price_a - price_b) / max(price_a, price_b, 1)
+    area_diff = abs(area_a - area_b) / max(area_a, area_b, 1)
+    return price_diff <= 0.25 and area_diff <= 0.10
+
+
 # --- Image downloading ---
 
 
@@ -94,7 +126,7 @@ class DuplicateDetector:
     4. Group assignment: group_id = first listing's ID, with merge support
     """
 
-    def __init__(self, db: DatabaseEngine, hash_threshold: int = 10):
+    def __init__(self, db: DatabaseEngine, hash_threshold: int = HASH_THRESHOLD):
         self.db = db
         self.threshold = hash_threshold
         # Phone -> listing IDs (for agent network analysis)
@@ -242,15 +274,7 @@ class DuplicateDetector:
 
     def _count_image_matches(self, hashes_a: List[str], hashes_b: List[str]) -> int:
         """Counts unique matching image pairs within Hamming distance threshold."""
-        count = 0
-        used_b: set = set()
-        for ha in hashes_a:
-            for j, hb in enumerate(hashes_b):
-                if j not in used_b and hamming(ha, hb) <= self.threshold:
-                    count += 1
-                    used_b.add(j)
-                    break
-        return count
+        return count_image_matches(hashes_a, hashes_b, self.threshold)
 
     # --- Group management ---
 
@@ -433,21 +457,10 @@ class DuplicateDetector:
 
             match_count = self._count_image_matches(listing_hashes, cand_hashes)
 
-            is_dup = False
-            if match_count >= 2:
-                is_dup = True
-            elif match_count == 1:
-                # 1 photo + price/area similarity as confirmation (AND)
-                price_diff = abs(listing.price_usd - cand["price_usd"]) / max(
-                    listing.price_usd, cand["price_usd"], 1
-                )
-                area_diff = abs(listing.area_m2 - cand["area_m2"]) / max(
-                    listing.area_m2, cand["area_m2"], 1
-                )
-                if price_diff <= 0.25 and area_diff <= 0.10:
-                    is_dup = True
-
-            if is_dup:
+            # 2+ photos, or 1 photo + price/area similarity as confirmation (AND)
+            if is_photo_duplicate(
+                match_count, listing.price_usd, cand["price_usd"], listing.area_m2, cand["area_m2"]
+            ):
                 gid = cand.get("group_id")
                 if gid:
                     matched_group_ids.add(gid)

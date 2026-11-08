@@ -69,6 +69,27 @@ XRAY_TABLES_DDL = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_xray_targets_chat ON xray_targets(chat_id, created_at)",
+    # Photos of a post sent to the bot (ADR 0005). batch_id = "<chat>:<media_group_id>" or
+    # "<chat>:m<message_id>"; dhash is filled by the photo job.
+    """
+    CREATE TABLE IF NOT EXISTS xray_photos (
+        batch_id TEXT NOT NULL,
+        message_id INTEGER NOT NULL,
+        chat_id TEXT NOT NULL,
+        file_id TEXT NOT NULL,
+        dhash TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (batch_id, message_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS xray_photo_batches (
+        batch_id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        caption TEXT,
+        created_at TEXT NOT NULL
+    )
+    """,
     # ✅/❌ answers on owner-search results: the labels ADR 0002 learns from.
     """
     CREATE TABLE IF NOT EXISTS xray_feedback (
