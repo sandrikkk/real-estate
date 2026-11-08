@@ -843,7 +843,10 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
         and ignores false price drops when live detail price did not actually drop."""
         from main import RealEstateOrchestrator
 
-        orch = RealEstateOrchestrator()
+        # A real orchestrator opens settings.DATABASE_PATH, which is production D1 whenever a
+        # .env is present: it ran init_db there on every local test run until 2026-11-08.
+        with patch("main.DatabaseEngine", return_value=self.db):
+            orch = RealEstateOrchestrator()
         orch.db = self.db
         orch.telegram_notifier = MagicMock()
         orch.telegram_notifier.send_notification = AsyncMock(return_value=True)
@@ -1112,6 +1115,69 @@ class TestFixes(unittest.IsolatedAsyncioTestCase):
             stats2 = await orch.run_cycle()
         self.assertEqual(stats2["notifications_sent"], 1)
         self.assertTrue(self.db.is_seen("myhome_retry_1"))
+
+    async def test_myhome_detail_is_owner_flag_does_not_drop_owner_alerts(self):
+        """MyHome's statement `is_owner` is false on every page an anonymous visitor gets,
+        owners' included (36 of 36 checked, 2026-11-08). It must not turn a private seller
+        into an agent and hide them from owner-only subscribers; a real agency still does."""
+        from core.filters import ListingFilter
+        from core.models import SearchFilters
+        from main import RealEstateOrchestrator
+
+        user = UserSubscription(
+            chat_id="u_owner_only",
+            deal_type="sale",
+            price_min_usd=45000,
+            price_max_usd=75000,
+            area_min_m2=40,
+            area_max_m2=65,
+            rooms_min=1,
+            districts=["საბურთალო"],
+            owner_type="owner",
+            is_active=True,
+        )
+
+        async def cycle(listing_id, details):
+            orch = RealEstateOrchestrator.__new__(RealEstateOrchestrator)
+            orch.db = self.db
+            orch.filter_engine = ListingFilter(SearchFilters())
+            orch.analytics = MarketAnalytics()
+            orch.dedup = MagicMock()
+            orch.dedup.check_listing = AsyncMock(return_value=None)
+            orch.telegram_notifier = MagicMock()
+            orch.telegram_notifier.send_notification = AsyncMock(return_value=True)
+            item = PropertyListing(
+                id=f"myhome_{listing_id}",
+                source="myhome",
+                source_id=listing_id,
+                title="ბინა საბურთალოზე",
+                price_usd=60000.0,
+                area_m2=50.0,
+                district="საბურთალო",
+                rooms=2,
+                user_type="physical",
+                is_owner=True,
+                url=f"https://myhome.ge/{listing_id}",
+            )
+            scraper = MagicMock()
+            scraper.name = "MyHome.ge"
+            scraper.fetch_listings = AsyncMock(side_effect=lambda f: [item.model_copy()])
+            scraper.fetch_statement_details = AsyncMock(return_value=details)
+            orch.scrapers = [scraper]
+            with patch("main.fetch_active_users", return_value=[user]):
+                return await orch.run_cycle()
+
+        owner = await cycle("owner_1", {"price_usd": 60000.0, "is_owner": False, "condition_id": 1})
+        self.assertEqual(owner["notifications_sent"], 1, "the MyHome flag hid a private seller")
+
+        for name, signal in (
+            ("agency_1", {"agency_name": "X"}),
+            ("agent_1", {"user_type": {"type": "agent"}}),
+            ("busy_1", {"user_type": {"type": "physical"}, "user_statements_count": 7}),
+        ):
+            details = {"price_usd": 60000.0, "is_owner": False, "condition_id": 1, **signal}
+            agent = await cycle(name, details)
+            self.assertEqual(agent["notifications_sent"], 0, f"{signal} must still mark an agent")
 
     def test_sync_key_not_in_url_or_error_logs(self):
         """Sync key must be sent only via X-Sync-Key header, never in URL query params or warning logs."""
