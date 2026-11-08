@@ -574,10 +574,21 @@ def evaluate_broker_verdict(
     total_listings = max(len(all_rows), max_author_count, unique_apartments)
 
     is_broker = any_non_owner or any_agent_type or max_author_count >= 3 or unique_apartments >= 2
+    # A Facebook post is a flat the seller offers, not a listing found under the number.
+    post_is_row = bool(all_rows) and all_rows[0].get("id") == "fb_input"
 
     if is_broker:
         reasons = []
-        if unique_apartments >= 2 or len(all_rows) >= 2:
+        if post_is_row and len(all_rows) >= 2:
+            flats = (
+                "იგივე ბინა"
+                if unique_apartments == 1
+                else f"ამ პოსტთან ერთად {unique_apartments} სხვადასხვა ბინა"
+            )
+            reasons.append(
+                f"{where} ამ ნომრით/ავტორით კიდევ <b>{len(all_rows) - 1} განცხადება</b> ({flats})"
+            )
+        elif unique_apartments >= 2 or len(all_rows) >= 2:
             reasons.append(
                 f"{where} ამ ნომრით/ავტორით იძებნება <b>{len(all_rows)} განცხადება</b> ({unique_apartments} სხვადასხვა ბინა)"
             )

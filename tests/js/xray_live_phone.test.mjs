@@ -359,3 +359,92 @@ test("follow-up: a finished listing job sends the full link X-Ray", async () => 
     goOffline();
   }
 });
+
+// Production, 2026-11-08: a Facebook post with a full number said "2 listings (2 different
+// flats)". One was the post itself, the other a D1 row that only had the masked number
+// (555000***, one of a thousand numbers), and MyHome was not asked about the full number.
+const FB_POST =
+  "იყიდება 3-ოთახიანი ბინა გლდანში, მე-6 მიკრორაიონი, 72 მ², 1 სართული, $60,000. დარეკეთ: " + PHONE;
+const MASKED_ROW = { ...D1_ROW, id: "myhome_9", phone_number: "555000***", is_owner: null, user_type: null };
+const OTHER_FLAT = { area_m2: 110, floor: "7", rooms: 4 };
+
+test("a Facebook post with a full number is a Facebook post", () => {
+  const p = w.parseXRayInput(FB_POST);
+  assert.equal(p.kind, "fb_text");
+  assert.equal(p.phone9, PHONE);
+});
+
+test("a Facebook post with a full number queues the MyHome phone lookup and says so", async () => {
+  serveNetwork();
+  try {
+    const db = recordingD1();
+    const report = await w.handleXRayQuery(FB_POST, ENV(db), { chatId: CHAT });
+    const job = db.log.find(e => /INSERT INTO xray_jobs/.test(e.sql));
+    // (id, kind, phone9, listing_id, target_id, chat_id, created_at)
+    assert.deepEqual([job.params[1], job.params[2], job.params[5]], ["phone", PHONE, String(CHAT)]);
+    assert.ok(report.includes("myhome-ზე ამ ნომერს ვამოწმებ"));
+  } finally {
+    goOffline();
+  }
+});
+
+test("without a chat the post X-Ray starts no lookup", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1();
+    const report = await w.handleXRayQuery(FB_POST, ENV(db));
+    assert.ok(!db.log.some(e => /INSERT INTO xray_jobs/.test(e.sql)));
+    assert.ok(!calls.some(c => c.url.hostname === "api.github.com"));
+    assert.ok(!report.includes("ვამოწმებ"));
+  } finally {
+    goOffline();
+  }
+});
+
+test("the post itself is not counted among the listings found under its number", async () => {
+  serveNetwork();
+  try {
+    const other = { ...D1_ROW, id: "myhome_3", ...OTHER_FLAT };
+    const db = recordingD1([[/FROM properties WHERE phone_number IN/, () => [other]]]);
+    const report = await w.handleXRayQuery(FB_POST, ENV(db), { chatId: CHAT });
+    assert.ok(
+      report.includes("კიდევ <b>1 განცხადება</b> (ამ პოსტთან ერთად 2 სხვადასხვა ბინა)"),
+      report
+    );
+    assert.ok(!report.includes("<b>2 განცხადება</b>"));
+  } finally {
+    goOffline();
+  }
+});
+
+test("fresh MyHome rows for the full number replace D1 rows that only have the masked number", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1([
+      [/FROM properties WHERE phone_number IN/, () => [MASKED_ROW]],
+      doneJob(),
+      jobRows([liveRow(1), liveRow(4, OTHER_FLAT)])
+    ]);
+    const report = await w.handleXRayQuery(FB_POST, ENV(db), { chatId: CHAT });
+    assert.ok(
+      report.includes("myhome-ზე და ბაზაში ამ ნომრით/ავტორით კიდევ <b>2 განცხადება</b> (ამ პოსტთან ერთად 2 სხვადასხვა ბინა)"),
+      report
+    );
+    assert.ok(!db.log.some(e => /INSERT INTO xray_jobs/.test(e.sql)), "a fresh result should not start a new job");
+    assert.ok(!calls.some(c => c.url.hostname === "api.github.com"));
+  } finally {
+    goOffline();
+  }
+});
+
+test("while the lookup runs, a masked D1 row still counts and the reply says MyHome is being checked", async () => {
+  serveNetwork();
+  try {
+    const db = recordingD1([[/FROM properties WHERE phone_number IN/, () => [{ ...MASKED_ROW, ...OTHER_FLAT }]]]);
+    const report = await w.handleXRayQuery(FB_POST, ENV(db), { chatId: CHAT });
+    assert.ok(report.includes("კიდევ <b>1 განცხადება</b> (ამ პოსტთან ერთად 2 სხვადასხვა ბინა)"), report);
+    assert.ok(report.includes("myhome-ზე ამ ნომერს ვამოწმებ"));
+  } finally {
+    goOffline();
+  }
+});
