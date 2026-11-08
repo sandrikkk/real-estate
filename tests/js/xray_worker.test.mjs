@@ -9,12 +9,11 @@ import { loadWorker, loadGoldenPosts, repoRoot } from "./load_worker.mjs";
 const w = loadWorker();
 
 // Correct values out of 100 posts (price: out of the USD-priced posts) on the golden set.
-// A ratchet: raise a number when the parser improves, never lower it.
-// Keep in sync with GOLDEN_BASELINE in tests/test_xray.py.
-const GOLDEN_BASELINE = {
-  kind: 93, area_m2: 95, floor: 95, rooms: 98, bedrooms: 88,
-  total_floors: 98, district: 70, phone9: 100, price_usd: 26
-};
+// A ratchet: raise a number when the parser improves, never lower it. The numbers live in
+// tests/fixtures/xray_golden_baseline.json, which tests/test_xray.py reads too.
+const GOLDEN_BASELINE = JSON.parse(
+  fs.readFileSync(path.join(repoRoot, "tests", "fixtures", "xray_golden_baseline.json"), "utf8")
+);
 
 function scoreGolden(parse) {
   const norm = v => (v === undefined || v === null || v === "" ? null : v);

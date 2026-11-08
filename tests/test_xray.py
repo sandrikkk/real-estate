@@ -920,19 +920,15 @@ class TestXRayEngine(unittest.TestCase):
 
 
 # Correct values out of 100 posts (price: out of the USD-priced posts) on the golden set.
-# A ratchet: raise a number when the parser improves, never lower it.
-# Keep in sync with GOLDEN_BASELINE in tests/js/xray_worker.test.mjs.
-GOLDEN_BASELINE = {
-    "kind": 93,
-    "area_m2": 95,
-    "floor": 95,
-    "rooms": 98,
-    "bedrooms": 88,
-    "total_floors": 98,
-    "district": 70,
-    "phone9": 100,
-    "price_usd": 26,
-}
+# A ratchet: raise a number when the parser improves, never lower it. The numbers live in
+# tests/fixtures/xray_golden_baseline.json, which tests/js/xray_worker.test.mjs reads too.
+with open(
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "fixtures", "xray_golden_baseline.json"
+    ),
+    encoding="utf-8",
+) as _f:
+    GOLDEN_BASELINE = json.load(_f)
 
 # Incident 2026-11-06 (docs/production-fixes.md §5.5), FB text reconstructed.
 INCIDENT_FB = (

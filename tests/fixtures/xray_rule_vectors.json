@@ -1,0 +1,753 @@
+[
+ {
+  "name": "matches: the same flat agrees on layout and micro-district",
+  "fn": "matches",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": true
+ },
+ {
+  "name": "matches: another micro-district rejects",
+  "fn": "matches",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - III მ/რ",
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": false
+ },
+ {
+  "name": "matches: floor and area alone are not enough",
+  "fn": "matches",
+  "args": [
+   {
+    "district": "გლდანი",
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "",
+    "rooms": null,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": false
+ },
+ {
+  "name": "matches: a different floor rejects",
+  "fn": "matches",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 3,
+    "floor": "5",
+    "area_m2": 72
+   }
+  ],
+  "expected": false
+ },
+ {
+  "name": "matches: a different room count rejects",
+  "fn": "matches",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 4,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": false
+ },
+ {
+  "name": "matches: total floors 3 apart reject",
+  "fn": "matches",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72,
+    "total_floors": 9
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72,
+    "total_floors": 12
+   }
+  ],
+  "expected": false
+ },
+ {
+  "name": "matches: total floors 1 apart are unknown and rooms still agree",
+  "fn": "matches",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72,
+    "total_floors": 9
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72,
+    "total_floors": 10
+   }
+  ],
+  "expected": true
+ },
+ {
+  "name": "matches: no floor, same rooms, price within 10% matches",
+  "fn": "matches",
+  "args": [
+   {
+    "district": "გლდანი",
+    "rooms": 3,
+    "price_usd": 60000
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი",
+    "rooms": 3,
+    "price_usd": 63000
+   }
+  ],
+  "expected": true
+ },
+ {
+  "name": "matches: no floor, price 20% apart does not match",
+  "fn": "matches",
+  "args": [
+   {
+    "district": "გლდანი",
+    "rooms": 3,
+    "price_usd": 60000
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი",
+    "rooms": 3,
+    "price_usd": 72000
+   }
+  ],
+  "expected": false
+ },
+ {
+  "name": "matches: the Temqa post is not the Nadzaladevi flat (incident 2026-11-06)",
+  "fn": "matches",
+  "args": [
+   {
+    "district": "თემქა",
+    "micro": 3,
+    "floor": "1",
+    "rooms": 2,
+    "bedrooms": 1,
+    "area_m2": 62,
+    "total_floors": 8,
+    "price_usd": 79000
+   },
+   {
+    "district": "ნაძალადევი",
+    "street": "ზედაზნის ქ. 6",
+    "floor": "1",
+    "rooms": 4,
+    "bedrooms": 3,
+    "area_m2": 63,
+    "total_floors": 12,
+    "price_usd": 92000
+   }
+  ],
+  "expected": false
+ },
+ {
+  "name": "layout: equal rooms agree",
+  "fn": "layout",
+  "args": [
+   {
+    "rooms": 3
+   },
+   {
+    "rooms": 3
+   }
+  ],
+  "expected": "agree"
+ },
+ {
+  "name": "layout: different rooms conflict",
+  "fn": "layout",
+  "args": [
+   {
+    "rooms": 3
+   },
+   {
+    "rooms": 2
+   }
+  ],
+  "expected": "conflict"
+ },
+ {
+  "name": "layout: bedrooms decide when rooms are missing",
+  "fn": "layout",
+  "args": [
+   {
+    "bedrooms": 2
+   },
+   {
+    "bedrooms": 2
+   }
+  ],
+  "expected": "agree"
+ },
+ {
+  "name": "layout: rooms = bedrooms + 1 agrees",
+  "fn": "layout",
+  "args": [
+   {
+    "rooms": 3
+   },
+   {
+    "bedrooms": 2
+   }
+  ],
+  "expected": "agree"
+ },
+ {
+  "name": "layout: rooms = bedrooms + 2 agrees",
+  "fn": "layout",
+  "args": [
+   {
+    "rooms": 4
+   },
+   {
+    "bedrooms": 2
+   }
+  ],
+  "expected": "agree"
+ },
+ {
+  "name": "layout: rooms = bedrooms conflicts",
+  "fn": "layout",
+  "args": [
+   {
+    "rooms": 3
+   },
+   {
+    "bedrooms": 3
+   }
+  ],
+  "expected": "conflict"
+ },
+ {
+  "name": "layout: nothing known is unknown",
+  "fn": "layout",
+  "args": [
+   {},
+   {}
+  ],
+  "expected": "unknown"
+ },
+ {
+  "name": "total floors: equal agree",
+  "fn": "total_floors",
+  "args": [
+   {
+    "total_floors": 9
+   },
+   {
+    "total_floors": 9
+   }
+  ],
+  "expected": "agree"
+ },
+ {
+  "name": "total floors: 1 apart is unknown",
+  "fn": "total_floors",
+  "args": [
+   {
+    "total_floors": 9
+   },
+   {
+    "total_floors": 10
+   }
+  ],
+  "expected": "unknown"
+ },
+ {
+  "name": "total floors: 3 apart conflict (15 vs 18)",
+  "fn": "total_floors",
+  "args": [
+   {
+    "total_floors": 15
+   },
+   {
+    "total_floors": 18
+   }
+  ],
+  "expected": "conflict"
+ },
+ {
+  "name": "total floors: read from a 5/12 floor text",
+  "fn": "total_floors",
+  "args": [
+   {
+    "total_floors": 12
+   },
+   {
+    "floor": "5/12"
+   }
+  ],
+  "expected": "agree"
+ },
+ {
+  "name": "total floors: one side unknown",
+  "fn": "total_floors",
+  "args": [
+   {
+    "total_floors": 12
+   },
+   {}
+  ],
+  "expected": "unknown"
+ },
+ {
+  "name": "location: the same micro-district agrees",
+  "fn": "location",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": "agree"
+ },
+ {
+  "name": "location: another micro-district conflicts",
+  "fn": "location",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - III მ/რ",
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": "conflict"
+ },
+ {
+  "name": "location: the district named in the street agrees",
+  "fn": "location",
+  "args": [
+   {
+    "district": "ვაკე"
+   },
+   {
+    "district": "ვაკე",
+    "street": "ვაკე, ჭავჭავაძის გამზ."
+   }
+  ],
+  "expected": "agree"
+ },
+ {
+  "name": "location: a parent district alone is unknown",
+  "fn": "location",
+  "args": [
+   {
+    "district": "დიდი დიღომი"
+   },
+   {
+    "district": "ვაკე-საბურთალო",
+    "street": ""
+   }
+  ],
+  "expected": "unknown"
+ },
+ {
+  "name": "location: no district on the target is unknown",
+  "fn": "location",
+  "args": [
+   {},
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": "unknown"
+ },
+ {
+  "name": "aliases: Didi Dighomi",
+  "fn": "aliases",
+  "args": [
+   "დიდი დიღომი"
+  ],
+  "expected": [
+   "დიდი დიღომი",
+   "დიღმის ჭალა",
+   "დიღომი",
+   "დიღომი 1-9",
+   "ვაკე-საბურთალო",
+   "სოფ. დიღომი",
+   "სოფელი დიღომი",
+   "ქოშიგორა"
+  ]
+ },
+ {
+  "name": "aliases: Saburtalo",
+  "fn": "aliases",
+  "args": [
+   "საბურთალო"
+  ],
+  "expected": [
+   "დელისი",
+   "ვაკე-საბურთალო",
+   "ვაშლიჯვარი",
+   "ვეძისი",
+   "თხინვალი",
+   "ლისი",
+   "ლისის მიმდებარედ",
+   "ნუცუბიძე",
+   "ნუცუბიძის ფერდობი",
+   "საბურთალო"
+  ]
+ },
+ {
+  "name": "aliases: Gldani",
+  "fn": "aliases",
+  "args": [
+   "გლდანი"
+  ],
+  "expected": [
+   "ავჭალა",
+   "გლდანი",
+   "გლდანი-ნაძალადევი",
+   "გლდანულა",
+   "ზაჰესი",
+   "თბილისის ზღვა",
+   "კონიაკის დას.",
+   "კონიაკის დასახლება",
+   "მუხიანი"
+  ]
+ },
+ {
+  "name": "aliases: a district without a list is itself",
+  "fn": "aliases",
+  "args": [
+   "ბათუმი"
+  ],
+  "expected": [
+   "ბათუმი"
+  ]
+ },
+ {
+  "name": "aliases: empty",
+  "fn": "aliases",
+  "args": [
+   ""
+  ],
+  "expected": []
+ },
+ {
+  "name": "verdict: one verified owner flat",
+  "fn": "verdict",
+  "args": [
+   {
+    "id": "a",
+    "is_owner": 1,
+    "user_type": "physical",
+    "district": "გლდანი",
+    "area_m2": 72,
+    "floor": "1",
+    "rooms": 3
+   },
+   [],
+   "ბაზაში"
+  ],
+  "expected": {
+   "is_broker": false,
+   "badge": "✅ რეალური მესაკუთრე (Owner)",
+   "reason": "ბაზაში და პორტალზე ფიქსირდება მხოლოდ 1 ბინა (სააგენტოს ნიშნების გარეშე)"
+  }
+ },
+ {
+  "name": "verdict: an unverified single listing is undecided",
+  "fn": "verdict",
+  "args": [
+   {
+    "id": "a",
+    "is_owner": null,
+    "user_type": "physical",
+    "district": "გლდანი",
+    "area_m2": 72,
+    "floor": "1",
+    "rooms": 3
+   },
+   [],
+   "ბაზაში"
+  ],
+  "expected": {
+   "is_broker": false,
+   "badge": "⚠️ სტატუსი დაუზუსტებელია (გადაუმოწმებელი)",
+   "reason": "ბაზაში ფიქსირდება 1 განცხადება, თუმცა პორტალზე მესაკუთრის სტატუსი დადასტურებული არ არის"
+  }
+ },
+ {
+  "name": "verdict: an agent profile is a broker",
+  "fn": "verdict",
+  "args": [
+   {
+    "id": "a",
+    "is_owner": 0,
+    "user_type": "agent",
+    "district": "გლდანი",
+    "area_m2": 72,
+    "floor": "1",
+    "rooms": 3
+   },
+   [],
+   "ბაზაში"
+  ],
+  "expected": {
+   "is_broker": true,
+   "badge": "🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო",
+   "reason": "პროფილი მონიშნულია როგორც სააგენტო/მაკლერი"
+  }
+ },
+ {
+  "name": "verdict: two different flats are a broker",
+  "fn": "verdict",
+  "args": [
+   {
+    "id": "a",
+    "is_owner": 1,
+    "user_type": "physical",
+    "district": "გლდანი",
+    "area_m2": 72,
+    "floor": "1",
+    "rooms": 3
+   },
+   [
+    {
+     "id": "b",
+     "district": "ვაკე",
+     "area_m2": 120,
+     "floor": "7",
+     "rooms": 4,
+     "is_owner": 1,
+     "user_type": "physical"
+    }
+   ],
+   "ბაზაში"
+  ],
+  "expected": {
+   "is_broker": true,
+   "badge": "🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო",
+   "reason": "ბაზაში ამ ნომრით/ავტორით იძებნება <b>2 განცხადება</b> (2 სხვადასხვა ბინა)"
+  }
+ },
+ {
+  "name": "verdict: the same flat listed twice is one flat",
+  "fn": "verdict",
+  "args": [
+   {
+    "id": "a",
+    "is_owner": 1,
+    "user_type": "physical",
+    "district": "გლდანი",
+    "area_m2": 72,
+    "floor": "1",
+    "rooms": 3
+   },
+   [
+    {
+     "id": "b",
+     "district": "გლდანი",
+     "area_m2": 71,
+     "floor": "1",
+     "rooms": 3,
+     "is_owner": 1,
+     "user_type": "physical"
+    }
+   ],
+   "ბაზაში"
+  ],
+  "expected": {
+   "is_broker": false,
+   "badge": "✅ რეალური მესაკუთრე (Owner)",
+   "reason": "ბაზაში და პორტალზე ფიქსირდება მხოლოდ 1 ბინა (სააგენტოს ნიშნების გარეშე)"
+  }
+ },
+ {
+  "name": "verdict: an author with 3 listings is a broker",
+  "fn": "verdict",
+  "args": [
+   {
+    "id": "a",
+    "is_owner": 1,
+    "user_type": "physical",
+    "district": "გლდანი",
+    "area_m2": 72,
+    "floor": "1",
+    "rooms": 3,
+    "author_listings_count": 3
+   },
+   [],
+   "ბაზაში"
+  ],
+  "expected": {
+   "is_broker": true,
+   "badge": "🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო",
+   "reason": "პორტალზე ავტორს უფიქსირდება <b>3 განცხადება</b>"
+  }
+ },
+ {
+  "name": "verdict: a post is not counted as a listing found under its number",
+  "fn": "verdict",
+  "args": [
+   {
+    "id": "fb_input",
+    "phone_number": "+995 555 00 01 11",
+    "district": "გლდანი",
+    "area_m2": 72,
+    "floor": "1",
+    "rooms": 3
+   },
+   [
+    {
+     "id": "myhome_3",
+     "district": "გლდანი",
+     "area_m2": 110,
+     "floor": "7",
+     "rooms": 4,
+     "is_owner": 0,
+     "user_type": "agent"
+    }
+   ],
+   "ბაზაში"
+  ],
+  "expected": {
+   "is_broker": true,
+   "badge": "🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო",
+   "reason": "ბაზაში ამ ნომრით/ავტორით კიდევ <b>1 განცხადება</b> (ამ პოსტთან ერთად 2 სხვადასხვა ბინა) • პროფილი მონიშნულია როგორც სააგენტო/მაკლერი"
+  }
+ },
+ {
+  "name": "verdict: a post whose number lists the same flat",
+  "fn": "verdict",
+  "args": [
+   {
+    "id": "fb_input",
+    "phone_number": "+995 555 00 01 11",
+    "district": "გლდანი",
+    "area_m2": 72,
+    "floor": "1",
+    "rooms": 3
+   },
+   [
+    {
+     "id": "myhome_4",
+     "district": "გლდანი",
+     "area_m2": 71,
+     "floor": "1",
+     "rooms": 3,
+     "is_owner": 0,
+     "user_type": "agent"
+    }
+   ],
+   "myhome-ზე და ბაზაში"
+  ],
+  "expected": {
+   "is_broker": true,
+   "badge": "🕵️‍♂️ სავარაუდო ფარული მაკლერი / სააგენტო",
+   "reason": "myhome-ზე და ბაზაში ამ ნომრით/ავტორით კიდევ <b>1 განცხადება</b> (იგივე ბინა) • პროფილი მონიშნულია როგორც სააგენტო/მაკლერი"
+  }
+ },
+ {
+  "name": "verdict: a post without a number and without rows",
+  "fn": "verdict",
+  "args": [
+   {
+    "id": "fb_input",
+    "district": "გლდანი"
+   },
+   [],
+   "ბაზაში"
+  ],
+  "expected": {
+   "is_broker": false,
+   "badge": "⚠️ სტატუსი დაუზუსტებელია (ნომერი არ არის მითითებული)",
+   "reason": "განცხადებაში ტელეფონის ნომერი არ წერია და ბაზაში იდენტური ბინა ჯერ არ იძებნება"
+  }
+ }
+]
