@@ -20,6 +20,7 @@ from curl_cffi.requests import AsyncSession
 
 from core.database import DatabaseEngine, DatabaseUnavailableError
 from core.models import PropertyListing
+from core.xray import SAME_FLAT_AREA_RATIO
 
 
 # --- dHash (Pillow only, 64-bit) ---
@@ -128,8 +129,8 @@ class DuplicateDetector:
             return []
 
         # ±15% area tolerance for agent manipulation
-        area_lo = listing.area_m2 * 0.85
-        area_hi = listing.area_m2 * 1.15
+        area_lo = listing.area_m2 * (1 - SAME_FLAT_AREA_RATIO)
+        area_hi = listing.area_m2 * (1 + SAME_FLAT_AREA_RATIO)
 
         with self.db._connection() as conn:
             cursor = conn.cursor()
@@ -313,9 +314,7 @@ class DuplicateDetector:
             return val is False or val == 0 or val == "0"
 
         has_previous_owner = any(
-            _is_verified_owner(r.get("is_owner"))
-            for r in rows
-            if r["id"] != current_listing_id
+            _is_verified_owner(r.get("is_owner")) for r in rows if r["id"] != current_listing_id
         )
         curr_row = next((r for r in rows if r["id"] == current_listing_id), {})
         is_curr_owner = _is_verified_owner(curr_row.get("is_owner"))

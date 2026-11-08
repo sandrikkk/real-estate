@@ -212,6 +212,48 @@ class TestOwnerSearch(unittest.TestCase):
         self.assertEqual([c["id"] for c in found["owners"]], ["ss_ge_10"])
         self.assertIn("⚠️ myhome ახლა არ პასუხობს", owner_report(found))
 
+    # Production, 2026-11-08: a 70 m² flat was shown as the owner of a 51 m² one, because the
+    # shared rule never compares area. The window is the duplicate finder's own (±15%).
+    def test_an_area_outside_the_duplicate_finders_window_is_another_flat(self):
+        web = self.gldani_web()
+        near = item(5, 555, area=80)  # 72 m² target: 11% off
+        far = item(6, 666, area=90)  # 25% off
+        web.pages[myhome_search_url({**OWNER_PARAMS, "page": "1"})] = search_page(
+            {**OWNER_PARAMS, "page": "1"}, [near, far]
+        )
+        for user_id, row in ((555, near), (666, far)):
+            web.pages[myhome_search_url({"users": str(user_id)})] = search_page(
+                {"users": str(user_id)}, [row]
+            )
+        found = self.run_search(web)
+        ids = [c["id"] for c in found["owners"]]
+        self.assertIn("myhome_5", ids)
+        self.assertNotIn("myhome_6", ids)
+
+    # Production, 2026-11-08: one seller's flat, posted three times, was listed as three owners.
+    def test_one_sellers_flat_posted_twice_is_one_line(self):
+        web = self.gldani_web()
+        owner = item(1, 111, price={"2": {"price_total": 68000}})
+        repost = item(7, 111, price={"2": {"price_total": 68000}})
+        web.pages[myhome_search_url({**OWNER_PARAMS, "page": "1"})] = search_page(
+            {**OWNER_PARAMS, "page": "1"}, [owner, repost]
+        )
+        web.pages[myhome_search_url({"users": "111"})] = search_page(
+            {"users": "111"}, [owner, repost]
+        )
+        web.ssge_items = [ssge_row(10, phone_number="+995 599 11 22 33")]
+        web.ssge_items.append(ssge_row(12, phone_number="599112233", price_usd=64500))
+        web.ssge_details_by_id["12"] = {"is_owner": True, "author_listings_count": 1}
+        found = self.run_search(web)
+        self.assertEqual([c["id"] for c in found["owners"]], ["ss_ge_10", "myhome_1"])
+        self.assertEqual(found["owners"][0]["also"], ["https://home.ss.ge/ka/udzravi-qoneba/12"])
+        self.assertEqual(found["owners"][1]["also"], ["https://www.myhome.ge/ka/pr/7/"])
+        text = owner_report(found)
+        self.assertIn(
+            'კიდევ 1 განცხადება: <a href="https://www.myhome.ge/ka/pr/7/">MyHome</a>', text
+        )
+        self.assertNotIn("3.", text)
+
     def test_nothing_found_says_so(self):
         web = FakeWeb([], {})
         found = self.run_search(web)
