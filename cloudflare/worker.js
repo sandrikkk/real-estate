@@ -739,12 +739,15 @@ async function handleMessage(msg, token, kv, env) {
 
   // On-Demand X-Ray for MyHome/SS.ge URLs, Georgian phone numbers, or Facebook apartment texts
   const collect = {};
+  if (Array.isArray(msg.photo) && msg.photo.length > 0) {
+    collect.photoBatch = photoBatchId(msg);
+  }
   const xrayReply = await handleXRayQuery(text, env, { chatId, collect });
   if (xrayReply) {
-    if (collect.ownerTarget && Array.isArray(msg.photo) && msg.photo.length > 0) {
-      collect.ownerTarget.photo_batch = photoBatchId(msg);
+    if (collect.ownerTarget && collect.photoBatch) {
+      collect.ownerTarget.photo_batch = collect.photoBatch;
     }
-    const targetId = await rememberOwnerTarget(env, chatId, collect.ownerTarget, text);
+    const targetId = collect.targetId || (await rememberOwnerTarget(env, chatId, collect.ownerTarget, text));
     const resultId = await saveXRayResult(env, chatId, "dup", collect.resultTarget, collect.duplicates, targetId);
     const markup = xrayReplyMarkup(targetId, resultId, collect.duplicates || [], []);
     await sendTelegram(token, "sendMessage", {
@@ -1770,7 +1773,7 @@ async function queueMyHomeLookup(env, chatId, job) {
 
 // How the phone report covers MyHome: "fresh" (a finished lookup's rows), "queued" (a job
 // was started), "failed" (no lookup possible now), or "none" (no full number to look up).
-async function myHomeLiveState(env, parsed, chatId) {
+async function myHomeLiveState(env, parsed, chatId, targetId = null) {
   if (!parsed.phone9) return { mode: "none", rows: [], full: false };
   const db = env.DB;
   const last = await latestMyHomeLookup(db, parsed.phone9);
@@ -1782,7 +1785,7 @@ async function myHomeLiveState(env, parsed, chatId) {
     };
   }
   const saved = await loadSavedLiveListings(db, parsed.phone9);
-  const jobId = await queueMyHomeLookup(env, chatId, { kind: "phone", phone9: parsed.phone9 });
+  const jobId = await queueMyHomeLookup(env, chatId, { kind: "phone", phone9: parsed.phone9, targetId });
   return { mode: jobId ? "queued" : "failed", rows: saved, full: false };
 }
 
@@ -1832,7 +1835,35 @@ async function handleXRayFollowup(request, env) {
         rows: await loadSavedLiveListings(env.DB, job.phone9, job.created_at),
         full: Boolean(job.page_full)
       };
-      text = `🔄 <b>myhome-ის შედეგი</b>\n\n${await buildPhoneReport(env.DB, parsed, live)}`;
+      let postTarget = null;
+      if (job.target_id && env.DB) {
+        try {
+          const targetRow = await env.DB
+            .prepare("SELECT * FROM xray_targets WHERE id = ?")
+            .bind(job.target_id)
+            .first();
+          if (targetRow && targetRow.target) {
+            const t = typeof targetRow.target === "string" ? JSON.parse(targetRow.target) : targetRow.target;
+            if (t && (t.district || t.area_m2 || t.rooms || t.floor)) {
+              postTarget = {
+                id: "fb_input",
+                source: "facebook",
+                price_usd: Number(t.price_usd) || 0,
+                area_m2: Number(t.area_m2) || 0,
+                district: t.district || "",
+                floor: t.floor || "",
+                rooms: Number(t.rooms) || 0,
+                bedrooms: t.bedrooms ? Number(t.bedrooms) : null,
+                total_floors: t.total_floors ? Number(t.total_floors) : null,
+                phone_number: fmt,
+                is_owner: null,
+                user_type: null
+              };
+            }
+          }
+        } catch (err) {}
+      }
+      text = `🔄 <b>myhome-ის შედეგი</b>\n\n${await buildPhoneReport(env.DB, parsed, live, postTarget)}`;
     } else {
       text = `⚠️ myhome-ზე ძებნა ვერ მოხერხდა (<code>${formatGeorgianPhone(job.phone9)}</code>). ზემოთ ნაჩვენებია ჩვენი ბაზის შედეგი.`;
     }
@@ -2392,7 +2423,7 @@ async function enrichDuplicatesIfNeeded(db, dups, maxCount = 3) {
 }
 
 // The phone report. `live` is myHomeLiveState(): { mode: "fresh" | "queued" | "failed" | "none", rows, full }.
-async function buildPhoneReport(db, parsed, live) {
+async function buildPhoneReport(db, parsed, live, postTarget = null) {
   const fmtParam = parsed.formattedPhone || parsed.maskedPhone || "";
   const p9Param = parsed.phone9 || fmtParam;
   const maskParam = parsed.maskedPhone || fmtParam;
@@ -2424,7 +2455,9 @@ async function buildPhoneReport(db, parsed, live) {
     }
   }
 
-  const header = `🔎 <b>ტელეფონის რენტგენი:</b> <code>${parsed.formattedPhone}</code>`;
+  const header = postTarget
+    ? `🔎 <b>ტელეფონის რენტგენი (პოსტის ნომერზე):</b> <code>${parsed.formattedPhone}</code>`
+    : `🔎 <b>ტელეფონის რენტგენი:</b> <code>${parsed.formattedPhone}</code>`;
   const searching = "🔄 myhome-ზე ვეძებ, დაახლოებით 1 წუთში მოგწერ.";
   if (rows.length === 0) {
     if (live.mode === "fresh") {
@@ -2469,7 +2502,8 @@ async function buildPhoneReport(db, parsed, live) {
     }
   }
 
-  const verdict = evaluateWorkerBrokerVerdict(rows[0], rows, liveRows.length ? "myhome-ზე და ბაზაში" : "ბაზაში");
+  const verdictTarget = postTarget || rows[0];
+  const verdict = evaluateWorkerBrokerVerdict(verdictTarget, rows, liveRows.length ? "myhome-ზე და ბაზაში" : "ბაზაში");
   const more = live.mode === "fresh" && live.full ? "+" : "";
   const lines = [header, `👤 <b>სტატუსი:</b> ${verdict.badge}`, `📌 ${verdict.reason}`];
   if (live.mode === "fresh") {
@@ -2483,7 +2517,10 @@ async function buildPhoneReport(db, parsed, live) {
         : "⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ, ნაჩვენებია მხოლოდ ჩვენი ბაზა."
     );
   }
-  lines.push("", `📋 <b>ნაპოვნი განცხადებები (${rows.length}${more}):</b>`);
+  const listingsTitle = postTarget && verdict.isBroker
+    ? "📋 <b>myhome-ზე ნაპოვნი სხვა განცხადებები"
+    : "📋 <b>ნაპოვნი განცხადებები";
+  lines.push("", `${listingsTitle} (${rows.length}${more}):</b>`);
   for (const r of rows.slice(0, 5)) {
     const p = Math.round(Number(r.price_usd) || 0).toLocaleString();
     const area = Number(r.area_m2) || 0;
@@ -2621,6 +2658,7 @@ async function handleXRayQuery(text, env, opts = {}) {
       );
     }
 
+    const photoBatch = (opts && opts.collect && opts.collect.photoBatch) || (opts && opts.photoBatch) || null;
     if (opts.collect) {
       opts.collect.ownerTarget = ownerTarget({
         ...target,
@@ -2628,6 +2666,9 @@ async function handleXRayQuery(text, env, opts = {}) {
         listing_id: parsed.kind === "url" ? target.id : null,
         phone9: parsed.phone9 || extract9DigitPhone(target.phone_number || "")
       }, text);
+      if (photoBatch && opts.collect.ownerTarget) {
+        opts.collect.ownerTarget.photo_batch = photoBatch;
+      }
     }
 
     // Find exact duplicates and live-enrich top matches so missing phones/owner badges are recovered
@@ -2648,8 +2689,22 @@ async function handleXRayQuery(text, env, opts = {}) {
     // A post with its own full number is looked up on MyHome like a bare number (ADR 0004),
     // so the verdict does not rest on rows that only carry the masked number.
     let live = null;
+    let targetId = null;
+    if (parsed.kind === "fb_text" && opts.chatId) {
+      const oTarget = (opts.collect && opts.collect.ownerTarget) || ownerTarget({
+        ...target,
+        micro: parsed.micro,
+        listing_id: null,
+        phone9: parsed.phone9 || extract9DigitPhone(target.phone_number || "")
+      }, text);
+      if (oTarget) {
+        if (photoBatch) oTarget.photo_batch = photoBatch;
+        targetId = await saveOwnerTarget(env, opts.chatId, oTarget);
+        if (opts.collect) opts.collect.targetId = targetId;
+      }
+    }
     if (parsed.kind === "fb_text" && parsed.phone9 && opts.chatId) {
-      live = await myHomeLiveState(env, parsed, opts.chatId);
+      live = await myHomeLiveState(env, parsed, opts.chatId, targetId);
     }
 
     const relatedMap = new Map();
