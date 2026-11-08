@@ -153,11 +153,12 @@ test("without a recent lookup a job is queued, and GitHub gets only the opaque j
     const report = await w.handleXRayQuery(GLDANI_POST, ENV(db), { chatId: CHAT });
     const insert = db.log.find(e => /INSERT INTO xray_jobs/.test(e.sql));
     assert.ok(insert, "no job was recorded");
-    // (id, kind, phone9, listing_id, chat_id, created_at)
+    // (id, kind, phone9, listing_id, target_id, chat_id, created_at)
     assert.equal(insert.params[1], "phone");
     assert.equal(insert.params[2], PHONE);
     assert.equal(insert.params[3], null);
-    assert.equal(insert.params[4], String(CHAT));
+    assert.equal(insert.params[4], null);
+    assert.equal(insert.params[5], String(CHAT));
     const dispatch = calls.find(c => c.url.hostname === "api.github.com");
     assert.ok(dispatch && dispatch.url.pathname.endsWith("/actions/workflows/xray-lookup.yml/dispatches"));
     assert.deepEqual(Object.keys(dispatch.body.inputs), ["job_id"]);

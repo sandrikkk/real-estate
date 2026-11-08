@@ -157,6 +157,7 @@ Without `--once`, `main.py` loops every `CHECK_INTERVAL_SECONDS`. A live cycle n
 | `cloudflare/worker.js` | Telegram webhook, KV filters, D1 proxy, X-Ray |
 | `scripts/deploy_worker.py` | Worker deploy that never commits `wrangler.toml` |
 | `scripts/xray_lookup.py` | GitHub Actions job that reads MyHome for a queued X-Ray lookup (ADR 0004) |
+| `core/owner_search.py` | Owner search behind the X-Ray "მეპატრონე" button: MyHome, SS.ge and D1 candidates, hidden-broker check, ranking (run by `scripts/xray_lookup.py`) |
 | `scripts/xray_canary.py` | Live check of the MyHome behaviour X-Ray relies on (uses the network) |
 | `docs/adr/` | ADRs; `docs/production-fixes.md` is the incident report |
 

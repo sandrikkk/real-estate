@@ -509,7 +509,7 @@ async function handleTelegramWebhook(request, env) {
   try {
     // 1. Handle Callback Queries (Button clicks)
     if (update.callback_query) {
-      await handleCallbackQuery(update.callback_query, token, kv);
+      await handleCallbackQuery(update.callback_query, token, kv, env);
       return new Response("OK");
     }
 
@@ -712,14 +712,31 @@ async function handleMessage(msg, token, kv, env) {
     return;
   }
 
+  // "მეპატრონე": the owner search for the last flat this chat X-Rayed (ADR 0003 stage 2)
+  if (OWNER_WORDS.test(text)) {
+    const targetRow = await latestOwnerTarget(env, chatId);
+    if (targetRow) {
+      await startOwnerSearch(env, token, chatId, targetRow);
+    } else {
+      await sendTelegram(token, "sendMessage", {
+        chat_id: chatId,
+        text: "ჯერ ჩამიგდე ბინის პოსტი, ბმული ან ნომერი, მერე მომწერე „მეპატრონე“."
+      });
+    }
+    return;
+  }
+
   // On-Demand X-Ray for MyHome/SS.ge URLs, Georgian phone numbers, or Facebook apartment texts
-  const xrayReply = await handleXRayQuery(text, env, { chatId });
+  const collect = {};
+  const xrayReply = await handleXRayQuery(text, env, { chatId, collect });
   if (xrayReply) {
+    const targetId = collect.ownerTarget ? await saveOwnerTarget(env, chatId, collect.ownerTarget) : null;
     await sendTelegram(token, "sendMessage", {
       chat_id: chatId,
       text: xrayReply,
       parse_mode: "HTML",
-      disable_web_page_preview: true
+      disable_web_page_preview: true,
+      ...(targetId ? { reply_markup: ownerButton(targetId) } : {})
     });
     return;
   }
@@ -735,7 +752,7 @@ async function handleMessage(msg, token, kv, env) {
 /**
  * Processes inline button clicks (Callback Queries)
  */
-async function handleCallbackQuery(cb, token, kv) {
+async function handleCallbackQuery(cb, token, kv, env) {
   const chatId = cb.message.chat.id;
   const messageId = cb.message.message_id;
   const data = cb.data;
@@ -744,6 +761,22 @@ async function handleCallbackQuery(cb, token, kv) {
 
   // Answer callback to remove loading state in Telegram client
   await sendTelegram(token, "answerCallbackQuery", { callback_query_id: cb.id });
+
+  // Owner search buttons (ADR 0003 stage 2): only the chat that got the button can use it.
+  if (typeof data === "string" && data.startsWith("own:")) {
+    let targetRow = null;
+    try {
+      targetRow = env && env.DB
+        ? await env.DB.prepare("SELECT * FROM xray_targets WHERE id = ? AND chat_id = ?").bind(data.slice(4), String(chatId)).first()
+        : null;
+    } catch (err) {}
+    if (targetRow) await startOwnerSearch(env, token, chatId, targetRow);
+    return;
+  }
+  if (typeof data === "string" && data.startsWith("fb:")) {
+    await recordOwnerFeedback(env, token, cb, data);
+    return;
+  }
 
   if (data === "menu_price") {
     user.state = "awaiting_price";
@@ -1676,8 +1709,8 @@ async function loadSavedListing(db, listingId) {
   }
 }
 
-// Records the job and dispatches the workflow. `job` is { kind: "phone", phone9 } or
-// { kind: "listing", listingId }. Returns the job id, or null when it cannot run.
+// Records the job and dispatches the workflow. `job` is { kind: "phone", phone9 },
+// { kind: "listing", listingId } or { kind: "owner", targetId }. Returns the job id, or null.
 async function queueMyHomeLookup(env, chatId, job) {
   const token = env && (env.GITHUB_PAT || env.GITHUB_TOKEN);
   if (!env || !env.DB || !token || !chatId) return null;
@@ -1685,10 +1718,10 @@ async function queueMyHomeLookup(env, chatId, job) {
   try {
     await env.DB
       .prepare(
-        "INSERT INTO xray_jobs (id, kind, phone9, listing_id, chat_id, status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)"
+        "INSERT INTO xray_jobs (id, kind, phone9, listing_id, target_id, chat_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)"
       )
       // "" not null: the first production xray_jobs declared phone9 NOT NULL.
-      .bind(id, job.kind, job.phone9 || "", job.listingId || null, String(chatId), new Date().toISOString())
+      .bind(id, job.kind, job.phone9 || "", job.listingId || null, job.targetId || null, String(chatId), new Date().toISOString())
       .run();
     const repo = env.GITHUB_REPO || "sandrikkk/real-estate";
     const ref = env.GITHUB_REF || "master";
@@ -1742,7 +1775,17 @@ async function handleXRayFollowup(request, env) {
       : null;
     if (!job) return json({ success: false, error: "job not found" }, 404);
     let text;
-    if (job.kind === "listing") {
+    let replyMarkup = null;
+    if (job.kind === "owner") {
+      let result = null;
+      try {
+        result = job.status === "done" && job.result ? JSON.parse(job.result) : null;
+      } catch (err) {}
+      text = result ? result.text : "⚠️ მესაკუთრის ძებნა ვერ მოხერხდა, ცოტა ხანში სცადე ხელახლა.";
+      if (result && Array.isArray(result.candidates) && result.candidates.length > 0) {
+        replyMarkup = feedbackKeyboard(job.id, result.candidates, []);
+      }
+    } else if (job.kind === "listing") {
       // The job saved the listing's row, so the X-Ray now reads it without queueing again.
       text = job.status === "done"
         ? `🔄 <b>myhome-ის შედეგი</b>\n\n${await handleXRayQuery(`https://www.myhome.ge/ka/pr/${job.listing_id}/`, env)}`
@@ -1763,11 +1806,133 @@ async function handleXRayFollowup(request, env) {
       chat_id: job.chat_id,
       text,
       parse_mode: "HTML",
-      disable_web_page_preview: true
+      disable_web_page_preview: true,
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {})
     });
     return json({ success: true });
   } catch (err) {
     return json({ success: false, error: err.message }, 500);
+  }
+}
+
+// Owner search (ADR 0003 stage 2). An X-Ray reply that names a flat gets a
+// "🔍 მესაკუთრის ძებნა" button; the button or the word "მეპატრონე" queues an "owner" job
+// (scripts/xray_lookup.py, core/owner_search.py), and its answer comes with ✅/❌ buttons
+// whose presses go to xray_feedback, the labels ADR 0002 learns from.
+const OWNER_WORDS = /^(?:მეპატრონე|მესაკუთრე)[\s!?.]*$/;
+const OWNER_TARGET_FIELDS = [
+  "district", "subdistrict", "street", "micro", "rooms", "bedrooms", "floor", "total_floors",
+  "area_m2", "price_usd", "deal_type", "phone9", "listing_id", "author_id", "group_id"
+];
+
+// The flat an X-Ray saw, or null when too little is known to search for it.
+function ownerTarget(fields, text) {
+  const t = { ...fields, micro: microOf(fields) };
+  if (!t.deal_type) t.deal_type = /ქირავდება|ქირით/.test(String(text || "")) ? "rent" : "sale";
+  if (!t.district || !(t.rooms || t.floor || Number(t.area_m2) > 0)) return null;
+  const out = {};
+  for (const k of OWNER_TARGET_FIELDS) {
+    if (t[k] !== null && t[k] !== undefined && t[k] !== "" && t[k] !== 0) out[k] = t[k];
+  }
+  return out;
+}
+
+function ownerTargetSummary(t) {
+  const parts = [t.district || "უცნობი უბანი"];
+  if (t.micro) parts.push(`მე-${t.micro} მიკრო`);
+  if (t.rooms) parts.push(`${t.rooms} ოთახი`);
+  const floor = cleanFloorStr(t.floor);
+  if (floor) parts.push(`${floor} სართ.`);
+  if (Number(t.area_m2) > 0) parts.push(`${Number(t.area_m2)} მ²`);
+  return parts.join(", ");
+}
+
+async function saveOwnerTarget(env, chatId, target) {
+  if (!env || !env.DB || !chatId || !target) return null;
+  const id = crypto.randomUUID();
+  try {
+    await env.DB
+      .prepare("INSERT INTO xray_targets (id, chat_id, target, created_at) VALUES (?, ?, ?, ?)")
+      .bind(id, String(chatId), JSON.stringify(target), new Date().toISOString())
+      .run();
+    return id;
+  } catch (err) {
+    return null;
+  }
+}
+
+function ownerButton(targetId) {
+  return { inline_keyboard: [[{ text: "🔍 მესაკუთრის ძებნა", callback_data: `own:${targetId}` }]] };
+}
+
+async function startOwnerSearch(env, token, chatId, targetRow) {
+  let target = {};
+  try {
+    target = JSON.parse(targetRow.target);
+  } catch (err) {}
+  const jobId = await queueMyHomeLookup(env, chatId, { kind: "owner", targetId: targetRow.id });
+  await sendTelegram(token, "sendMessage", {
+    chat_id: chatId,
+    text: jobId
+      ? `🔍 <b>მესაკუთრეს ვეძებ:</b> ${ownerTargetSummary(target)}\nmyhome, ss.ge და ჩვენი ბაზა, დაახლოებით 1 წუთში მოგწერ.`
+      : "⚠️ მესაკუთრის ძებნა ახლა ვერ დავიწყე, ცოტა ხანში სცადე.",
+    parse_mode: "HTML"
+  });
+}
+
+async function latestOwnerTarget(env, chatId) {
+  if (!env || !env.DB) return null;
+  try {
+    return await env.DB
+      .prepare("SELECT * FROM xray_targets WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1")
+      .bind(String(chatId))
+      .first();
+  } catch (err) {
+    return null;
+  }
+}
+
+// One row per candidate; `answers` are the xray_feedback rows already given, shown with ✓.
+function feedbackKeyboard(jobId, candidates, answers) {
+  const label = new Map((answers || []).map(a => [a.candidate_id, Number(a.label)]));
+  return {
+    inline_keyboard: candidates.map((c, i) => [
+      { text: `${i + 1} ✅ იგივეა${label.get(c.id) === 1 ? " ✓" : ""}`, callback_data: `fb:${jobId}:${i}:y` },
+      { text: `${i + 1} ❌ სხვაა${label.get(c.id) === 0 ? " ✓" : ""}`, callback_data: `fb:${jobId}:${i}:n` }
+    ])
+  };
+}
+
+// "fb:<job id>:<candidate index>:<y|n>"; a later press replaces an earlier one.
+async function recordOwnerFeedback(env, token, cb, data) {
+  const [, jobId, idxText, answer] = String(data).split(":");
+  const chatId = String(cb.message.chat.id);
+  if (!env || !env.DB || (answer !== "y" && answer !== "n")) return;
+  try {
+    const job = await env.DB
+      .prepare("SELECT * FROM xray_jobs WHERE id = ? AND chat_id = ?")
+      .bind(jobId, chatId)
+      .first();
+    const candidates = job && job.result ? JSON.parse(job.result).candidates || [] : [];
+    const cand = candidates[parseInt(idxText, 10)];
+    if (!cand) return;
+    await env.DB
+      .prepare(
+        "INSERT OR REPLACE INTO xray_feedback (job_id, candidate_id, chat_id, target_id, label, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      )
+      .bind(jobId, cand.id, chatId, job.target_id || null, answer === "y" ? 1 : 0, new Date().toISOString())
+      .run();
+    const { results } = await env.DB
+      .prepare("SELECT candidate_id, label FROM xray_feedback WHERE job_id = ? AND chat_id = ?")
+      .bind(jobId, chatId)
+      .all();
+    await sendTelegram(token, "editMessageReplyMarkup", {
+      chat_id: cb.message.chat.id,
+      message_id: cb.message.message_id,
+      reply_markup: feedbackKeyboard(jobId, candidates, results)
+    });
+  } catch (err) {
+    console.error("X-Ray feedback error:", err && err.message);
   }
 }
 
@@ -2206,6 +2371,9 @@ async function handleXRayQuery(text, env, opts = {}) {
 
   try {
     if (parsed.kind === "phone") {
+      if (opts.collect && parsed.phone9) {
+        opts.collect.ownerTarget = ownerTarget({ ...(parsed.flat || {}), phone9: parsed.phone9 }, text);
+      }
       // MyHome is read by a GitHub Actions job (ADR 0004); D1 holds only what matched subscriber filters.
       return await buildPhoneReport(db, parsed, await myHomeLiveState(env, parsed, opts.chatId));
     }
@@ -2278,6 +2446,15 @@ async function handleXRayQuery(text, env, opts = {}) {
         "🔎 <b>განცხადების რენტგენი</b>\n\n" +
         "ℹ️ ეს განცხადება ჩვენს ბაზაში ჯერ არ იძებნება და პორტალიდან მონაცემების წამოღება ვერ მოხერხდა."
       );
+    }
+
+    if (opts.collect) {
+      opts.collect.ownerTarget = ownerTarget({
+        ...target,
+        micro: parsed.micro,
+        listing_id: parsed.kind === "url" ? target.id : null,
+        phone9: parsed.phone9 || extract9DigitPhone(target.phone_number || "")
+      }, text);
     }
 
     // Find exact duplicates and live-enrich top matches so missing phones/owner badges are recovered

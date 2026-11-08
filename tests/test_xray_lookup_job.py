@@ -320,6 +320,81 @@ class TestXRayListingJob(unittest.TestCase):
         self.assertEqual(self.saved()["author_listings_count"], 24)
 
 
+OWNER_JOB = "33333333-4444-4555-8666-777777777777"
+TARGET_ID = "44444444-5555-4666-8777-888888888888"
+
+
+def quiet_sources(fail=False):
+    """Owner-search sources that find nothing, or that break."""
+
+    async def nothing(_):
+        if fail:
+            raise RuntimeError("portal down")
+        return None
+
+    return xray_lookup.Sources(
+        myhome_html=nothing,
+        ssge_search=nothing,
+        ssge_details=nothing,
+        ssge_normalize=lambda row: row,
+        myhome_urbans={"გლდანი": [2]},
+        ssge_subdistricts={"გლდანი": [32]},
+    )
+
+
+class TestXRayOwnerJob(unittest.TestCase):
+    """An "owner" job: the owner search behind the "მეპატრონე" button (core/owner_search.py)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        path = os.path.join(self.temp_dir.name, "jobs.db")
+        DatabaseEngine(db_path=path, use_d1=False).init_db()
+        self.conn = sqlite3.connect(path)
+        self.conn.row_factory = sqlite3.Row
+        target = {"district": "გლდანი", "micro": 6, "rooms": 3, "floor": "1"}
+        self.conn.execute(
+            "INSERT INTO xray_targets (id, chat_id, target, created_at) VALUES (?, '777', ?, ?)",
+            (TARGET_ID, json.dumps(target, ensure_ascii=False), a_minute_ago()),
+        )
+        self.conn.execute(
+            "INSERT INTO xray_jobs (id, kind, phone9, target_id, chat_id, status, created_at)"
+            " VALUES (?, 'owner', '', ?, '777', 'queued', ?)",
+            (OWNER_JOB, TARGET_ID, a_minute_ago()),
+        )
+        self.conn.commit()
+        self.notified = []
+
+    def tearDown(self):
+        self.conn.close()
+        self.temp_dir.cleanup()
+
+    def run_job(self, sources):
+        return asyncio.run(
+            xray_lookup.run_job(
+                OWNER_JOB, self.conn, None, MyHomeScraper(), self.notified.append, sources
+            )
+        )
+
+    def job(self):
+        return dict(
+            self.conn.execute("SELECT * FROM xray_jobs WHERE id = ?", (OWNER_JOB,)).fetchone()
+        )
+
+    def test_the_report_and_its_candidates_are_stored_for_the_follow_up(self):
+        self.assertEqual(self.run_job(quiet_sources())["status"], "done")
+        job = self.job()
+        stored = json.loads(job["result"])
+        self.assertIn("მესაკუთრის ძებნა:</b> გლდანი, მე-6 მიკრო, 3 ოთახი, 1 სართ.", stored["text"])
+        self.assertEqual(stored["candidates"], [])
+        self.assertIn("⚠️ myhome ახლა არ პასუხობს", stored["text"])
+        self.assertEqual(self.notified, [OWNER_JOB])
+
+    def test_a_crash_fails_the_job_and_still_tells_the_user(self):
+        self.assertEqual(self.run_job(quiet_sources(fail=True))["status"], "failed")
+        self.assertIsNone(self.job()["result"])
+        self.assertEqual(self.notified, [OWNER_JOB])
+
+
 class TestXRayTablesMigration(unittest.TestCase):
     """Production D1 got the first X-Ray tables; init_db must add the columns that came later."""
 
