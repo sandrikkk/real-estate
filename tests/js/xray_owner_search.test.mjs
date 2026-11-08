@@ -96,7 +96,54 @@ test("a bare phone number names no flat, so it gets no owner-search button", asy
     await webhook(env(db), message(PHONE));
     const reply = telegram(calls, "sendMessage").find(c => c.body.text.includes("ტელეფონის რენტგენი"));
     assert.equal(reply.body.reply_markup, undefined);
+    // It still replaces the chat's earlier flat, with an empty one (see the tests below).
+    const saved = db.log.find(e => /INSERT INTO xray_targets/.test(e.sql));
+    assert.equal(saved.params[2], "{}");
+  } finally {
+    goOffline();
+  }
+});
+
+// Production, 2026-11-08: a post without a district got no target, so the next "მეპატრონე"
+// searched the flat of an earlier post (Nadzaladevi) as if it were this one.
+const NO_DISTRICT_POST = "იყიდება 3-ოთახიანი ბინა სარაჯიშვილის მეტროსთან, 81 მ² 📞592186129";
+
+test("an X-Ray that names no flat replaces the chat's earlier flat with an empty one", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1([latestTarget]);
+    await webhook(env(db), message(NO_DISTRICT_POST));
+    const reply = telegram(calls, "sendMessage").find(c => c.body.text.includes("რენტგენი"));
+    assert.equal(reply.body.reply_markup, undefined);
+    const saved = db.log.find(e => /INSERT INTO xray_targets/.test(e.sql));
+    assert.equal(saved.params[1], String(CHAT));
+    assert.equal(saved.params[2], "{}");
+  } finally {
+    goOffline();
+  }
+});
+
+test("a bare number that belongs to the last flat keeps that flat", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1([latestTarget]);
+    await webhook(env(db), message(PHONE));
+    assert.ok(telegram(calls, "sendMessage").find(c => c.body.text.includes("ტელეფონის რენტგენი")));
     assert.ok(!db.log.some(e => /INSERT INTO xray_targets/.test(e.sql)));
+  } finally {
+    goOffline();
+  }
+});
+
+test("the word after an X-Ray that named no flat does not search the earlier flat", async () => {
+  const calls = serveNetwork();
+  try {
+    const emptyTarget = [/FROM xray_targets WHERE chat_id = \? ORDER BY/, () => [{ ...TARGET_ROW, target: "{}" }]];
+    const db = recordingD1([emptyTarget]);
+    await webhook(env(db), message("მეპატრონე"));
+    assert.ok(!db.log.some(e => /INSERT INTO xray_jobs/.test(e.sql)));
+    assert.ok(!calls.some(c => c.url.hostname === "api.github.com"));
+    assert.ok(telegram(calls, "sendMessage").pop().body.text.includes("მესაკუთრეს ვერ ვეძებ"));
   } finally {
     goOffline();
   }
