@@ -192,3 +192,17 @@ test("a photo job with no candidates sends its text without buttons", async () =
     goOffline();
   }
 });
+
+test("the X-Ray of a captioned photo saves photo_batch in the target JSON of INSERT INTO xray_targets", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1();
+    await webhook(env(db), photoMessage({ caption: POST }));
+    const targetInsert = db.log.find(e => /INSERT INTO xray_targets/.test(e.sql));
+    assert.ok(targetInsert, "target was inserted");
+    const targetJson = JSON.parse(targetInsert.params[2]);
+    assert.equal(targetJson.photo_batch, "123:m10");
+  } finally {
+    goOffline();
+  }
+});

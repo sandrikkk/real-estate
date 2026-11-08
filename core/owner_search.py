@@ -25,9 +25,12 @@ Network access goes through `Sources`, so tests run on fakes.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+
+from core.dedup import count_image_matches, is_photo_duplicate
 
 from core.xray import (
     DISTRICT_KEYWORDS,
@@ -56,6 +59,7 @@ from core.xray import (
 PAGES_PER_PORTAL = 2
 MAX_VERIFIED = 8
 MAX_SHOWN = 5
+MAX_PHOTO_CANDIDATES = 24
 # The pageSize sent to SS.ge: a page of exactly this size may have more listings behind it.
 SSGE_PAGE_SIZE = 16
 
@@ -70,6 +74,8 @@ class Sources:
     ssge_normalize: Callable[[dict], Optional[dict]]
     myhome_urbans: Dict[str, List[int]]
     ssge_subdistricts: Dict[str, List[int]]
+    post_hashes: Optional[Callable[[str], Awaitable[List[str]]]] = None
+    image_hashes: Optional[Callable[[List[str]], Awaitable[List[str]]]] = None
 
 
 def _digits(value: Any) -> str:
@@ -138,6 +144,65 @@ def _area_window(target: Dict[str, Any]) -> Optional[Tuple[int, int]]:
         math.floor(area * (1 - SAME_FLAT_AREA_RATIO)),
         math.ceil(area * (1 + SAME_FLAT_AREA_RATIO)),
     )
+
+
+def _image_urls(c: Dict[str, Any]) -> List[str]:
+    raw = c.get("images")
+    if raw is None:
+        try:
+            raw = json.loads(c.get("images_json") or "[]")
+        except (ValueError, TypeError):
+            raw = []
+    urls: List[str] = []
+    for img in raw or []:
+        if isinstance(img, dict):
+            url = img.get("large") or img.get("thumb") or img.get("url")
+            if url:
+                urls.append(url)
+        elif isinstance(img, str):
+            urls.append(img)
+    return urls
+
+
+def _in_blocking(target: Dict[str, Any], c: Dict[str, Any]) -> bool:
+    if _in_other_named_district(target, c):
+        return False
+    window = _area_window(target)
+    if not window:
+        return True
+    try:
+        area = float(c.get("area_m2") or 0)
+    except (TypeError, ValueError):
+        return True
+    return area <= 0 or (window[0] <= area <= window[1])
+
+
+def _text_conflicts(target: Dict[str, Any], c: Dict[str, Any]) -> List[str]:
+    conflicts: List[str] = []
+    if _compare_layout(target, c) == "conflict":
+        conflicts.append("ოთახები")
+    if _compare_total_floors(target, c) == "conflict":
+        conflicts.append("სართულიანობა")
+    if _compare_location(target, c) == "conflict" or _in_other_named_district(target, c):
+        conflicts.append("უბანი")
+    tf = _clean_floor(target.get("floor"))
+    cf = _clean_floor(c.get("floor"))
+    if tf and cf and tf != cf:
+        conflicts.append("სართული")
+    window = _area_window(target)
+    if window:
+        try:
+            area = float(c.get("area_m2") or 0)
+            if area > 0 and (area < window[0] or area > window[1]):
+                conflicts.append("ფართი")
+        except (TypeError, ValueError):
+            pass
+    return conflicts
+
+
+def _photo_match(target: Dict[str, Any], c: Dict[str, Any]) -> bool:
+    group = bool(target.get("group_id")) and c.get("group_id") == target.get("group_id")
+    return bool(group or c.get("photo_match"))
 
 
 def _ids_for(district: str, mapping: Dict[str, List[int]]) -> List[int]:
@@ -305,7 +370,7 @@ def _agreements(target: Dict[str, Any], cand: Dict[str, Any]) -> int:
 
 
 def _rank_key(target: Dict[str, Any], cand: Dict[str, Any]) -> tuple:
-    photo = bool(target.get("group_id")) and cand.get("group_id") == target.get("group_id")
+    photo = _photo_match(target, cand)
     try:
         area_gap = abs(float(cand.get("area_m2") or 0) - float(target.get("area_m2") or 0))
         known_area = bool(cand.get("area_m2")) and bool(target.get("area_m2"))
@@ -355,11 +420,48 @@ async def search_owner(target: Dict[str, Any], conn: Any, sources: Sources) -> D
         if full and rows
     }
     pool: Dict[str, dict] = {}
+    blocked_out: Dict[str, dict] = {}
     for cand in [*(myhome or []), *(ssge or []), *_d1_candidates(target, conn)]:
         if not cand.get("id") or cand["id"] in pool or _is_agents_own(target, cand):
             continue
         if _same_flat(target, cand):
             pool[cand["id"]] = cand
+            blocked_out.pop(cand["id"], None)
+        elif cand["id"] not in blocked_out and _in_blocking(target, cand):
+            blocked_out[cand["id"]] = cand
+
+    if target.get("photo_batch") and sources.post_hashes and sources.image_hashes:
+        post = await sources.post_hashes(target["photo_batch"])
+        if post:
+            pool_sorted = sorted(pool.values(), key=lambda c: _rank_key(target, c))
+            blocked_sorted = sorted(blocked_out.values(), key=lambda c: _rank_key(target, c))
+            cands_to_hash = (pool_sorted + blocked_sorted)[:MAX_PHOTO_CANDIDATES]
+            sem = asyncio.Semaphore(4)
+
+            async def _hash_cand(c: dict) -> List[str]:
+                urls = _image_urls(c)[:3]
+                if not urls:
+                    return []
+                async with sem:
+                    return (await sources.image_hashes(urls)) or []
+
+            all_hashes = await asyncio.gather(*(_hash_cand(c) for c in cands_to_hash))
+            for c, hashes in zip(cands_to_hash, all_hashes):
+                matches = count_image_matches(post, hashes)
+                c["photo_matches"] = matches
+                if c["id"] in pool:
+                    c["photo_match"] = is_photo_duplicate(
+                        matches,
+                        target.get("price_usd"),
+                        c.get("price_usd"),
+                        target.get("area_m2"),
+                        c.get("area_m2"),
+                    )
+                elif matches >= 2:
+                    c["photo_match"] = True
+                    c["text_conflicts"] = _text_conflicts(target, c)
+                    pool[c["id"]] = c
+
     ranked = sorted(pool.values(), key=lambda c: _rank_key(target, c))
     owners: List[dict] = []
     for cand in ranked[:MAX_VERIFIED]:
@@ -406,9 +508,7 @@ def owner_report(result: Dict[str, Any]) -> str:
     ref = float(target.get("price_usd") or 0)
     if not owners:
         lines.append("ℹ️ მესაკუთრის განცხადება ვერ მოიძებნა (myhome, ss.ge, ჩვენი ბაზა).")
-    photo = [
-        c for c in owners if target.get("group_id") and c.get("group_id") == target["group_id"]
-    ]
+    photo = [c for c in owners if _photo_match(target, c)]
     rest = [c for c in owners if c not in photo]
     n = 0
     for title, group in (("✅ <b>ფოტოები ემთხვევა:</b>", photo), ("🔎 <b>სავარაუდო:</b>", rest)):
@@ -437,9 +537,15 @@ def owner_report(result: Dict[str, Any]) -> str:
             if also:
                 links = ", ".join(f'<a href="{u or "#"}">{src}</a>' for u in also)
                 more = f" | კიდევ {len(also)} განცხადება: {links}"
+            photo_str = f" | ემთხვევა {c['photo_matches']} ფოტო" if c.get("photo_matches") else ""
+            conflicts_str = (
+                f" | ⚠️ ტექსტში განსხვავდება: {', '.join(c['text_conflicts'])}"
+                if c.get("text_conflicts")
+                else ""
+            )
             lines.append(
                 f'{n}. <a href="{c.get("url") or "#"}">{src}</a> — <b>${int(price):,}</b>{diff}'
-                f"{area}{floor_str} | სავარაუდო კერძო გამყიდველი{more}"
+                f"{area}{floor_str}{photo_str}{conflicts_str} | სავარაუდო კერძო გამყიდველი{more}"
             )
     if owners:
         lines += ["", "მონიშნე ქვემოთ: ✅ იგივე ბინაა, ❌ სხვაა."]

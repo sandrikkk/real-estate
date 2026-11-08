@@ -741,6 +741,9 @@ async function handleMessage(msg, token, kv, env) {
   const collect = {};
   const xrayReply = await handleXRayQuery(text, env, { chatId, collect });
   if (xrayReply) {
+    if (collect.ownerTarget && Array.isArray(msg.photo) && msg.photo.length > 0) {
+      collect.ownerTarget.photo_batch = photoBatchId(msg);
+    }
     const targetId = await rememberOwnerTarget(env, chatId, collect.ownerTarget, text);
     const resultId = await saveXRayResult(env, chatId, "dup", collect.resultTarget, collect.duplicates, targetId);
     const markup = xrayReplyMarkup(targetId, resultId, collect.duplicates || [], []);

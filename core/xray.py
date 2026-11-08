@@ -987,6 +987,16 @@ def parse_myhome_list_item(item: Dict[str, Any]) -> Dict[str, Any]:
     usd = price.get("2") or price.get(2) or {}
     user_type = item.get("user_type") if isinstance(item.get("user_type"), dict) else {}
     floor = item.get("floor")
+    raw_images = item.get("images") or []
+    images = []
+    if isinstance(raw_images, list):
+        for img in raw_images:
+            if isinstance(img, dict):
+                url = img.get("large") or img.get("thumb")
+                if url:
+                    images.append(url)
+            elif isinstance(img, str):
+                images.append(img)
     return {
         "id": f"myhome_{item.get('id')}",
         "source": "myhome",
@@ -1012,6 +1022,7 @@ def parse_myhome_list_item(item: Dict[str, Any]) -> Dict[str, Any]:
         "phone_number": None,
         "author_id": str(item["user_id"]) if item.get("user_id") else None,
         "author_listings_count": None,
+        "images": images,
     }
 
 

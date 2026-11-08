@@ -5,6 +5,7 @@ against fake MyHome pages, fake SS.ge answers and a local SQLite copy of D1.
 """
 
 import asyncio
+import dataclasses
 import json
 import os
 import sqlite3
@@ -12,7 +13,13 @@ import tempfile
 import unittest
 
 from core.database import DatabaseEngine
-from core.owner_search import SSGE_PAGE_SIZE, Sources, owner_report, search_owner
+from core.owner_search import (
+    MAX_PHOTO_CANDIDATES,
+    SSGE_PAGE_SIZE,
+    Sources,
+    owner_report,
+    search_owner,
+)
 from core.xray import MYHOME_SEARCH_PAGE_SIZE, myhome_search_url
 
 AGENT = "555000111"
@@ -334,6 +341,143 @@ class TestOwnerSearch(unittest.TestCase):
         found = self.run_search(web)
         self.assertEqual(found["owners"], [])
         self.assertIn("მესაკუთრის განცხადება ვერ მოიძებნა", owner_report(found))
+
+
+# ADR 0005 (owner search): the post's photos against the candidates' photos. Hashes are hex
+# dHashes: A and B are one photo recompressed (8 bits apart, within the limit of 10); X and Y
+# are other photos (64 and 32 bits from A).
+A, B = "0000000000000000", "00000000000000ff"
+X, Y = "ffffffffffffffff", "0f0f0f0f0f0f0f0f"
+
+
+def photo_sources(web, post=(), images=None, calls=None):
+    """The FakeWeb sources plus the post's hashes and the candidates' photo hashes."""
+    images = images or {}
+
+    async def post_hashes(batch_id):
+        return list(post)
+
+    async def image_hashes(urls):
+        if calls is not None:
+            calls.append(list(urls))
+        return [images[u] for u in urls if u in images]
+
+    return dataclasses.replace(web.sources(), post_hashes=post_hashes, image_hashes=image_hashes)
+
+
+class TestOwnerSearchPhotos(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        path = os.path.join(self.temp_dir.name, "d1.db")
+        DatabaseEngine(db_path=path, use_d1=False).init_db()
+        self.conn = sqlite3.connect(path)
+        self.conn.row_factory = sqlite3.Row
+
+    def tearDown(self):
+        self.conn.close()
+        self.temp_dir.cleanup()
+
+    def search(self, sources, target=GLDANI):
+        return asyncio.run(search_owner(dict(target), self.conn, sources))
+
+    def test_two_matching_photos_put_a_candidate_first_under_the_photo_heading(self):
+        owner = item(
+            1,
+            111,
+            price={"2": {"price_total": 68000}},
+            images=[{"large": "https://img/1a"}, {"large": "https://img/1b"}],
+        )
+        web = FakeWeb(
+            [owner],
+            {111: [owner]},
+            ssge_items=[ssge_row(10)],
+            ssge_details={"10": {"is_owner": True, "author_listings_count": 1}},
+        )
+        sources = photo_sources(web, post=[A, B], images={"https://img/1a": A, "https://img/1b": B})
+        found = self.search(sources, target={**GLDANI, "photo_batch": "B1"})
+        self.assertEqual([c["id"] for c in found["owners"]], ["myhome_1", "ss_ge_10"])
+        text = owner_report(found)
+        self.assertIn("✅ <b>ფოტოები ემთხვევა:</b>", text)
+        self.assertIn("| ემთხვევა 2 ფოტო", text)
+
+    def test_two_matching_photos_keep_a_flat_whose_text_says_another_floor_count(self):
+        cand = item(
+            7,
+            777,
+            total_floors=18,
+            images=[{"large": "https://img/7a"}, {"large": "https://img/7b"}],
+        )
+        web = FakeWeb([cand], {777: [cand]})
+        sources = photo_sources(web, post=[A, B], images={"https://img/7a": A, "https://img/7b": B})
+        target = {**GLDANI, "total_floors": 15, "area_m2": 72, "photo_batch": "B1"}
+        found = asyncio.run(search_owner(dict(target), self.conn, sources))
+        self.assertEqual([c["id"] for c in found["owners"]], ["myhome_7"])
+        self.assertIn("⚠️ ტექსტში განსხვავდება: სართულიანობა", owner_report(found))
+
+    def test_one_matching_photo_does_not_keep_a_flat_whose_text_disagrees(self):
+        cand = item(
+            7,
+            777,
+            total_floors=18,
+            images=[{"large": "https://img/7a"}, {"large": "https://img/7b"}],
+        )
+        web = FakeWeb([cand], {777: [cand]})
+        sources = photo_sources(web, post=[A, X], images={"https://img/7a": A, "https://img/7b": Y})
+        target = {**GLDANI, "total_floors": 15, "area_m2": 72, "photo_batch": "B1"}
+        found = asyncio.run(search_owner(dict(target), self.conn, sources))
+        self.assertEqual(found["owners"], [])
+
+    def test_a_photo_matched_flat_whose_account_sells_two_flats_is_still_not_an_owner(self):
+        cand = item(
+            7,
+            777,
+            total_floors=18,
+            images=[{"large": "https://img/7a"}, {"large": "https://img/7b"}],
+        )
+        second = item(20, 777, area=110, floor=7, address="ვაკე")
+        web = FakeWeb([cand], {777: [cand, second]})
+        sources = photo_sources(web, post=[A, B], images={"https://img/7a": A, "https://img/7b": B})
+        target = {**GLDANI, "total_floors": 15, "area_m2": 72, "photo_batch": "B1"}
+        found = asyncio.run(search_owner(dict(target), self.conn, sources))
+        self.assertEqual(found["owners"], [])
+
+    def test_without_a_photo_batch_no_photo_is_downloaded_or_compared(self):
+        owner = item(
+            1, 111, price={"2": {"price_total": 68000}}, images=[{"large": "https://img/1a"}]
+        )
+        web = FakeWeb([owner], {111: [owner]})
+        calls = []
+        sources = photo_sources(web, post=[A], images={"https://img/1a": A}, calls=calls)
+        found = self.search(sources)
+        self.assertEqual(calls, [])
+        self.assertEqual([c["id"] for c in found["owners"]], ["myhome_1"])
+
+    def test_no_more_than_the_photo_cap_is_hashed(self):
+        blocked = [
+            item(100 + n, 900 + n, total_floors=18, images=[{"large": f"https://img/{n}"}])
+            for n in range(30)
+        ]
+        web = FakeWeb(blocked, {})
+        calls = []
+        sources = photo_sources(web, post=[A], calls=calls)
+        target = {**GLDANI, "total_floors": 15, "area_m2": 72, "photo_batch": "B1"}
+        asyncio.run(search_owner(dict(target), self.conn, sources))
+        self.assertEqual(len(calls), MAX_PHOTO_CANDIDATES)
+        self.assertLessEqual(len(calls), MAX_PHOTO_CANDIDATES)
+
+    def test_a_candidate_is_hashed_at_most_three_photos(self):
+        owner = item(
+            1,
+            111,
+            price={"2": {"price_total": 68000}},
+            images=[{"large": f"https://img/1{k}"} for k in "abcde"],
+        )
+        web = FakeWeb([owner], {111: [owner]})
+        calls = []
+        sources = photo_sources(web, post=[A], images={}, calls=calls)
+        asyncio.run(search_owner({**GLDANI, "photo_batch": "B1"}, self.conn, sources))
+        self.assertTrue(calls)
+        self.assertTrue(all(len(urls) <= 3 for urls in calls), calls)
 
 
 if __name__ == "__main__":

@@ -39,9 +39,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings  # noqa: E402
 from core.database import D1Client, D1Connection  # noqa: E402
-from core.dedup import MAX_IMAGE_BYTES  # noqa: E402
+from core.dedup import MAX_IMAGE_BYTES, _compute_hashes  # noqa: E402
 from core.owner_search import Sources, owner_report, search_owner  # noqa: E402
-from core.photo_match import lookup_photos  # noqa: E402
+from core.photo_match import batch_hashes, lookup_photos  # noqa: E402
 from core.xray import (  # noqa: E402
     MYHOME_SEARCH_PAGE_SIZE,
     _merge_live_into_row,
@@ -212,7 +212,12 @@ async def run_job(
     return {"status": status, "found": len(result["rows"]), "full": result["full"]}
 
 
-def scraper_sources(myhome: MyHomeScraper, ssge: SSGeScraper) -> Sources:
+def scraper_sources(
+    myhome: MyHomeScraper,
+    ssge: SSGeScraper,
+    conn: Any = None,
+    download: Optional[Download] = None,
+) -> Sources:
     """What the owner search reads in production: the scrapers' own clients."""
 
     async def ssge_search(payload: dict) -> Optional[list]:
@@ -222,6 +227,17 @@ def scraper_sources(myhome: MyHomeScraper, ssge: SSGeScraper) -> Sources:
         listing = ssge._normalize_item(item)
         return listing.model_dump() if listing else None
 
+    post_hashes = (
+        (lambda b: batch_hashes(conn, b, download))
+        if conn is not None and download is not None
+        else None
+    )
+    image_hashes = (
+        (lambda urls: _compute_hashes(urls, max_images=3))
+        if conn is not None and download is not None
+        else None
+    )
+
     return Sources(
         myhome_html=myhome.fetch_html,
         ssge_search=ssge_search,
@@ -229,6 +245,8 @@ def scraper_sources(myhome: MyHomeScraper, ssge: SSGeScraper) -> Sources:
         ssge_normalize=ssge_normalize,
         myhome_urbans=MYHOME_URBAN_MAP,
         ssge_subdistricts=SS_GE_SUBDISTRICT_MAP,
+        post_hashes=post_hashes,
+        image_hashes=image_hashes,
     )
 
 
@@ -298,10 +316,10 @@ def main(argv: Optional[list] = None) -> int:
         return 2
     conn = D1Connection(D1Client(settings.CLOUDFLARE_PROXY_URL, settings.CLOUDFLARE_SYNC_KEY))
     scraper = MyHomeScraper()
-    sources = scraper_sources(scraper, SSGeScraper())
     download = (
         telegram_downloader(settings.TELEGRAM_BOT_TOKEN) if settings.TELEGRAM_BOT_TOKEN else None
     )
+    sources = scraper_sources(scraper, SSGeScraper(), conn=conn, download=download)
     outcome = asyncio.run(
         run_job(args.job, conn, scraper.fetch_html, scraper, notify_worker, sources, download)
     )
