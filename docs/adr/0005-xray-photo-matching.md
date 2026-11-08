@@ -44,6 +44,11 @@ flowchart LR
 - The lookup job and the canary now need Pillow (`xray-lookup.yml`, `xray-canary.yml`): the job imports `core/dedup.py`, and the canary imports the job.
 - The tables `xray_photos` and `xray_photo_batches` are created by the next scraper run (`init_db`); until then a photo gets "could not start".
 
-## Not decided here
+## Photos in the owner search
 
-How the photos take part in the owner search is a separate step.
+Decided on 2026-11-08:
+
+- A candidate with 2 or more matching photos counts as the same flat even if a text field conflicts (e.g. building height 15 vs 18 floors). It is shown under ✅ **ფოტოები ემთხვევა:**, with the conflicting fields named (`⚠ ტექსტში განსხვავდება: <fields>`).
+- With 1 matching photo, text conflicts still reject the candidate.
+- Photo matches must still pass `_verified_owner` (the broker check): an account selling two or more flats is never shown as an owner, even with matching photos.
+- At most `MAX_PHOTO_CANDIDATES = 24` candidates are hashed, and at most 3 photos per candidate are downloaded.
