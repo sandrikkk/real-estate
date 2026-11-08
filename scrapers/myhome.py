@@ -126,6 +126,12 @@ MYHOME_URBAN_MAP: Dict[str, List[int]] = {
     "ძველი თბილისი": [66, 67, 65, 57, 62, 64],
 }
 
+# A description in which the seller says they are an agent: an agent signal on its own.
+AGENT_SELF_DESCRIPTION = re.compile(
+    r"(?:ვარ\s+(?:აგენტი|მაკლერი)|სააგენტოდან|ჩვენი\s+სააგენტო|დაგვიკავშირდით\s+სააგენტო)",
+    re.IGNORECASE,
+)
+
 
 def _safe_int(val: Any) -> Optional[int]:
     if val is None:
@@ -664,11 +670,7 @@ class MyHomeScraper(BaseScraper):
             elif user_type_str == "owner":
                 is_owner = True
             elif description:
-                if re.search(
-                    r"(?:ვარ\s+(?:აგენტი|მაკლერი)|სააგენტოდან|ჩვენი\s+სააგენტო|დაგვიკავშირდით\s+სააგენტო)",
-                    description,
-                    re.IGNORECASE,
-                ):
+                if AGENT_SELF_DESCRIPTION.search(description):
                     is_owner = False
                 elif re.search(
                     r"(?:ვარ\s+(?:მეპატრონე|მესაკუთრე)|მესაკუთრისგან|სააგენტოებთან არ ვთანამშრომლობ|სააგენტოები ნუ|მაკლერები ნუ)",
