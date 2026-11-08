@@ -192,6 +192,9 @@ class TestOwnerSearch(unittest.TestCase):
         self.assertIn('2. <a href="https://www.myhome.ge/ka/pr/1/">MyHome</a>', text)
         self.assertIn("-$7,000 აგენტზე იაფად", text)
         self.assertIn("✅ იგივე ბინაა, ❌ სხვაა", text)
+        # A portal's "private" label is the seller's own claim, so the line does not call it proof.
+        self.assertIn("| სავარაუდო კერძო გამყიდველი", text)
+        self.assertNotIn("| მესაკუთრე", text)
 
     def test_ssge_is_asked_for_private_sellers_with_the_rooms(self):
         web = self.gldani_web()
