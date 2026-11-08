@@ -39,6 +39,7 @@ flowchart LR
 - **Labels.**
   - Pairs that share a photo-hash `group_id` (`core/dedup.py`) are matches.
   - The ✅/❌ buttons on owner-search results ([ADR 0003](0003-xray-live-phone-and-owner-search.md), stage 2) write to D1 `xray_feedback`: target key, candidate id, label, chat id and time.
+  - The same ✅/❌ buttons sit under the duplicate lines of an X-Ray reply. Each reply saves one `xray_results` row (the target's fields and the shown candidates), and its answers go to `xray_feedback` with `job_id` = that row's id.
   - Only the admin's answers count, and a later press replaces an earlier one.
 - **Gate.**
   - Labels are split into a fit set and a held-out set by a hash of the pair id, so the split is deterministic.

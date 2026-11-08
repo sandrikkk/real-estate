@@ -81,6 +81,18 @@ XRAY_TABLES_DDL = (
         PRIMARY KEY (job_id, candidate_id, chat_id)
     )
     """,
+    # The duplicate lines of one X-Ray reply, so their ✅/❌ answers can be recorded (ADR 0002).
+    """
+    CREATE TABLE IF NOT EXISTS xray_results (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        target TEXT,
+        candidates TEXT NOT NULL,
+        owner_target_id TEXT,
+        created_at TEXT NOT NULL
+    )
+    """,
 )
 
 # Columns added after the X-Ray tables first shipped. CREATE TABLE IF NOT EXISTS never adds a
