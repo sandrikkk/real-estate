@@ -439,7 +439,7 @@ def owner_report(result: Dict[str, Any]) -> str:
                 more = f" | კიდევ {len(also)} განცხადება: {links}"
             lines.append(
                 f'{n}. <a href="{c.get("url") or "#"}">{src}</a> — <b>${int(price):,}</b>{diff}'
-                f"{area}{floor_str} | მესაკუთრე{more}"
+                f"{area}{floor_str} | სავარაუდო კერძო გამყიდველი{more}"
             )
     if owners:
         lines += ["", "მონიშნე ქვემოთ: ✅ იგივე ბინაა, ❌ სხვაა."]
