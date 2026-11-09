@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import sqlite3
 import unittest
+import urllib.error
+import urllib.request
 from unittest.mock import MagicMock
+
+from PIL import Image
 
 import core.xray_review as xr
 from core.database import XRAY_TABLES_DDL
@@ -474,6 +480,282 @@ class TestXrayReview(unittest.TestCase):
         self.assertEqual(rec["review"]["version"], "w-2026-W46")
         self.assertEqual(rec["review"]["week"], "2026-W46")
         self.assertEqual(rec["review"]["pool"], 100)
+
+    def test_07_current_photo_url(self):
+        # 1. an old-host URL becomes the new host with the same path
+        old_url = "https://static-statements.tnet.ge/uploads/2026/08/pic.jpg"
+        expected = "https://static-api-statements.tnet.ge/uploads/2026/08/pic.jpg"
+        self.assertEqual(xr.current_photo_url(old_url), expected)
+
+        # Also scheme-relative or http
+        self.assertEqual(
+            xr.current_photo_url("//static-statements.tnet.ge/img.png"),
+            "//static-api-statements.tnet.ge/img.png",
+        )
+        self.assertEqual(
+            xr.current_photo_url("http://static-statements.tnet.ge/pic.jpg"),
+            "http://static-api-statements.tnet.ge/pic.jpg",
+        )
+
+        # 2. a static.ss.ge URL and "" are unchanged
+        ss_url = "https://static.ss.ge/uploads/pic.jpg"
+        self.assertEqual(xr.current_photo_url(ss_url), ss_url)
+        self.assertEqual(xr.current_photo_url(""), "")
+
+    def test_08_load_photo_urls(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE properties (id TEXT PRIMARY KEY, images_json TEXT)")
+
+        six_urls = [f"https://static-statements.tnet.ge/photo_{i}.jpg" for i in range(1, 7)]
+        conn.execute(
+            "INSERT INTO properties (id, images_json) VALUES (?, ?)",
+            ("p1", json.dumps(six_urls)),
+        )
+        conn.execute(
+            "INSERT INTO properties (id, images_json) VALUES (?, ?)",
+            ("p2", "invalid json{"),
+        )
+        conn.commit()
+
+        res = xr.load_photo_urls(conn, ["p1", "p2", "p3"])
+        # an old-host list of 6 URLs gives 4 rewritten URLs
+        self.assertIn("p1", res)
+        self.assertEqual(len(res["p1"]), 4)
+        for i, u in enumerate(res["p1"], 1):
+            self.assertEqual(u, f"https://static-api-statements.tnet.ge/photo_{i}.jpg")
+
+        # bad JSON gives []
+        self.assertIn("p2", res)
+        self.assertEqual(res["p2"], [])
+
+        # a missing id is absent
+        self.assertNotIn("p3", res)
+        conn.close()
+
+    def test_09_collage(self):
+        def _make_png(w: int = 100, h: int = 100, color=(255, 0, 0)) -> bytes:
+            img = Image.new("RGB", (w, h), color)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+
+        # rows of 3 and 4 images give a JPEG of size (4*320, 2*240)
+        r3 = [_make_png(color=(i * 30, 0, 0)) for i in range(3)]
+        r4 = [_make_png(color=(0, i * 30, 0)) for i in range(4)]
+        jpeg = xr.collage([r3, r4])
+        self.assertIsNotNone(jpeg)
+        im = Image.open(io.BytesIO(jpeg))
+        self.assertEqual(im.size, (4 * 320, 2 * 240))
+        self.assertEqual(im.format, "JPEG")
+
+        # rows of 2 and 0 give (2*320, 2*240)
+        r2 = [_make_png(color=(0, 0, 255)), _make_png(color=(100, 100, 100))]
+        jpeg2 = xr.collage([r2, []])
+        self.assertIsNotNone(jpeg2)
+        im2 = Image.open(io.BytesIO(jpeg2))
+        self.assertEqual(im2.size, (2 * 320, 2 * 240))
+
+        # two empty rows give None
+        self.assertIsNone(xr.collage([[], []]))
+
+        # a row of [b"not an image", <valid png>] keeps 1 tile
+        bad_and_good = [b"not an image", _make_png()]
+        jpeg3 = xr.collage([bad_and_good, []])
+        self.assertIsNotNone(jpeg3)
+        im3 = Image.open(io.BytesIO(jpeg3))
+        self.assertEqual(im3.size, (1 * 320, 2 * 240))
+
+    def test_10_send_review_with_photos(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        for ddl in XRAY_TABLES_DDL:
+            conn.execute(ddl)
+
+        def _make_png() -> bytes:
+            img = Image.new("RGB", (50, 50), (200, 100, 50))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+
+        fixture = self._make_synthetic_fixture()
+        pick = {
+            "a": fixture[0],
+            "b": fixture[1],
+            "key": xr.pair_key(fixture[0]["id"], fixture[1]["id"]),
+            "origin": "review_uncertain",
+            "posterior": 0.6,
+            "champion": True,
+            "kind_pairs": 5,
+            "q": None,
+            "pool": 50,
+        }
+
+        fake_download = MagicMock(return_value=_make_png())
+        send_photo_calls = []
+
+        def fake_send_photo(chat_id, jpeg, caption, reply_markup):
+            send_photo_calls.append(
+                {
+                    "chat_id": chat_id,
+                    "jpeg": jpeg,
+                    "caption": caption,
+                    "reply_markup": reply_markup,
+                }
+            )
+            return {"ok": True}
+
+        fake_send_text = MagicMock(return_value={"ok": True})
+
+        # Case 1: All given with photos -> send_photo called, text send not called
+        sent = xr.send_review(
+            conn=conn,
+            send=fake_send_text,
+            chat_id="777",
+            picks=[pick],
+            version="w-2026-W46",
+            week="2026-W46",
+            now_iso="2026-11-09T03:00:00",
+            sleep=lambda s: None,
+            send_photo=fake_send_photo,
+            download=fake_download,
+            photo_urls={
+                fixture[0]["id"]: ["https://example.com/a.jpg"],
+                fixture[1]["id"]: ["https://example.com/b.jpg"],
+            },
+        )
+        self.assertEqual(sent, 1)
+        self.assertEqual(len(send_photo_calls), 1)
+        self.assertIn("ზედა რიგი", send_photo_calls[0]["caption"])
+        rid = conn.execute("SELECT id FROM xray_results").fetchone()["id"]
+        self.assertEqual(send_photo_calls[0]["reply_markup"], xr.review_keyboard(rid))
+        fake_send_text.assert_not_called()
+
+        # Case 2: photo_urls={} -> fallback to text path
+        send_photo_calls.clear()
+        fake_send_text.reset_mock()
+        conn.execute("DELETE FROM xray_results")
+        conn.commit()
+
+        sent = xr.send_review(
+            conn=conn,
+            send=fake_send_text,
+            chat_id="777",
+            picks=[pick],
+            version="w-2026-W46",
+            week="2026-W46",
+            now_iso="2026-11-09T03:00:00",
+            sleep=lambda s: None,
+            send_photo=fake_send_photo,
+            download=fake_download,
+            photo_urls={},
+        )
+        self.assertEqual(sent, 1)
+        self.assertEqual(len(send_photo_calls), 0)
+        self.assertEqual(fake_send_text.call_count, 1)
+
+        # Case 3: failing send_photo deletes the row
+        send_photo_calls.clear()
+        fake_send_text.reset_mock()
+        conn.execute("DELETE FROM xray_results")
+        conn.commit()
+
+        fake_failing_photo = MagicMock(return_value=None)
+        sent = xr.send_review(
+            conn=conn,
+            send=fake_send_text,
+            chat_id="777",
+            picks=[pick],
+            version="w-2026-W46",
+            week="2026-W46",
+            now_iso="2026-11-09T03:00:00",
+            sleep=lambda s: None,
+            send_photo=fake_failing_photo,
+            download=fake_download,
+            photo_urls={
+                fixture[0]["id"]: ["https://example.com/a.jpg"],
+                fixture[1]["id"]: ["https://example.com/b.jpg"],
+            },
+        )
+        self.assertEqual(sent, 0)
+        rows = conn.execute("SELECT * FROM xray_results").fetchall()
+        self.assertEqual(len(rows), 0)
+        conn.close()
+
+    def test_11_telegram_photo_sender(self):
+        from scripts.estimate_xray_weights import telegram_photo_sender
+
+        sender = telegram_photo_sender("TEST_TOKEN_123")
+        dummy_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF"
+        dummy_markup = {"inline_keyboard": [[{"text": "btn", "callback_data": "cbd"}]]}
+
+        captured_requests = []
+
+        class MockResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+            def read(self):
+                return b'{"ok": true, "result": {"message_id": 42}}'
+
+        def mock_urlopen(req, timeout=60):
+            captured_requests.append(req)
+            return MockResp()
+
+        with unittest.mock.patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            res = sender("12345", dummy_jpeg, "Caption text", dummy_markup)
+
+        self.assertIsNotNone(res)
+        self.assertTrue(res.get("ok"))
+        self.assertEqual(len(captured_requests), 1)
+
+        req = captured_requests[0]
+        self.assertEqual(req.full_url, "https://api.telegram.org/botTEST_TOKEN_123/sendPhoto")
+        body = req.data
+        self.assertIn(b'name="photo"; filename="pair.jpg"', body)
+        self.assertIn(dummy_jpeg, body)
+        self.assertIn(b'name="parse_mode"\r\n\r\nHTML\r\n', body)
+        self.assertIn(json.dumps(dummy_markup, ensure_ascii=False).encode("utf-8"), body)
+
+        # when urlopen raises, it returns None and stdout is empty
+        def mock_failing_urlopen(req, timeout=60):
+            raise urllib.error.URLError("network error")
+
+        stdout_buf = io.StringIO()
+        with unittest.mock.patch("urllib.request.urlopen", side_effect=mock_failing_urlopen):
+            with contextlib.redirect_stdout(stdout_buf):
+                res_fail = sender("12345", dummy_jpeg, "Caption text", dummy_markup)
+
+        self.assertIsNone(res_fail)
+        self.assertEqual(stdout_buf.getvalue(), "")
+
+    def test_12_caption_length(self):
+        a = {
+            "source": "myhome",
+            "url": "https://www.myhome.ge/ka/pr/12345678/iyideba-5-otaxiani-bina-varketilis-me-2-mikroraionshi/",
+            "district": "სამგორის რაიონი / ვარკეთილი 3, მე-2 მიკრორაიონი",
+            "rooms": 5,
+            "floor": "15",
+            "total_floors": 16,
+            "area_m2": 198.5,
+            "price_usd": 250000,
+        }
+        b = {
+            "source": "ss_ge",
+            "url": "https://home.ss.ge/ka/udzravi-qoneba/iyideba-5-otaxiani-bina-varketilis-me-2-mikroraionshi-9999999",
+            "district": "სამგორის რაიონი / ვარკეთილი 3, მე-2 მიკრორაიონი",
+            "rooms": 5,
+            "floor": "15",
+            "total_floors": 16,
+            "area_m2": 198.5,
+            "price_usd": 250000,
+        }
+        caption = xr.review_caption(10, 10, a, b)
+        self.assertLessEqual(len(caption), 1024)
+        self.assertIn("ზედა რიგი: ა", caption)
 
 
 if __name__ == "__main__":

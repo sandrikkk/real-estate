@@ -12,6 +12,7 @@ import json
 import sys
 import time
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -22,6 +23,9 @@ from config import settings  # noqa: E402
 from core.database import D1Client, D1Connection, XRAY_WEIGHTS_DDL  # noqa: E402
 from core.golden_pairs import build_golden_pairs, summarize, to_jsonl  # noqa: E402
 from core.xray_review import (  # noqa: E402
+    collage,
+    load_photo_urls,
+    photo_downloader,
     pick_review_pairs,
     seen_pair_keys,
     send_review,
@@ -51,6 +55,45 @@ def telegram_sender(token: str):
             return None
 
     return send
+
+
+def telegram_photo_sender(token: str):
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+
+    def send_photo(chat_id, jpeg: bytes, caption: str, reply_markup: dict) -> Optional[dict]:
+        boundary = uuid.uuid4().hex
+        parts = []
+        for name, value in (
+            ("chat_id", str(chat_id)),
+            ("caption", caption),
+            ("parse_mode", "HTML"),
+            ("reply_markup", json.dumps(reply_markup, ensure_ascii=False)),
+        ):
+            parts.append(
+                f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode(
+                    "utf-8"
+                )
+            )
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="pair.jpg"\r\n'
+            "Content-Type: image/jpeg\r\n\r\n".encode("utf-8")
+            + jpeg
+            + b"\r\n"
+        )
+        parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+        req = urllib.request.Request(
+            url,
+            data=b"".join(parts),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.loads(resp.read())
+        except Exception:
+            return None  # print nothing: the URL holds the token
+
+    return send_photo
 
 
 def summary_text(
@@ -109,6 +152,8 @@ def run(
     out_dir: str = "out",
     dry_run: bool = False,
     vectors: Optional[List[Dict[str, Any]]] = None,
+    send_photo: Optional[Any] = None,
+    download: Optional[Any] = None,
 ) -> int:
     iso = now.isocalendar()
     week = f"{iso.year}-W{iso.week:02d}"
@@ -181,6 +226,24 @@ def run(
         encoding="utf-8",
     )
 
+    pick_ids = sorted({p["a"]["id"] for p in picks} | {p["b"]["id"] for p in picks})
+    photo_urls = load_photo_urls(conn, pick_ids)
+
+    photos_count = 0
+    if dry_run:
+        downloader = download if download is not None else photo_downloader()
+        for i, pick in enumerate(picks, 1):
+            a_urls = photo_urls.get(str(pick["a"]["id"]), photo_urls.get(pick["a"]["id"], []))
+            b_urls = photo_urls.get(str(pick["b"]["id"]), photo_urls.get(pick["b"]["id"], []))
+            rows = [
+                [x for x in map(downloader, a_urls) if x],
+                [x for x in map(downloader, b_urls) if x],
+            ]
+            jpeg = collage(rows)
+            if jpeg:
+                photos_count += 1
+                (out_path / f"review_{i}.jpg").write_bytes(jpeg)
+
     status = "passed" if report.get("passed") else "candidate"
 
     if not dry_run:
@@ -221,7 +284,30 @@ def run(
                 },
             )
             now_iso = now.isoformat()
-            send_review(conn, send, chat_id, picks, version, week, now_iso)
+            actual_downloader = download if download is not None else photo_downloader()
+            actual_send_photo = (
+                send_photo
+                if send_photo is not None
+                else telegram_photo_sender(getattr(settings_like, "TELEGRAM_BOT_TOKEN", ""))
+            )
+
+            def _tracking_send_photo(cid, jpeg, caption, markup):
+                nonlocal photos_count
+                photos_count += 1
+                return actual_send_photo(cid, jpeg, caption, markup)
+
+            send_review(
+                conn,
+                send,
+                chat_id,
+                picks,
+                version,
+                week,
+                now_iso,
+                send_photo=_tracking_send_photo,
+                download=actual_downloader,
+                photo_urls=photo_urls,
+            )
 
     print(f"X-Ray weights {version}: {status}")
     print(
@@ -229,6 +315,7 @@ def run(
         f"{pools_counts.get('close_area', 0)} close-area pairs, "
         f"{len(groups)} group pairs"
     )
+    print(f"Review photos: {photos_count}/{len(picks)}")
     print(f"Runtime: {runtime:.2f}s")
     if hasattr(conn, "client") and hasattr(conn.client, "usage_line"):
         print(conn.client.usage_line())
@@ -242,6 +329,8 @@ def main(
     argv: Optional[List[str]] = None,
     now: Optional[datetime] = None,
     send: Optional[Any] = None,
+    send_photo: Optional[Any] = None,
+    download: Optional[Any] = None,
 ) -> int:
     parser = argparse.ArgumentParser(
         description="Weekly X-Ray weights estimation, gate, storage and summary."
@@ -275,6 +364,10 @@ def main(
         now = datetime.now(timezone.utc)
     if send is None and not args.dry_run:
         send = telegram_sender(settings.TELEGRAM_BOT_TOKEN)
+    if send_photo is None and not args.dry_run:
+        send_photo = telegram_photo_sender(settings.TELEGRAM_BOT_TOKEN)
+    if download is None:
+        download = photo_downloader()
 
     conn = D1Connection(
         D1Client(settings.CLOUDFLARE_PROXY_URL, settings.CLOUDFLARE_SYNC_KEY, timeout=60)
@@ -287,6 +380,8 @@ def main(
         send=send,
         out_dir=args.out_dir,
         dry_run=args.dry_run,
+        send_photo=send_photo,
+        download=download,
     )
 
 

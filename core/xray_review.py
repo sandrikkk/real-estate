@@ -17,18 +17,140 @@ from __future__ import annotations
 
 import hashlib
 import html
+import io
 import json
 import math
 import time
 import uuid
-from typing import Any, Dict, Iterator, List, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
+from PIL import Image, ImageOps
+from curl_cffi import requests
+
+from core.dedup import MAX_IMAGE_BYTES
 from core.xray import _candidate_matches_target, _clean_floor, snapshot_fields
 from core.xray_weights import (
     POSSIBLE,
     iter_block_pairs,
     log_odds,
 )
+
+PHOTOS_PER_SIDE = 4  # photos of each listing in the picture; display only
+TILE = (320, 240)  # one photo's cell, in pixels; display only
+
+# MyHome moved its photo host in October 2026. Photos saved before that keep the old host,
+# which no longer resolves; the same path still serves on the new one.
+OLD_MYHOME_PHOTO_HOST = "//static-statements.tnet.ge/"
+NEW_MYHOME_PHOTO_HOST = "//static-api-statements.tnet.ge/"
+REVIEW_CAPTION_FOOTER = (
+    "ზედა რიგი: ა, ქვედა რიგი: ბ. ფოტოები ჩვენი ბაზიდანაა, "
+    "ამიტომ ჩანს მაშინაც, როცა განცხადება წაშლილია."
+)
+
+
+def current_photo_url(url: str) -> str:
+    return url.replace(OLD_MYHOME_PHOTO_HOST, NEW_MYHOME_PHOTO_HOST, 1) if url else url
+
+
+def load_photo_urls(conn: Any, ids: Any) -> Dict[str, List[str]]:
+    """The first PHOTOS_PER_SIDE saved photo URLs of each listing, hosts corrected.
+    One query: SELECT id, images_json FROM properties WHERE id IN (...). Bad JSON gives []."""
+    result: Dict[str, List[str]] = {}
+    id_list = list(dict.fromkeys(ids))
+    if not id_list:
+        return result
+    for i in range(0, len(id_list), 50):
+        chunk = id_list[i : i + 50]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT id, images_json FROM properties WHERE id IN ({placeholders})",
+            tuple(chunk),
+        ).fetchall()
+        for r in rows:
+            try:
+                rid = r["id"]
+                raw = r["images_json"]
+            except (TypeError, KeyError, IndexError):
+                rid, raw = r[0], r[1]
+            urls: List[str] = []
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        urls = [current_photo_url(u) for u in parsed if isinstance(u, str)][
+                            :PHOTOS_PER_SIDE
+                        ]
+                except Exception:
+                    urls = []
+            result[str(rid)] = urls
+    return result
+
+
+def photo_downloader() -> Callable[[str], Optional[bytes]]:
+    """download(url) -> bytes, or None unless HTTP 200 and at most MAX_IMAGE_BYTES.
+    curl_cffi requests.Session(impersonate="chrome124"), the impersonation core/dedup.py uses,
+    timeout 15 s. Prints nothing."""
+    session = requests.Session(impersonate="chrome124")
+
+    def download(url: str) -> Optional[bytes]:
+        if not url:
+            return None
+        target_url = f"https:{url}" if url.startswith("//") else url
+        try:
+            resp = session.get(target_url, timeout=15)
+            if resp.status_code == 200 and resp.content:
+                data = resp.content
+                if 0 < len(data) <= MAX_IMAGE_BYTES:
+                    return data
+            return None
+        except Exception:
+            return None
+
+    return download
+
+
+def collage(rows: List[List[bytes]]) -> Optional[bytes]:
+    """One JPEG: row 0 = listing ა, row 1 = listing ბ. Each photo is opened with Pillow
+    (skip any that fails to open), converted to RGB and fitted into TILE with
+    ImageOps.pad(img, TILE, color=(255, 255, 255)). Width = TILE[0] * max(1, longest row),
+    height = TILE[1] * 2; an empty row stays white. JPEG quality 85.
+    None when both rows end up empty."""
+
+    def _tiles(img_bytes_list: List[bytes]) -> List[Image.Image]:
+        tiles: List[Image.Image] = []
+        for b in img_bytes_list:
+            try:
+                img = Image.open(io.BytesIO(b))
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                padded = ImageOps.pad(img, TILE, color=(255, 255, 255))
+                tiles.append(padded)
+            except Exception:
+                continue
+        return tiles
+
+    row_0 = rows[0] if len(rows) > 0 else []
+    row_1 = rows[1] if len(rows) > 1 else []
+    tiles_0 = _tiles(row_0)
+    tiles_1 = _tiles(row_1)
+
+    if not tiles_0 and not tiles_1:
+        return None
+
+    longest_row = max(len(tiles_0), len(tiles_1))
+    width = TILE[0] * max(1, longest_row)
+    height = TILE[1] * 2
+
+    canvas = Image.new("RGB", (width, height), color=(255, 255, 255))
+    for idx, tile in enumerate(tiles_0):
+        canvas.paste(tile, (idx * TILE[0], 0))
+    for idx, tile in enumerate(tiles_1):
+        canvas.paste(tile, (idx * TILE[0], TILE[1]))
+
+    out = io.BytesIO()
+    canvas.save(out, format="JPEG", quality=85)
+    return out.getvalue()
+
 
 REVIEW_UNCERTAIN = 5  # pairs per week; sets the message volume, not a model parameter
 REVIEW_RANDOM = 5  # pairs per week; sets the message volume, not a model parameter
@@ -304,6 +426,10 @@ def review_text(i: int, total: int, a: Dict[str, Any], b: Dict[str, Any]) -> str
     )
 
 
+def review_caption(i: int, total: int, a: Dict[str, Any], b: Dict[str, Any]) -> str:
+    return f"{review_text(i, total, a, b)}\n\n{REVIEW_CAPTION_FOOTER}"
+
+
 def send_review(
     conn: Any,
     send: Any,
@@ -313,6 +439,9 @@ def send_review(
     week: str,
     now_iso: str,
     sleep: Any = time.sleep,
+    send_photo: Any = None,
+    download: Any = None,
+    photo_urls: Optional[Dict[str, List[str]]] = None,
 ) -> int:
     sent = 0
     total = len(picks)
@@ -350,16 +479,35 @@ def send_review(
         )
         conn.commit()
 
-        resp = send(
-            "sendMessage",
-            {
-                "chat_id": str(chat_id),
-                "text": review_text(i, total, a, b),
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-                "reply_markup": review_keyboard(rid),
-            },
-        )
+        jpeg = None
+        if send_photo is not None and download is not None and photo_urls is not None:
+            a_urls = photo_urls.get(str(a.get("id")), photo_urls.get(a.get("id"), []))
+            b_urls = photo_urls.get(str(b.get("id")), photo_urls.get(b.get("id"), []))
+            rows = [
+                [x for x in map(download, a_urls) if x],
+                [x for x in map(download, b_urls) if x],
+            ]
+            jpeg = collage(rows)
+
+        if jpeg is not None:
+            resp = send_photo(
+                chat_id,
+                jpeg,
+                review_caption(i, total, a, b),
+                review_keyboard(rid),
+            )
+        else:
+            resp = send(
+                "sendMessage",
+                {
+                    "chat_id": str(chat_id),
+                    "text": review_text(i, total, a, b),
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                    "reply_markup": review_keyboard(rid),
+                },
+            )
+
         if not resp or not resp.get("ok"):
             conn.execute("DELETE FROM xray_results WHERE id = ?", (rid,))
             conn.commit()
