@@ -36,6 +36,7 @@ from core.xray_weights import (  # noqa: E402
     gate,
     group_pairs,
     load_listings,
+    valid_weights,
 )
 
 
@@ -113,15 +114,19 @@ def summary_text(
         f"შენი პასუხები: ✅ {n1} · ❌ {n0} · 🤷 {nu}",
     ]
 
+    champ_id = report.get("champion")
+    is_weights = bool(champ_id and champ_id != "rule")
+    champ_label = f"ბოტის ახლანდელი წონები ({champ_id})" if is_weights else "ძველი წესი"
+
     disagreements = report.get("all", {}).get("disagreements", 0)
     if disagreements == 0:
-        lines.append("ძველი და ახალი წესი შენს ყველა პასუხზე ერთნაირად ფიქრობს.")
+        lines.append(f"{champ_label} და ახალი წესი შენს ყველა პასუხზე ერთნაირად ფიქრობს.")
     else:
         replies = report.get("all", {}).get("replies", 0)
         replies_won = report.get("all", {}).get("replies_won", 0)
         replies_lost = report.get("all", {}).get("replies_lost", 0)
         lines.append(
-            f"ძველი და ახალი წესი {disagreements} წყვილზე არ ეთანხმება ({replies} დამოუკიდებელ ბინაში): ახალი მართალია {replies_won}-ში, ძველი {replies_lost}-ში."
+            f"{champ_label} და ახალი წესი {disagreements} წყვილზე არ ეთანხმება ({replies} დამოუკიდებელ ბინაში): ახალი მართალია {replies_won}-ში, {champ_label} {replies_lost}-ში."
         )
 
     if not report.get("photo_floor", {}).get("ok", True):
@@ -130,13 +135,23 @@ def summary_text(
         )
 
     if report.get("passed"):
-        lines.append(
-            "✅ ახალმა წესმა გამოცდა გაიარა. ბოტში ჯერ ისევ ძველი წესია: ჩართვა ცალკე ნაბიჯია."
-        )
+        if is_weights:
+            lines.append(
+                f"✅ ახალმა წესმა გამოცდა გაიარა ({champ_id}-ზე უკეთესია). ბოტში ჯერ ისევ {champ_id}-ია: ჩართვა ცალკე ნაბიჯია."
+            )
+        else:
+            lines.append(
+                "✅ ახალმა წესმა გამოცდა გაიარა. ბოტში ჯერ ისევ ძველი წესია: ჩართვა ცალკე ნაბიჯია."
+            )
     else:
-        lines.append(
-            "⏳ ახალი წესი ჯერ ვერ ამტკიცებს, რომ ძველზე უკეთესია. ბოტი ძველ წესს იყენებს."
-        )
+        if is_weights:
+            lines.append(
+                f"⏳ ახალი წესი ჯერ ვერ ამტკიცებს, რომ {champ_id}-ზე უკეთესია. ბოტი {champ_id}-ს იყენებს."
+            )
+        else:
+            lines.append(
+                "⏳ ახალი წესი ჯერ ვერ ამტკიცებს, რომ ძველზე უკეთესია. ბოტი ძველ წესს იყენებს."
+            )
 
     if sent is not None and sent > 0:
         lines.append(f"ამ კვირის შესამოწმებელი: {sent} წყვილი (ქვემოთ).")
@@ -159,7 +174,8 @@ def run(
 ) -> int:
     iso = now.isocalendar()
     week = f"{iso.year}-W{iso.week:02d}"
-    version = f"w-{week}"
+    utc_now = now.astimezone(timezone.utc) if now.tzinfo else now
+    version = f"w-{week}-{utc_now:%Y%m%dT%H%M%SZ}"
 
     records, skipped = build_golden_pairs(conn, getattr(settings_like, "TELEGRAM_CHAT_ID", ""))
     listings = load_listings(conn)
@@ -177,7 +193,27 @@ def run(
         with open(vectors_path, "r", encoding="utf-8") as f:
             vectors = json.load(f)
 
-    report = gate(weights, records, vectors, em_report["photo_floor"])
+    champion: Optional[Dict[str, Any]] = None
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, weights FROM xray_weights WHERE status = 'passed' ORDER BY created_at DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        if row:
+            try:
+                w_id = row["id"]
+                w_raw = row["weights"]
+            except Exception:
+                w_id = row[0]
+                w_raw = row[1]
+            w_parsed = json.loads(w_raw) if isinstance(w_raw, str) else w_raw
+            if valid_weights(w_parsed):
+                champion = {**w_parsed, "id": w_id}
+    except Exception:
+        champion = None
+
+    report = gate(weights, records, vectors, em_report["photo_floor"], champion=champion)
     jsonl = to_jsonl(records)
     labels_hash = hashlib.sha256(jsonl.encode("utf-8")).hexdigest()
 

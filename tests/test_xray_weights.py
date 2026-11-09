@@ -83,13 +83,13 @@ class TestXrayWeights(unittest.TestCase):
         true_m = {
             "floor": {"equal": 0.85, "off_by_one": 0.10, "further": 0.05},
             "layout": {"agree": 0.95, "conflict": 0.05},
-            "total_floors": {"agree": 0.9, "conflict": 0.1},
+            "total_floors": {"agree": 0.85, "off_by_one": 0.10, "conflict": 0.05},
             "location": {"agree": 0.9, "conflict": 0.1},
         }
         true_u = {
             "floor": {"equal": 0.10, "off_by_one": 0.20, "further": 0.70},
             "layout": {"agree": 0.5, "conflict": 0.5},
-            "total_floors": {"agree": 0.3, "conflict": 0.7},
+            "total_floors": {"agree": 0.2, "off_by_one": 0.1, "conflict": 0.7},
             "location": {"agree": 0.4, "conflict": 0.6},
         }
         true_lam = 0.02
@@ -363,9 +363,9 @@ class TestXrayWeights(unittest.TestCase):
             output = buf.getvalue()
 
             # Row inserted into xray_weights
-            row = conn.execute("SELECT * FROM xray_weights WHERE id = 'w-2026-W46'").fetchone()
+            row = conn.execute("SELECT * FROM xray_weights WHERE id LIKE 'w-2026-W46-%'").fetchone()
             self.assertIsNotNone(row)
-            self.assertEqual(row["id"], "w-2026-W46")
+            self.assertTrue(row["id"].startswith("w-2026-W46-"))
 
             # Fake send called once with HTML parse mode and 📊 in summary_text
             self.assertEqual(fake_send.call_count, 1)
@@ -428,14 +428,14 @@ class TestXrayWeights(unittest.TestCase):
             "floor": {"equal": 0.97, "off_by_one": 0.02, "further": 0.01},
             "area": {"equal": 0.8, "close": 0.19, "far": 0.01},
             "layout": {"agree": 0.98, "conflict": 0.02},
-            "total_floors": {"agree": 0.95, "conflict": 0.05},
+            "total_floors": {"agree": 0.90, "off_by_one": 0.05, "conflict": 0.05},
             "location": {"agree": 0.95, "conflict": 0.05},
         }
         true_u = {
             "floor": {"equal": 0.1, "off_by_one": 0.15, "further": 0.75},
             "area": {"equal": 0.05, "close": 0.35, "far": 0.6},
             "layout": {"agree": 0.5, "conflict": 0.5},
-            "total_floors": {"agree": 0.1, "conflict": 0.9},
+            "total_floors": {"agree": 0.1, "off_by_one": 0.1, "conflict": 0.8},
             "location": {"agree": 0.9, "conflict": 0.1},
         }
 
@@ -497,14 +497,14 @@ class TestXrayWeights(unittest.TestCase):
             "floor": {"equal": 0.97, "off_by_one": 0.02, "further": 0.01},
             "area": {"equal": 0.8, "close": 0.19, "far": 0.01},
             "layout": {"agree": 0.98, "conflict": 0.02},
-            "total_floors": {"agree": 0.95, "conflict": 0.05},
+            "total_floors": {"agree": 0.90, "off_by_one": 0.05, "conflict": 0.05},
             "location": {"agree": 0.95, "conflict": 0.05},
         }
         true_u = {
             "floor": {"equal": 0.1, "off_by_one": 0.15, "further": 0.75},
             "area": {"equal": 0.05, "close": 0.35, "far": 0.6},
             "layout": {"agree": 0.5, "conflict": 0.5},
-            "total_floors": {"agree": 0.1, "conflict": 0.9},
+            "total_floors": {"agree": 0.1, "off_by_one": 0.1, "conflict": 0.8},
             "location": {"agree": 0.9, "conflict": 0.1},
         }
 
@@ -512,7 +512,7 @@ class TestXrayWeights(unittest.TestCase):
             "floor": {"equal": 0.1, "off_by_one": 0.15, "further": 0.75},
             "area": {"equal": 0.15, "close": 0.85, "far": 0.0},
             "layout": {"agree": 1.0, "conflict": 0.0},
-            "total_floors": {"agree": 1.0, "conflict": 0.0},
+            "total_floors": {"agree": 0.9, "off_by_one": 0.1, "conflict": 0.0},
             "location": {"agree": 0.95, "conflict": 0.05},
         }
 
@@ -801,3 +801,189 @@ class TestXrayWeights(unittest.TestCase):
 
         # 4. Two units won and none lost give p_value == 0.25.
         self.assertEqual(xw.sign_test_p(2, 2), 0.25)
+
+    def test_18_total_floors_level(self):
+        # 1. 10/9 is off_by_one
+        self.assertEqual(
+            xw.total_floors_level({"total_floors": 10}, {"total_floors": 9}), "off_by_one"
+        )
+        # 2. 10/10 is agree
+        self.assertEqual(xw.total_floors_level({"total_floors": 10}, {"total_floors": 10}), "agree")
+        # 3. 10/12 is conflict
+        self.assertEqual(
+            xw.total_floors_level({"total_floors": 10}, {"total_floors": 12}), "conflict"
+        )
+        # 4. 0/9 is unknown
+        self.assertEqual(xw.total_floors_level({"total_floors": 0}, {"total_floors": 9}), "unknown")
+        # 5. "8/10" against total 9 is off_by_one (_total_floors_of reads the slash)
+        self.assertEqual(
+            xw.total_floors_level({"floor": "8/10"}, {"total_floors": 9}), "off_by_one"
+        )
+
+    def test_19_v1_and_v2_at_once(self):
+        # v1 and v2 pair levels for 10/9
+        a = {"floor": "8", "total_floors": 10, "area_m2": 50, "rooms": 3, "district": "გლდანი"}
+        b = {
+            "floor": "8",
+            "total_floors": 9,
+            "area_m2": 50,
+            "rooms": 3,
+            "district": "გლდანი",
+            "street": "შენგელია რ. ქ. 7",
+        }
+        v1_levels = xw.pair_levels(a, b, version=1)
+        v2_levels = xw.pair_levels(a, b, version=2)
+        self.assertEqual(v1_levels[3], "unknown")
+        self.assertEqual(v2_levels[3], "off_by_one")
+
+        # Load samples
+        sample_path = Path(__file__).resolve().parent / "fixtures" / "xray_weights_sample.json"
+        with open(sample_path, encoding="utf-8") as f:
+            w1 = json.load(f)
+        sample_v2_path = (
+            Path(__file__).resolve().parent / "fixtures" / "xray_weights_sample_v2.json"
+        )
+        with open(sample_v2_path, encoding="utf-8") as f:
+            w2 = json.load(f)
+
+        # 9.0 pair posterior with v1 sample equals ~0.854
+        p1 = xw.posterior(w1, a, b)
+        self.assertAlmostEqual(p1, 0.853746, places=4)
+
+        # 9.0 pair posterior with v2 sample is lower (~0.763)
+        p2 = xw.posterior(w2, a, b)
+        self.assertAlmostEqual(p2, 0.762542, places=4)
+        self.assertLess(p2, p1)
+
+    def test_20_gate_with_champion(self):
+        sample_path = Path(__file__).resolve().parent / "fixtures" / "xray_weights_sample.json"
+        with open(sample_path, encoding="utf-8") as f:
+            w1 = json.load(f)
+        champion = {**w1, "id": "w-2026-W46"}
+
+        def make_rec(pid, label, target_kind="listing"):
+            return {
+                "pair_id": pid,
+                "target_key": pid,
+                "listing_pair_key": f"l1_{pid}__l2_{pid}",
+                "target_kind": target_kind,
+                "label": label,
+                "labelled_at": "2026-11-09T00:00:00",
+                "snapshot": "present",
+                "target": {"pair_id": pid, "district": "Vake"},
+                "candidate": {"pair_id": pid, "id": f"cand_{pid}", "district": "Vake"},
+                "relations": {},
+                "evidence": {},
+                "review": None,
+            }
+
+        records_5 = [make_rec(f"p{i}", 1) for i in range(1, 6)]
+        vectors_pass = [{"name": "v1", "gate": True, "args": [{}, {}], "expected": False}]
+
+        # 1. Champion is w-2026-W46, report has "champion": "w-2026-W46"
+        res = xw.gate(w1, records_5, vectors_pass, {"ok": True}, champion=champion)
+        self.assertEqual(res["champion"], "w-2026-W46")
+        # Identical challenger has 0 disagreements and is not passed
+        self.assertEqual(res["all"]["disagreements"], 0)
+        self.assertFalse(res["passed"])
+
+        # 2. Fake challenger fixing 5 independent champion mistakes passes A
+        orig_chall = xw.challenger_says_same
+        try:
+            # champion says False on all 5, challenger says True (matches label 1)
+            xw.challenger_says_same = lambda w, t, c: w.get("id") != "w-2026-W46"
+            w_chall = {**w1, "id": "w-challenger"}
+            vectors_true = [{"name": "v1", "gate": True, "args": [{}, {}], "expected": True}]
+            res_pass = xw.gate(w_chall, records_5, vectors_true, {"ok": True}, champion=champion)
+            self.assertEqual(res_pass["all"]["disagreements"], 5)
+            self.assertEqual(res_pass["all"]["wins"], 5)
+            self.assertEqual(res_pass["all"]["losses"], 0)
+            self.assertEqual(res_pass["all"]["p_value"], 1 / 32)
+            self.assertTrue(res_pass["passed"])
+        finally:
+            xw.challenger_says_same = orig_chall
+
+    def test_21_version_id_and_champion(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE properties (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                url TEXT,
+                district TEXT,
+                subdistrict TEXT,
+                street TEXT,
+                floor TEXT,
+                total_floors INTEGER,
+                rooms INTEGER,
+                bedrooms INTEGER,
+                area_m2 REAL,
+                price_usd REAL,
+                deal_type TEXT,
+                phone_number TEXT,
+                group_id TEXT
+            )
+        """)
+        for ddl in XRAY_TABLES_DDL:
+            conn.execute(ddl)
+
+        conn.execute("""
+            INSERT INTO properties (id, source, url, district, area_m2, floor, deal_type, price_usd, phone_number)
+            VALUES ('ss_ge_1', 'ss_ge', 'https://ss.ge/1', 'Vake', 55, '3', 'sale', 80000, '555000111')
+        """)
+        conn.commit()
+
+        sample_v2_path = (
+            Path(__file__).resolve().parent / "fixtures" / "xray_weights_sample_v2.json"
+        )
+        with open(sample_v2_path, encoding="utf-8") as f:
+            w2 = json.load(f)
+
+        # Insert a passed champion row
+        champ_id = "w-2026-W46-20261109T030000Z"
+        conn.execute(
+            """
+            INSERT INTO xray_weights (id, created_at, status, weights, thresholds, counts, labels_hash, report)
+            VALUES (?, '2026-11-09T03:00:00Z', 'passed', ?, '{}', '{}', 'hash1', '{}')
+            """,
+            (champ_id, json.dumps(w2)),
+        )
+        conn.commit()
+
+        class FakeSettings:
+            TELEGRAM_CHAT_ID = "777"
+            TELEGRAM_BOT_TOKEN = "fake_token"
+            CLOUDFLARE_PROXY_URL = "http://fake"
+            CLOUDFLARE_SYNC_KEY = "fake_key"
+
+        now2 = datetime(2026, 11, 9, 4, 0, tzinfo=timezone.utc)
+        fake_send = MagicMock(return_value={"ok": True})
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir) / "out"
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                run(
+                    conn,
+                    FakeSettings(),
+                    now2,
+                    fake_send,
+                    out_dir=str(out_dir),
+                    dry_run=False,
+                    review_uncertain=0,
+                    review_random=0,
+                )
+
+            # Two distinct rows exist, first row keeps status 'passed'
+            rows = conn.execute(
+                "SELECT id, status FROM xray_weights ORDER BY created_at"
+            ).fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["id"], champ_id)
+            self.assertEqual(rows[0]["status"], "passed")
+            self.assertEqual(rows[1]["id"], "w-2026-W46-20261109T040000Z")
+
+            # Report used the active champion
+            report_data = json.loads((out_dir / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report_data["champion"], champ_id)

@@ -21,18 +21,33 @@ from core.xray import (
     _compare_layout,
     _compare_location,
     _compare_total_floors,
+    _total_floors_of,
 )
 
 FIELDS = ("floor", "area", "layout", "total_floors", "location")
-LEVELS = {
+LEVELS_V1 = {
     "floor": ("equal", "off_by_one", "further"),
     "area": ("equal", "close", "far"),
     "layout": ("agree", "conflict"),
     "total_floors": ("agree", "conflict"),
     "location": ("agree", "conflict"),
 }
+LEVELS_V2 = {
+    "floor": ("equal", "off_by_one", "further"),
+    "area": ("equal", "close", "far"),
+    "layout": ("agree", "conflict"),
+    "total_floors": ("agree", "off_by_one", "conflict"),
+    "location": ("agree", "conflict"),
+}
+LEVELS = LEVELS_V2
 UNKNOWN = "unknown"  # a side is missing: the field adds nothing
-LEVELS_VERSION = 1
+LEVELS_VERSION = 2
+
+
+def levels_for(version: int = LEVELS_VERSION) -> Dict[str, Tuple[str, ...]]:
+    return LEVELS_V1 if version == 1 else LEVELS_V2
+
+
 EM_MAX_ITERATIONS = 10_000  # a guard against a bug, not a tuning value; the report shows the count
 LISTING_COLUMNS = (
     "id",
@@ -141,12 +156,24 @@ def _both_ways(compare, a: Dict[str, Any], b: Dict[str, Any]) -> str:
     return UNKNOWN
 
 
-def pair_levels(a: Dict[str, Any], b: Dict[str, Any]) -> Tuple[str, str, str, str, str]:
+def total_floors_level(a: Dict[str, Any], b: Dict[str, Any]) -> str:
+    ta, tb = _total_floors_of(a), _total_floors_of(b)
+    if not ta or not tb:
+        return UNKNOWN
+    if ta == tb:
+        return "agree"
+    return "off_by_one" if abs(ta - tb) == 1 else "conflict"
+
+
+def pair_levels(
+    a: Dict[str, Any], b: Dict[str, Any], version: int = LEVELS_VERSION
+) -> Tuple[str, str, str, str, str]:
+    tf_level = total_floors_level(a, b) if version == 2 else _both_ways(_compare_total_floors, a, b)
     return (
         floor_level(a, b),
         area_level(a, b),
         _both_ways(_compare_layout, a, b),
-        _both_ways(_compare_total_floors, a, b),
+        tf_level,
         _both_ways(_compare_location, a, b),
     )
 
@@ -514,13 +541,15 @@ def _posterior_from_levels(weights: Dict[str, Any], levels: Tuple[str, ...]) -> 
 
 
 def posterior(weights: Dict[str, Any], a: Dict[str, Any], b: Dict[str, Any]) -> float:
-    return _posterior_from_levels(weights, pair_levels(a, b))
+    ver = weights.get("levels_version", 1)
+    return _posterior_from_levels(weights, pair_levels(a, b, version=ver))
 
 
 def challenger_says_same(weights: Dict[str, Any], a: Dict[str, Any], b: Dict[str, Any]) -> bool:
     """Posterior above one half, and (§5.5, kept by the admin on 2026-11-10) at least one fact
     beyond floor and area agrees: floor and area alone fit many unrelated flats."""
-    levels = pair_levels(a, b)
+    ver = weights.get("levels_version", 1)
+    levels = pair_levels(a, b, version=ver)
     return _posterior_from_levels(weights, levels) > POSSIBLE and "agree" in (
         levels[2],
         levels[3],
@@ -532,7 +561,8 @@ def valid_weights(w: Any) -> bool:
     """Twin of worker.js validXRayWeights."""
     if not isinstance(w, dict):
         return False
-    if w.get("levels_version") != 1:
+    ver = w.get("levels_version")
+    if ver not in (1, 2):
         return False
     lam = w.get("lambda")
     if not isinstance(lam, (int, float)) or not (0 < lam < 1):
@@ -540,10 +570,11 @@ def valid_weights(w: Any) -> bool:
     fields = w.get("fields")
     if not isinstance(fields, dict):
         return False
+    expected_levels = levels_for(ver)
     for f in FIELDS:
         if f not in fields or not isinstance(fields[f], dict):
             return False
-        for lvl in LEVELS[f]:
+        for lvl in expected_levels[f]:
             lvl_dict = fields[f].get(lvl)
             if not isinstance(lvl_dict, dict):
                 return False
@@ -656,11 +687,15 @@ def gate(
     records: List[Dict[str, Any]],
     vectors: List[Dict[str, Any]],
     photo_check: Dict[str, Any],
+    champion: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Exam = records with label 0 or 1 and snapshot != "missing".
 
-    For each exam record: champion = _candidate_matches_target(target, candidate);
-    challenger = challenger_says_same(weights, target, candidate); truth = label == 1.
+    For each exam record:
+      champion: if champion weights passed, challenger_says_same(champion, target, candidate);
+                otherwise _candidate_matches_target(target, candidate) (§5.5 rule).
+      challenger: challenger_says_same(weights, target, candidate);
+      truth: label == 1.
     For a set S of exam records:
       disagreements = records in S where champion != challenger
       wins   = disagreements where challenger == truth
@@ -712,7 +747,10 @@ def gate(
         t = {**target, "pair_id": pid}
         c = {**cand, "pair_id": pid}
 
-        champ = bool(_candidate_matches_target(t, c))
+        if champion is not None:
+            champ = bool(challenger_says_same(champion, t, c))
+        else:
+            champ = bool(_candidate_matches_target(t, c))
         chall = bool(challenger_says_same(weights, t, c))
         try:
             post = posterior(weights, t, c)
@@ -801,6 +839,7 @@ def gate(
 
     return {
         "unit": "independent flat (listings joined by shared listings and photo groups) or X-Ray reply",
+        "champion": champion["id"] if champion and "id" in champion else "rule",
         "exam": exam_stats,
         "all": all_stats,
         "post": post_stats,

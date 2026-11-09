@@ -2339,12 +2339,11 @@ function compareLocation(target, cand) {
 // (pair_levels, log_odds, posterior, challenger_says_same); tests/fixtures/xray_rule_vectors.json
 // checks both copies give the same answers.
 const XRAY_FIELDS = ["floor", "area", "layout", "total_floors", "location"];
-const XRAY_LEVELS = {
-  floor: ["equal", "off_by_one", "further"],
-  area: ["equal", "close", "far"],
-  layout: ["agree", "conflict"],
-  total_floors: ["agree", "conflict"],
-  location: ["agree", "conflict"]
+const XRAY_LEVELS_BY_VERSION = {
+  1: { floor: ["equal", "off_by_one", "further"], area: ["equal", "close", "far"], layout: ["agree", "conflict"],
+       total_floors: ["agree", "conflict"], location: ["agree", "conflict"] },
+  2: { floor: ["equal", "off_by_one", "further"], area: ["equal", "close", "far"], layout: ["agree", "conflict"],
+       total_floors: ["agree", "off_by_one", "conflict"], location: ["agree", "conflict"] }
 };
 // core/xray.py SAME_FLAT_AREA_RATIO: dedup only groups areas within this share.
 const XRAY_SAME_FLAT_AREA_RATIO = 0.15;
@@ -2375,12 +2374,21 @@ function xrayBothWays(compare, a, b) {
   return "unknown";
 }
 
-function xrayPairLevels(a, b) {
+function xrayTotalFloorsLevel(a, b, version) {
+  if (version === 1) return xrayBothWays(compareTotalFloors, a, b);
+  const x = totalFloorsOf(a);
+  const y = totalFloorsOf(b);
+  if (!x || !y) return "unknown";
+  if (x === y) return "agree";
+  return Math.abs(x - y) === 1 ? "off_by_one" : "conflict";
+}
+
+function xrayPairLevels(a, b, version = 2) {
   return [
     xrayFloorLevel(a, b),
     xrayAreaLevel(a, b),
     xrayBothWays(compareLayout, a, b),
-    xrayBothWays(compareTotalFloors, a, b),
+    xrayTotalFloorsLevel(a, b, version),
     xrayBothWays(compareLocation, a, b)
   ];
 }
@@ -2398,15 +2406,17 @@ function xrayPosteriorFromLevels(weights, levels) {
 // Posterior above one half, and (§5.5, kept by the admin on 2026-11-10) at least one fact beyond
 // floor and area agrees. Returns the posterior when the pair counts as the same flat, else null.
 function workerChallengerPosterior(weights, a, b) {
-  const levels = xrayPairLevels(a, b);
+  const levels = xrayPairLevels(a, b, weights?.levels_version);
   const p = xrayPosteriorFromLevels(weights, levels);
   return p > 0.5 && [levels[2], levels[3], levels[4]].includes("agree") ? p : null;
 }
 
 function validXRayWeights(w) {
-  if (!w || w.levels_version !== 1 || !(w.lambda > 0 && w.lambda < 1) || !w.fields) return false;
+  if (!w || ![1, 2].includes(w.levels_version) || !(w.lambda > 0 && w.lambda < 1) || !w.fields) return false;
+  const levels = XRAY_LEVELS_BY_VERSION[w.levels_version];
+  if (!levels) return false;
   return XRAY_FIELDS.every(f =>
-    XRAY_LEVELS[f].every(l => w.fields[f] && w.fields[f][l] && Number.isFinite(w.fields[f][l].bits))
+    levels[f].every(l => w.fields[f] && w.fields[f][l] && Number.isFinite(w.fields[f][l].bits))
   );
 }
 

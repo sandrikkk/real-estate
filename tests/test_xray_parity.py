@@ -31,6 +31,10 @@ with open(
     os.path.join(REPO, "tests", "fixtures", "xray_weights_sample.json"), encoding="utf-8"
 ) as f:
     SAMPLE_WEIGHTS = json.load(f)
+with open(
+    os.path.join(REPO, "tests", "fixtures", "xray_weights_sample_v2.json"), encoding="utf-8"
+) as f:
+    SAMPLE_WEIGHTS_V2 = json.load(f)
 
 
 def run_vector(fn, args):
@@ -52,13 +56,23 @@ def run_vector(fn, args):
     if fn == "levels":
         from core.xray_weights import pair_levels
 
-        return list(pair_levels(*args))
+        return list(pair_levels(*args, version=1))
+    if fn == "levels_v2":
+        from core.xray_weights import pair_levels
+
+        return list(pair_levels(*args, version=2))
     if fn == "challenger":
         from core.xray_weights import challenger_says_same, posterior
 
         if not challenger_says_same(SAMPLE_WEIGHTS, *args):
             return None
         return round(posterior(SAMPLE_WEIGHTS, *args), 6)
+    if fn == "challenger_v2":
+        from core.xray_weights import challenger_says_same, posterior
+
+        if not challenger_says_same(SAMPLE_WEIGHTS_V2, *args):
+            return None
+        return round(posterior(SAMPLE_WEIGHTS_V2, *args), 6)
     raise AssertionError(f"unknown vector function: {fn}")
 
 
