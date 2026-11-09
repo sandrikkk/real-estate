@@ -2021,15 +2021,23 @@ async function latestOwnerTarget(env, chatId) {
   }
 }
 
+// ✅ / ❌ / 🤷 → the label stored in xray_feedback. 🤷 (-1) is kept but never scored.
+const FEEDBACK_LABELS = { y: 1, n: 0, u: -1 };
+function feedbackLabel(answer) {
+  return Object.prototype.hasOwnProperty.call(FEEDBACK_LABELS, answer) ? FEEDBACK_LABELS[answer] : null;
+}
+
 // One row per candidate; `answers` are the xray_feedback rows already given, shown with ✓.
 // `prefix` tells the callback handler which table holds the candidates: "fb" for an owner-search
 // job (xray_jobs.result), "fd" for the duplicate lines of an X-Ray reply (xray_results).
 function feedbackKeyboard(jobId, candidates, answers, prefix = "fb") {
-  const label = new Map((answers || []).map(a => [a.candidate_id, Number(a.label)]));
+  const given = new Map((answers || []).map(a => [a.candidate_id, Number(a.label)]));
+  const mark = (c, v) => (given.get(c.id) === v ? " ✓" : "");
   return {
     inline_keyboard: candidates.map((c, i) => [
-      { text: `${i + 1} ✅ იგივეა${label.get(c.id) === 1 ? " ✓" : ""}`, callback_data: `${prefix}:${jobId}:${i}:y` },
-      { text: `${i + 1} ❌ სხვაა${label.get(c.id) === 0 ? " ✓" : ""}`, callback_data: `${prefix}:${jobId}:${i}:n` }
+      { text: `${i + 1} ✅ იგივეა${mark(c, 1)}`, callback_data: `${prefix}:${jobId}:${i}:y` },
+      { text: `${i + 1} ❌ სხვაა${mark(c, 0)}`, callback_data: `${prefix}:${jobId}:${i}:n` },
+      { text: `${i + 1} 🤷 ვერ ვხვდები${mark(c, -1)}`, callback_data: `${prefix}:${jobId}:${i}:u` }
     ])
   };
 }
@@ -2041,6 +2049,15 @@ function xrayResultTarget(target) {
     const v = target && target[k];
     if (v !== null && v !== undefined && v !== "") out[k] = v;
   }
+  return out;
+}
+
+// A shown candidate with the fields its ✅/❌/🤷 answer is judged on (ADR 0002). Rows from
+// properties carry the phone as phone_number; the golden pairs compare it as phone9.
+function xrayResultCandidate(row) {
+  const out = xrayResultTarget(row);
+  if (!out.phone9 && row && row.phone_number) out.phone9 = String(row.phone_number);
+  out.url = (row && row.url) || null;
   return out;
 }
 
@@ -2067,11 +2084,12 @@ function xrayReplyMarkup(ownerTargetId, resultId, candidates, answers) {
   return rows.length ? { inline_keyboard: rows } : null;
 }
 
-// "fb:<job id>:<candidate index>:<y|n>"; a later press replaces an earlier one.
+// "fb:<job id>:<candidate index>:<y|n|u>"; a later press replaces an earlier one.
 async function recordOwnerFeedback(env, token, cb, data) {
   const [, jobId, idxText, answer] = String(data).split(":");
   const chatId = String(cb.message.chat.id);
-  if (!env || !env.DB || (answer !== "y" && answer !== "n")) return;
+  const label = feedbackLabel(answer);
+  if (!env || !env.DB || label === null) return;
   try {
     const job = await env.DB
       .prepare("SELECT * FROM xray_jobs WHERE id = ? AND chat_id = ?")
@@ -2084,7 +2102,7 @@ async function recordOwnerFeedback(env, token, cb, data) {
       .prepare(
         "INSERT OR REPLACE INTO xray_feedback (job_id, candidate_id, chat_id, target_id, label, created_at) VALUES (?, ?, ?, ?, ?, ?)"
       )
-      .bind(jobId, cand.id, chatId, job.target_id || null, answer === "y" ? 1 : 0, new Date().toISOString())
+      .bind(jobId, cand.id, chatId, job.target_id || null, label, new Date().toISOString())
       .run();
     const { results } = await env.DB
       .prepare("SELECT candidate_id, label FROM xray_feedback WHERE job_id = ? AND chat_id = ?")
@@ -2100,13 +2118,14 @@ async function recordOwnerFeedback(env, token, cb, data) {
   }
 }
 
-// "fd:<result id>:<candidate index>:<y|n>": the same answer as recordOwnerFeedback, for the
+// "fd:<result id>:<candidate index>:<y|n|u>": the same answer as recordOwnerFeedback, for the
 // duplicate lines of an X-Ray reply. The candidates sit in xray_results, and the owner button
 // of that reply stays under the updated rows.
 async function recordResultFeedback(env, token, cb, data) {
   const [, resultId, idxText, answer] = String(data).split(":");
   const chatId = String(cb.message.chat.id);
-  if (!env || !env.DB || (answer !== "y" && answer !== "n")) return;
+  const label = feedbackLabel(answer);
+  if (!env || !env.DB || label === null) return;
   try {
     const row = await env.DB
       .prepare("SELECT * FROM xray_results WHERE id = ? AND chat_id = ?")
@@ -2119,7 +2138,7 @@ async function recordResultFeedback(env, token, cb, data) {
       .prepare(
         "INSERT OR REPLACE INTO xray_feedback (job_id, candidate_id, chat_id, target_id, label, created_at) VALUES (?, ?, ?, ?, ?, ?)"
       )
-      .bind(resultId, cand.id, chatId, null, answer === "y" ? 1 : 0, new Date().toISOString())
+      .bind(resultId, cand.id, chatId, null, label, new Date().toISOString())
       .run();
     const { results } = await env.DB
       .prepare("SELECT candidate_id, label FROM xray_feedback WHERE job_id = ? AND chat_id = ?")
@@ -2827,7 +2846,7 @@ async function handleXRayQuery(text, env, opts = {}) {
 
     // What the ✅/❌ buttons under the reply refer to (see saveXRayResult).
     if (opts.collect && duplicates.length > 0) {
-      opts.collect.duplicates = duplicates.slice(0, 4).map(d => ({ id: d.id, url: d.url || null }));
+      opts.collect.duplicates = duplicates.slice(0, 4).map(xrayResultCandidate);
       opts.collect.resultTarget = xrayResultTarget(target);
     }
 

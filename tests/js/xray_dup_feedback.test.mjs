@@ -70,19 +70,25 @@ test("each duplicate line is numbered and gets a ✅/❌ row, and the reply is s
       reply.body.text.includes('1. <a href="https://home.ss.ge/ka/udzravi-qoneba/5">SS.ge</a>'),
       reply.body.text
     );
-    const [yes, no] = reply.body.reply_markup.inline_keyboard[1];
+    const [yes, no, unsure] = reply.body.reply_markup.inline_keyboard[1];
     assert.equal(yes.text, "1 ✅ იგივეა");
     assert.equal(no.text, "1 ❌ სხვაა");
+    assert.equal(unsure.text, "1 🤷 ვერ ვხვდები");
     assert.match(yes.callback_data, /^fd:[0-9a-f-]{36}:0:y$/);
     assert.match(no.callback_data, /^fd:[0-9a-f-]{36}:0:n$/);
+    assert.match(unsure.callback_data, /^fd:[0-9a-f-]{36}:0:u$/);
     assert.ok(bytes(yes.callback_data) <= 64, "Telegram caps callback_data at 64 bytes");
+    assert.ok(bytes(unsure.callback_data) <= 64, "Telegram caps callback_data at 64 bytes");
     const saved = db.log.find(e => /INSERT INTO xray_results/.test(e.sql));
     // (id, chat_id, kind, target, candidates, owner_target_id, created_at)
     assert.equal(saved.params[0], yes.callback_data.split(":")[1]);
     assert.equal(saved.params[1], String(CHAT));
     assert.equal(saved.params[2], "dup");
     assert.equal(JSON.parse(saved.params[3]).district, "გლდანი");
-    assert.deepEqual(JSON.parse(saved.params[4]), [{ id: "ss_ge_5", url: DUP.url }]);
+    assert.deepEqual(JSON.parse(saved.params[4]), [{
+      id: "ss_ge_5", source: "ss_ge", url: DUP.url, district: "გლდანი",
+      street: "გლდანი - VI მ/რ", area_m2: 72, floor: "1", rooms: 3, price_usd: 61000
+    }]);
   } finally {
     goOffline();
   }
@@ -128,6 +134,7 @@ test("✅ on a duplicate line records the label and marks the choice, keeping th
     assert.deepEqual(fb.params.slice(0, 5), [RESULT_ID, "ss_ge_5", String(CHAT), null, 1]);
     const rows = telegram(calls, "editMessageReplyMarkup")[0].body.reply_markup.inline_keyboard;
     assert.equal(rows[0][0].callback_data, `own:${OWNER_TARGET_ID}`);
+    assert.equal(rows[1].length, 3);
     assert.equal(rows[1][0].text, "1 ✅ იგივეა ✓");
   } finally {
     goOffline();
@@ -187,6 +194,45 @@ test("a reply without duplicates has no ✅/❌ buttons and saves no result", as
     const rows = (reply.body.reply_markup && reply.body.reply_markup.inline_keyboard) || [];
     assert.ok(!rows.some(r => r.some(b => String(b.callback_data).startsWith("fd:"))));
     assert.ok(!db.log.some(e => /INSERT INTO xray_results/.test(e.sql)));
+  } finally {
+    goOffline();
+  }
+});
+
+test("🤷 on a duplicate line stores -1 and marks it", async () => {
+  const calls = serveNetwork();
+  try {
+    const answeredUnsure = [/FROM xray_feedback WHERE job_id = \? AND chat_id = \?/, () => [{ candidate_id: "ss_ge_5", label: -1 }]];
+    const db = recordingD1([resultById, answeredUnsure]);
+    await webhook(env(db), press(`fd:${RESULT_ID}:0:u`));
+    const fb = db.log.find(e => /INSERT OR REPLACE INTO xray_feedback/.test(e.sql));
+    assert.equal(fb.params[4], -1);
+    const rows = telegram(calls, "editMessageReplyMarkup")[0].body.reply_markup.inline_keyboard;
+    assert.deepEqual(rows[1].map(b => b.text), ["1 ✅ იგივეა", "1 ❌ სხვაა", "1 🤷 ვერ ვხვდები ✓"]);
+  } finally {
+    goOffline();
+  }
+});
+
+test("an unknown answer records nothing", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1([resultById, answered]);
+    await webhook(env(db), press(`fd:${RESULT_ID}:0:x`));
+    assert.ok(!db.log.some(e => /INSERT OR REPLACE INTO xray_feedback/.test(e.sql)));
+    assert.equal(telegram(calls, "editMessageReplyMarkup").length, 0);
+  } finally {
+    goOffline();
+  }
+});
+
+test("a prototype key is not an answer", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1([resultById, answered]);
+    await webhook(env(db), press(`fd:${RESULT_ID}:0:constructor`));
+    assert.ok(!db.log.some(e => /INSERT OR REPLACE INTO xray_feedback/.test(e.sql)));
+    assert.equal(telegram(calls, "editMessageReplyMarkup").length, 0);
   } finally {
     goOffline();
   }

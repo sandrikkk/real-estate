@@ -21,6 +21,7 @@ from core.xray import (
     _compare_total_floors,
     _expand_district_aliases,
     evaluate_broker_verdict,
+    snapshot_fields,
 )
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,6 +43,8 @@ def run_vector(fn, args):
     if fn == "verdict":
         verdict = evaluate_broker_verdict(*args)
         return {k: verdict[k] for k in ("is_broker", "badge", "reason")}
+    if fn == "snapshot":
+        return snapshot_fields(*args)
     raise AssertionError(f"unknown vector function: {fn}")
 
 

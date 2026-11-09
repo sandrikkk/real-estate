@@ -22,6 +22,7 @@ from core import photo_match
 from core.database import DatabaseEngine
 from core.dedup import HASH_THRESHOLD, _decode_dhash_sync, hamming
 from core.photo_match import batch_hashes, load_listing_hashes, lookup_photos
+from core.xray import SNAPSHOT_FIELDS
 
 OLD = "2026-01-01T00:00:00.000Z"  # older than the album settle time, so no test waits
 BATCH = "123:g1"
@@ -104,14 +105,19 @@ class TestLookupPhotos(PhotoMatchCase):
         self.assertTrue(result["ok"])
         self.assertEqual([r["id"] for r in result["rows"]], ["myhome_1"])
         stored = result["result"]
-        self.assertEqual(stored["candidates"], [{"id": "myhome_1", "url": "https://x.ge/myhome_1"}])
+        cand0 = stored["candidates"][0]
+        self.assertEqual(cand0["id"], "myhome_1")
+        self.assertEqual(cand0["url"], "https://x.ge/myhome_1")
+        self.assertGreaterEqual(cand0["photo_matches"], 1)
+        self.assertEqual(cand0["area_m2"], 58)
+        self.assertTrue(set(cand0.keys()).issubset(set(SNAPSHOT_FIELDS) | {"url", "photo_matches"}))
         text = stored["text"]
         self.assertIn("📸 <b>ფოტოებით შედარება</b> (2 ფოტო)", text)
         self.assertIn("✅ <b>იგივე ფოტოები:</b>", text)
         self.assertIn('1. <a href="https://x.ge/myhome_1">MyHome</a> — <b>$95,000</b>', text)
         self.assertIn("ემთხვევა 2 ფოტო", text)
         self.assertIn("ℹ️ შევადარე ჩვენი ბაზის 2 განცხადების ფოტოებს", text)
-        self.assertIn("მონიშნე ქვემოთ: ✅ იგივე ბინაა, ❌ სხვაა.", text)
+        self.assertIn("მონიშნე ქვემოთ: ✅ იგივე ბინაა, ❌ სხვაა, 🤷 ვერ ვხვდები.", text)
 
     def test_one_equal_photo_without_a_price_and_area_does_not_list_the_listing(self):
         self.listing("myhome_1", [1, 2, 3])

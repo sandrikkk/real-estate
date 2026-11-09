@@ -52,6 +52,7 @@ from core.xray import (  # noqa: E402
     myhome_search_url,
     parse_myhome_list_item,
     save_live_listings,
+    snapshot_fields,
     utc_now_iso,
 )
 from scrapers.myhome import MYHOME_URBAN_MAP, MyHomeScraper  # noqa: E402
@@ -255,7 +256,13 @@ async def lookup_owner(conn: Any, target_id: str, sources: Sources) -> Dict[str,
     if row is None:
         return {"ok": False, "rows": [], "full": False}
     found = await search_owner(json.loads(row["target"]), conn, sources)
-    candidates = [{"id": c["id"], "url": c.get("url")} for c in found["owners"]]
+    candidates = [
+        {
+            **snapshot_fields(c),
+            **({"photo_matches": c["photo_matches"]} if c.get("photo_matches") else {}),
+        }
+        for c in found["owners"]
+    ]
     message = {"text": owner_report(found), "candidates": candidates}
     return {"ok": True, "rows": found["owners"], "full": False, "result": message}
 

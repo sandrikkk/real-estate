@@ -247,7 +247,7 @@ test("the owner job's follow-up carries its text and one ✅/❌ row per candida
     assert.ok(sent.body.text.startsWith("🏠 <b>მესაკუთრის ძებნა:</b>"));
     const rows = sent.body.reply_markup.inline_keyboard;
     assert.equal(rows.length, 2);
-    assert.deepEqual(rows[0].map(b => b.text), ["1 ✅ იგივეა", "1 ❌ სხვაა"]);
+    assert.deepEqual(rows[0].map(b => b.text), ["1 ✅ იგივეა", "1 ❌ სხვაა", "1 🤷 ვერ ვხვდები"]);
     for (const b of rows.flat()) assert.ok(bytes(b.callback_data) <= 64, b.callback_data);
   } finally {
     goOffline();
@@ -279,7 +279,25 @@ test("✅/❌ records the label for that candidate and marks the choice on the b
     assert.deepEqual(saved.params.slice(0, 5), [OWNER_JOB.id, "myhome_1", String(CHAT), TARGET_ROW.id, 0]);
     const edit = telegram(calls, "editMessageReplyMarkup").pop();
     assert.equal(edit.body.message_id, 77);
-    assert.deepEqual(edit.body.reply_markup.inline_keyboard[1].map(b => b.text), ["2 ✅ იგივეა", "2 ❌ სხვაა ✓"]);
+    assert.deepEqual(edit.body.reply_markup.inline_keyboard[1].map(b => b.text), ["2 ✅ იგივეა", "2 ❌ სხვაა ✓", "2 🤷 ვერ ვხვდები"]);
+  } finally {
+    goOffline();
+  }
+});
+
+test("a fb: press with :u stores -1", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1([
+      [/FROM xray_jobs WHERE id = \? AND chat_id = \?/, p => (p[1] === String(CHAT) ? [OWNER_JOB] : [])],
+      [/FROM xray_feedback WHERE job_id/, () => [{ candidate_id: "myhome_1", label: -1 }]]
+    ]);
+    await webhook(env(db), press(`fb:${OWNER_JOB.id}:1:u`));
+    const saved = db.log.find(e => /INTO xray_feedback/.test(e.sql));
+    assert.deepEqual(saved.params.slice(0, 5), [OWNER_JOB.id, "myhome_1", String(CHAT), TARGET_ROW.id, -1]);
+    const edit = telegram(calls, "editMessageReplyMarkup").pop();
+    assert.equal(edit.body.message_id, 77);
+    assert.deepEqual(edit.body.reply_markup.inline_keyboard[1].map(b => b.text), ["2 ✅ იგივეა", "2 ❌ სხვაა", "2 🤷 ვერ ვხვდები ✓"]);
   } finally {
     goOffline();
   }

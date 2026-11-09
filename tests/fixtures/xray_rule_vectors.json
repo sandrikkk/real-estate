@@ -749,5 +749,65 @@
    "badge": "⚠️ სტატუსი დაუზუსტებელია (ნომერი არ არის მითითებული)",
    "reason": "განცხადებაში ტელეფონის ნომერი არ წერია და ბაზაში იდენტური ბინა ჯერ არ იძებნება"
   }
+ },
+ {
+  "name": "snapshot: a properties row keeps the comparison fields, its phone as phone9, and its url",
+  "fn": "snapshot",
+  "args": [
+   {
+    "id": "ss_ge_5",
+    "source": "ss_ge",
+    "url": "https://home.ss.ge/ka/udzravi-qoneba/5",
+    "title": "ბინა",
+    "description": "ტექსტი",
+    "district": "გლდანი",
+    "subdistrict": "",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 3,
+    "bedrooms": 0,
+    "floor": "1",
+    "total_floors": null,
+    "area_m2": 72,
+    "price_usd": 61000,
+    "deal_type": "sale",
+    "phone_number": "555000111",
+    "group_id": null,
+    "images_json": "[]"
+   }
+  ],
+  "expected": {
+   "id": "ss_ge_5",
+   "source": "ss_ge",
+   "url": "https://home.ss.ge/ka/udzravi-qoneba/5",
+   "district": "გლდანი",
+   "street": "გლდანი - VI მ/რ",
+   "rooms": 3,
+   "bedrooms": 0,
+   "floor": "1",
+   "area_m2": 72,
+   "price_usd": 61000,
+   "deal_type": "sale",
+   "phone9": "555000111"
+  }
+ },
+ {
+  "name": "snapshot: an existing phone9 wins over phone_number, and a missing url is null",
+  "fn": "snapshot",
+  "args": [
+   {
+    "id": "myhome_1",
+    "source": "myhome",
+    "phone9": "599111222",
+    "phone_number": "568443***",
+    "area_m2": 50.5
+   }
+  ],
+  "expected": {
+   "id": "myhome_1",
+   "source": "myhome",
+   "phone9": "599111222",
+   "area_m2": 50.5,
+   "url": null
+  }
  }
 ]

@@ -37,10 +37,11 @@ flowchart LR
 
   It reads D1 through the existing `/api/db/query` route, using indexed queries chunked at 50 ([ADR 0001](0001-eliminate-d1-full-table-scans.md)).
 - **Labels.**
-  - Pairs that share a photo-hash `group_id` (`core/dedup.py`) are matches.
-  - The ✅/❌ buttons on owner-search results ([ADR 0003](0003-xray-live-phone-and-owner-search.md), stage 2) write to D1 `xray_feedback`: target key, candidate id, label, chat id and time.
-  - The same ✅/❌ buttons sit under the duplicate lines of an X-Ray reply. Each reply saves one `xray_results` row (the target's fields and the shown candidates), and its answers go to `xray_feedback` with `job_id` = that row's id.
-  - Only the admin's answers count, and a later press replaces an earlier one.
+  - Pairs that share a photo-hash `group_id` (`core/dedup.py`) are weak matches. They only give EM its starting values and are never an exam answer. The pairs of one group together weigh 1 (each weighs `2 / (s·(s − 1))` in a group of s), so a 60-member render group counts as much as a 2-member one. They never inform the area field, because dedup only groups areas within ±15%.
+  - The admin's buttons under every X-Ray candidate (duplicate lines, owner search, photo search, the weekly review) write to D1 `xray_feedback`: ✅ = 1, ❌ = 0, 🤷 = -1 (can't tell: kept, never scored). Only the admin's answers count, and a later press replaces an earlier one. The rules for pressing are in the [labeling guide](../xray-labeling-guide.md).
+  - Each saved reply keeps the shown candidates' fields (`xrayResultCandidate` in `worker.js`, `snapshot_fields` in `core/xray.py`), so an answer is judged on what the admin saw. Answers given before 2026-11-09 are filled from `properties` and marked `backfilled`.
+  - `core/golden_pairs.py` turns the answers into the **golden pairs**: one record per answer, with no phone number, author id or chat id (the repository is public), only whether the two sides share them.
+  - Human answers are the exam, never the textbook: no weight is fitted on them. Organic answers cover only pairs the bot chose to show, which the old rule had already accepted. The weekly review adds pairs the bot did not choose.
 - **Gate.**
   - Labels are split into a fit set and a held-out set by a hash of the pair id, so the split is deterministic.
   - A candidate is promoted only if its precision and its recall on held-out pairs are both no worse than the champion's. Both are compared by a one-sided 95% Wilson bound, which is a statistical convention rather than a tuned value. A small label set therefore cannot promote a model by chance.

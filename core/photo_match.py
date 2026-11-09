@@ -27,7 +27,7 @@ from core.dedup import (
     hamming,
     is_photo_duplicate,
 )
-from core.xray import _clean_floor, parse_xray_input
+from core.xray import _clean_floor, parse_xray_input, snapshot_fields
 
 # Budgets, not matching thresholds: how many listings to show, how many hash rows to read per
 # D1 request, and how long to wait so that every photo of an album has reached D1.
@@ -169,8 +169,8 @@ def photo_report(
                 parts.append(str(row["district"]))
             parts.append(f"ემთხვევა {counts.get(row['id'], 0)} ფოტო")
             lines.append(" | ".join(parts))
-            candidates.append({"id": row["id"], "url": row.get("url")})
-        lines += ["", "მონიშნე ქვემოთ: ✅ იგივე ბინაა, ❌ სხვაა."]
+            candidates.append({**snapshot_fields(row), "photo_matches": counts.get(row["id"], 0)})
+        lines += ["", "მონიშნე ქვემოთ: ✅ იგივე ბინაა, ❌ სხვაა, 🤷 ვერ ვხვდები."]
     else:
         lines.append("ℹ️ ჩვენს ბაზაში ამ ფოტოებით განცხადება ვერ მოიძებნა.")
     if dropped:
