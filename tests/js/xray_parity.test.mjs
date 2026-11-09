@@ -25,6 +25,7 @@ function runVector(fn, args) {
       const v = w.evaluateWorkerBrokerVerdict(...args);
       return { is_broker: v.isBroker, badge: v.badge, reason: v.reason };
     }
+    case "snapshot": return JSON.parse(JSON.stringify(w.xrayResultCandidate(...args)));
     default: throw new Error(`unknown vector function: ${fn}`);
   }
 }

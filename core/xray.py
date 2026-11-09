@@ -701,6 +701,37 @@ def _compare_location(target: Dict[str, Any], cand: Dict[str, Any]) -> str:
 # other, so no two listings it calls one flat differ by more.
 SAME_FLAT_AREA_RATIO = 0.15
 
+# The fields an ✅/❌/🤷 answer is judged on (ADR 0002): OWNER_TARGET_FIELDS in
+# cloudflare/worker.js plus id and source, the same list xrayResultCandidate keeps.
+SNAPSHOT_FIELDS = (
+    "district",
+    "subdistrict",
+    "street",
+    "micro",
+    "rooms",
+    "bedrooms",
+    "floor",
+    "total_floors",
+    "area_m2",
+    "price_usd",
+    "deal_type",
+    "phone9",
+    "listing_id",
+    "author_id",
+    "group_id",
+    "id",
+    "source",
+)
+
+
+def snapshot_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    """The twin of xrayResultCandidate: a shown candidate as its answer will be judged."""
+    out = {k: row[k] for k in SNAPSHOT_FIELDS if row.get(k) is not None and row.get(k) != ""}
+    if "phone9" not in out and row.get("phone_number"):
+        out["phone9"] = str(row["phone_number"])
+    out["url"] = row.get("url") or None
+    return out
+
 
 def _candidate_matches_target(target: Dict[str, Any], cand: Dict[str, Any]) -> bool:
     layout = _compare_layout(target, cand)

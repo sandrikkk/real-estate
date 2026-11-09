@@ -548,7 +548,7 @@ def owner_report(result: Dict[str, Any]) -> str:
                 f"{area}{floor_str}{photo_str}{conflicts_str} | სავარაუდო კერძო გამყიდველი{more}"
             )
     if owners:
-        lines += ["", "მონიშნე ქვემოთ: ✅ იგივე ბინაა, ❌ სხვაა."]
+        lines += ["", "მონიშნე ქვემოთ: ✅ იგივე ბინაა, ❌ სხვაა, 🤷 ვერ ვხვდები."]
     if result.get("weak"):
         lines.append(
             "ℹ️ ტექსტში ფართი არ წერია და აგენტის იგივე განცხადება ვერ ვიპოვე, "

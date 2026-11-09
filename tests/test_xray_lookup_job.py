@@ -14,6 +14,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from core.database import DatabaseEngine
+from core.xray import SNAPSHOT_FIELDS
 from scrapers.myhome import MyHomeScraper
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -483,9 +484,12 @@ class TestXRayPhotoJob(unittest.TestCase):
         outcome = self.run_job()
         self.assertEqual((outcome["status"], outcome["found"]), ("done", 1))
         stored = json.loads(self.job()["result"])
-        self.assertEqual(
-            stored["candidates"], [{"id": "myhome_1", "url": "https://www.myhome.ge/ka/pr/1/"}]
-        )
+        cand0 = stored["candidates"][0]
+        self.assertEqual(cand0["id"], "myhome_1")
+        self.assertEqual(cand0["url"], "https://www.myhome.ge/ka/pr/1/")
+        self.assertGreaterEqual(cand0.get("photo_matches", 0), 1)
+        self.assertEqual(cand0["area_m2"], 58)
+        self.assertTrue(set(cand0.keys()).issubset(set(SNAPSHOT_FIELDS) | {"url", "photo_matches"}))
         self.assertIn("✅ <b>იგივე ფოტოები:</b>", stored["text"])
         self.assertEqual(self.notified, [PHOTO_JOB])
 
