@@ -136,6 +136,7 @@ Without `--once`, `main.py` loops every `CHECK_INTERVAL_SECONDS`. A live cycle n
 - [`.github/workflows/deploy-worker.yml`](.github/workflows/deploy-worker.yml): deploys the Worker on a push to `master` that touches `cloudflare/worker.js`, `scripts/deploy_worker.py`, or the workflow itself. Before deploying it runs `node --check`, the Node suite, and the Python suite. Setup and bindings: [`cloudflare/README.md`](cloudflare/README.md).
 - [`.github/workflows/xray-lookup.yml`](.github/workflows/xray-lookup.yml): started by the Worker (`workflow_dispatch`, input: an opaque job id) to read MyHome for one X-Ray lookup. Secrets: `CLOUDFLARE_PROXY_URL`, `CLOUDFLARE_SYNC_KEY`.
 - [`.github/workflows/xray-canary.yml`](.github/workflows/xray-canary.yml): daily live check of the MyHome behaviour X-Ray relies on; on failure it messages the admin chat. Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+- [`.github/workflows/xray-weights.yml`](.github/workflows/xray-weights.yml): weekly (Monday 03:00 UTC) estimation of the X-Ray match weights with their gate ([ADR 0002](docs/adr/0002-xray-duplicate-match-weights.md)); writes D1 `xray_weights` and messages the admin. Secrets: `CLOUDFLARE_PROXY_URL`, `CLOUDFLARE_SYNC_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 - There is no PR or staging pipeline. The deploy job above is the only CI test gate; `scrape.yml` runs no tests.
 
 ## Key files

@@ -1,0 +1,267 @@
+"""Weekly X-Ray weights (ADR 0002): estimate, test on the admin's answers, store, report.
+
+Fellegi-Sunter weights learned from the whole properties table in two EM sessions,
+tested against the admin's golden answers via an exact sign test gate.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+import time
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from config import settings  # noqa: E402
+from core.database import D1Client, D1Connection, XRAY_WEIGHTS_DDL  # noqa: E402
+from core.golden_pairs import build_golden_pairs, summarize, to_jsonl  # noqa: E402
+from core.xray_weights import (  # noqa: E402
+    count_pairs,
+    estimate,
+    gate,
+    group_pairs,
+    load_listings,
+)
+
+
+def telegram_sender(token: str):
+    """POST JSON to Telegram sendMessage with a 20s timeout; suppresses exceptions to avoid logging token."""
+
+    def send(method: str, payload: Dict[str, Any]) -> Optional[dict]:
+        if not token:
+            return None
+        url = f"https://api.telegram.org/bot{token}/{method}"
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            return None
+
+    return send
+
+
+def summary_text(
+    version: str,
+    summary: Dict[str, Any],
+    report: Dict[str, Any],
+    sent: Optional[int] = None,
+) -> str:
+    lbl_counts = summary.get("label") or {}
+    n1 = lbl_counts.get("1", 0)
+    n0 = lbl_counts.get("0", 0)
+    nu = lbl_counts.get("-1", 0)
+
+    lines = [
+        f"📊 <b>X-Ray: კვირის შეფასება</b> ({version})",
+        "",
+        f"შენი პასუხები: ✅ {n1} · ❌ {n0} · 🤷 {nu}",
+    ]
+
+    disagreements = report.get("all", {}).get("disagreements", 0)
+    if disagreements == 0:
+        lines.append("ძველი და ახალი წესი შენს ყველა პასუხზე ერთნაირად ფიქრობს.")
+    else:
+        replies = report.get("all", {}).get("replies", 0)
+        replies_won = report.get("all", {}).get("replies_won", 0)
+        replies_lost = report.get("all", {}).get("replies_lost", 0)
+        lines.append(
+            f"ძველი და ახალი წესი {disagreements} წყვილზე არ ეთანხმება ({replies} X-Ray პასუხში): ახალი მართალია {replies_won} პასუხში, ძველი {replies_lost}-ში."
+        )
+
+    if not report.get("photo_floor", {}).get("ok", True):
+        lines.append(
+            "⚠️ ახალი წონები ფოტო-ჯგუფებს არ ემთხვევა (სართული), ამიტომ ეს კვირა არ ითვლება."
+        )
+
+    if report.get("passed"):
+        lines.append(
+            "✅ ახალმა წესმა გამოცდა გაიარა. ბოტში ჯერ ისევ ძველი წესია: ჩართვა ცალკე ნაბიჯია."
+        )
+    else:
+        lines.append(
+            "⏳ ახალი წესი ჯერ ვერ ამტკიცებს, რომ ძველზე უკეთესია. ბოტი ძველ წესს იყენებს."
+        )
+
+    if sent is not None:
+        lines.append(f"📬 შემოწმების რიგი: გაიგზავნა {sent} ახალი წყვილი.")
+
+    return "\n".join(lines)
+
+
+def run(
+    conn: Any,
+    settings_like: Any,
+    now: datetime,
+    send: Optional[Any],
+    out_dir: str = "out",
+    dry_run: bool = False,
+    vectors: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    iso = now.isocalendar()
+    week = f"{iso.year}-W{iso.week:02d}"
+    version = f"w-{week}"
+
+    records, skipped = build_golden_pairs(conn, getattr(settings_like, "TELEGRAM_CHAT_ID", ""))
+    listings = load_listings(conn)
+
+    t0 = time.monotonic()
+    counts = count_pairs(listings)
+    groups = group_pairs(listings)
+    weights, em_report = estimate(counts, groups)
+    runtime = time.monotonic() - t0
+
+    if vectors is None:
+        vectors_path = (
+            Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "xray_rule_vectors.json"
+        )
+        with open(vectors_path, "r", encoding="utf-8") as f:
+            vectors = json.load(f)
+
+    report = gate(weights, records, vectors, em_report["photo_floor"])
+    jsonl = to_jsonl(records)
+    labels_hash = hashlib.sha256(jsonl.encode("utf-8")).hexdigest()
+
+    pools_counts = {
+        name: sum(pair_counts.values()) for name, pair_counts in counts.get("pools", {}).items()
+    }
+    counts_payload = {
+        "block_pairs": counts.get("pairs", 0),
+        "pools": pools_counts,
+        "group_pairs": len(groups),
+        "em": em_report,
+        "seconds": round(runtime, 2),
+    }
+
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    (out_path / "golden_pairs.jsonl").write_text(jsonl, encoding="utf-8")
+    (out_path / "weights.json").write_text(
+        json.dumps(weights, ensure_ascii=False, sort_keys=True, indent=1) + "\n",
+        encoding="utf-8",
+    )
+    (out_path / "counts.json").write_text(
+        json.dumps(counts_payload, ensure_ascii=False, sort_keys=True, indent=1) + "\n",
+        encoding="utf-8",
+    )
+    (out_path / "report.json").write_text(
+        json.dumps(report, ensure_ascii=False, sort_keys=True, indent=1) + "\n",
+        encoding="utf-8",
+    )
+
+    status = "passed" if report.get("passed") else "candidate"
+
+    if not dry_run:
+        conn.execute(XRAY_WEIGHTS_DDL)
+        thresholds = '{"possible": 0.5}'
+        created_at = now.isoformat()
+        weights_json = json.dumps(weights, ensure_ascii=False, sort_keys=True)
+        counts_json = json.dumps(counts_payload, ensure_ascii=False, sort_keys=True)
+        report_json = json.dumps(report, ensure_ascii=False, sort_keys=True)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO xray_weights
+            (id, created_at, status, weights, thresholds, counts, labels_hash, report)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                version,
+                created_at,
+                status,
+                weights_json,
+                thresholds,
+                counts_json,
+                labels_hash,
+                report_json,
+            ),
+        )
+        conn.commit()
+
+        if send:
+            summary = summarize(records, skipped)
+            chat_id = getattr(settings_like, "TELEGRAM_CHAT_ID", "")
+            send(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": summary_text(version, summary, report),
+                    "parse_mode": "HTML",
+                },
+            )
+
+    print(f"X-Ray weights {version}: {status}")
+    print(
+        f"Pairs: {counts.get('pairs', 0)} block pairs, "
+        f"{pools_counts.get('close_area', 0)} close-area pairs, "
+        f"{len(groups)} group pairs"
+    )
+    print(f"Runtime: {runtime:.2f}s")
+    if hasattr(conn, "client") and hasattr(conn.client, "usage_line"):
+        print(conn.client.usage_line())
+    else:
+        print("[D1 usage]: (offline)")
+
+    return 0
+
+
+def main(
+    argv: Optional[List[str]] = None,
+    now: Optional[datetime] = None,
+    send: Optional[Any] = None,
+) -> int:
+    parser = argparse.ArgumentParser(
+        description="Weekly X-Ray weights estimation, gate, storage and summary."
+    )
+    parser.add_argument(
+        "--out-dir",
+        default="out",
+        help="Directory to write output files (default: out)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Read-only mode: do not write to D1 and do not send Telegram messages",
+    )
+    args = parser.parse_args(argv)
+
+    if not settings.CLOUDFLARE_PROXY_URL:
+        print("CLOUDFLARE_PROXY_URL", file=sys.stderr)
+        return 2
+    if not settings.CLOUDFLARE_SYNC_KEY:
+        print("CLOUDFLARE_SYNC_KEY", file=sys.stderr)
+        return 2
+    if not settings.TELEGRAM_CHAT_ID:
+        print("TELEGRAM_CHAT_ID", file=sys.stderr)
+        return 2
+    if not args.dry_run and not settings.TELEGRAM_BOT_TOKEN:
+        print("TELEGRAM_BOT_TOKEN", file=sys.stderr)
+        return 2
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if send is None and not args.dry_run:
+        send = telegram_sender(settings.TELEGRAM_BOT_TOKEN)
+
+    conn = D1Connection(
+        D1Client(settings.CLOUDFLARE_PROXY_URL, settings.CLOUDFLARE_SYNC_KEY, timeout=60)
+    )
+
+    return run(
+        conn=conn,
+        settings_like=settings,
+        now=now,
+        send=send,
+        out_dir=args.out_dir,
+        dry_run=args.dry_run,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())
