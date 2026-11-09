@@ -2058,6 +2058,9 @@ function xrayResultCandidate(row) {
   const out = xrayResultTarget(row);
   if (!out.phone9 && row && row.phone_number) out.phone9 = String(row.phone_number);
   out.url = (row && row.url) || null;
+  if (row && typeof row.xray_posterior === "number") out.xray_posterior = Math.round(row.xray_posterior * 10000) / 10000;
+  if (row && row.xray_weights) out.xray_weights = row.xray_weights;
+  if (row && row.xray_photo_group) out.xray_photo_group = true;
   return out;
 }
 
@@ -2332,6 +2335,116 @@ function compareLocation(target, cand) {
   return "unknown";
 }
 
+// ADR 0002: the weights that passed the weekly gate. Twin of core/xray_weights.py
+// (pair_levels, log_odds, posterior, challenger_says_same); tests/fixtures/xray_rule_vectors.json
+// checks both copies give the same answers.
+const XRAY_FIELDS = ["floor", "area", "layout", "total_floors", "location"];
+const XRAY_LEVELS = {
+  floor: ["equal", "off_by_one", "further"],
+  area: ["equal", "close", "far"],
+  layout: ["agree", "conflict"],
+  total_floors: ["agree", "conflict"],
+  location: ["agree", "conflict"]
+};
+// core/xray.py SAME_FLAT_AREA_RATIO: dedup only groups areas within this share.
+const XRAY_SAME_FLAT_AREA_RATIO = 0.15;
+
+function xrayFloorLevel(a, b) {
+  const fa = cleanFloorStr(a?.floor);
+  const fb = cleanFloorStr(b?.floor);
+  if (!fa || !fb) return "unknown";
+  const isInt = s => /^[+-]?\d+$/.test(s);
+  if (!isInt(fa) || !isInt(fb)) return fa === fb ? "equal" : "unknown";
+  const d = Math.abs(parseInt(fa, 10) - parseInt(fb, 10));
+  return d === 0 ? "equal" : d === 1 ? "off_by_one" : "further";
+}
+
+function xrayAreaLevel(a, b) {
+  const x = Number(a?.area_m2) || 0;
+  const y = Number(b?.area_m2) || 0;
+  if (x <= 0 || y <= 0) return "unknown";
+  if (Math.floor(x + 0.5) === Math.floor(y + 0.5)) return "equal";
+  return Math.abs(x - y) <= XRAY_SAME_FLAT_AREA_RATIO * Math.max(x, y) ? "close" : "far";
+}
+
+function xrayBothWays(compare, a, b) {
+  const x = compare(a, b);
+  const y = compare(b, a);
+  if (x === "conflict" || y === "conflict") return "conflict";
+  if (x === "agree" || y === "agree") return "agree";
+  return "unknown";
+}
+
+function xrayPairLevels(a, b) {
+  return [
+    xrayFloorLevel(a, b),
+    xrayAreaLevel(a, b),
+    xrayBothWays(compareLayout, a, b),
+    xrayBothWays(compareTotalFloors, a, b),
+    xrayBothWays(compareLocation, a, b)
+  ];
+}
+
+function xrayPosteriorFromLevels(weights, levels) {
+  const lam = weights.lambda;
+  let bits = 0;
+  XRAY_FIELDS.forEach((f, i) => {
+    if (levels[i] !== "unknown") bits += weights.fields[f][levels[i]].bits;
+  });
+  const z = Math.log(lam / (1 - lam)) + bits * Math.LN2;
+  return z > -700 ? 1 / (1 + Math.exp(-z)) : 0;
+}
+
+// Posterior above one half, and (§5.5, kept by the admin on 2026-11-10) at least one fact beyond
+// floor and area agrees. Returns the posterior when the pair counts as the same flat, else null.
+function workerChallengerPosterior(weights, a, b) {
+  const levels = xrayPairLevels(a, b);
+  const p = xrayPosteriorFromLevels(weights, levels);
+  return p > 0.5 && [levels[2], levels[3], levels[4]].includes("agree") ? p : null;
+}
+
+function validXRayWeights(w) {
+  if (!w || w.levels_version !== 1 || !(w.lambda > 0 && w.lambda < 1) || !w.fields) return false;
+  return XRAY_FIELDS.every(f =>
+    XRAY_LEVELS[f].every(l => w.fields[f] && w.fields[f][l] && Number.isFinite(w.fields[f][l].bits))
+  );
+}
+
+// The newest passed row, read once per isolate. Null keeps the §5.5 rule: no passed row yet,
+// or a row this code cannot read. A D1 error is not cached, so the next request tries again.
+let XRAY_WEIGHTS = undefined;
+async function activeXRayWeights(db) {
+  if (XRAY_WEIGHTS !== undefined) return XRAY_WEIGHTS;
+  if (!db) return null;
+  try {
+    const row = await db
+      .prepare("SELECT id, weights FROM xray_weights WHERE status = 'passed' ORDER BY created_at DESC LIMIT 1")
+      .first();
+    const w = row && row.weights ? JSON.parse(row.weights) : null;
+    XRAY_WEIGHTS = validXRayWeights(w) ? { ...w, id: row.id } : null;
+  } catch (err) {
+    console.error("X-Ray weights load error:", err && err.message);
+    return null;
+  }
+  console.log(`X-Ray weights: ${XRAY_WEIGHTS ? XRAY_WEIGHTS.id : "none, §5.5 rule"}`);
+  return XRAY_WEIGHTS;
+}
+
+// Tests run many requests in one isolate.
+function resetXRayWeightsCache() {
+  XRAY_WEIGHTS = undefined;
+}
+
+// " · სავარაუდოდ 98%" for a pair the passed weights scored; " · იგივე ფოტოები" for a photo-group
+// match; nothing under the §5.5 rule. Capped at 99%: a guess is never shown as certain.
+function duplicateSureness(dup) {
+  if (dup && dup.xray_photo_group) return " · იგივე ფოტოები";
+  if (dup && typeof dup.xray_posterior === "number") {
+    return ` · სავარაუდოდ ${Math.min(99, Math.round(dup.xray_posterior * 100))}%`;
+  }
+  return "";
+}
+
 function workerCandidateMatchesTarget(target, cand) {
   const layout = compareLayout(target, cand);
   const height = compareTotalFloors(target, cand);
@@ -2357,6 +2470,7 @@ function workerCandidateMatchesTarget(target, cand) {
 async function queryWorkerExactDuplicates(db, target, limit = 25) {
   const dupMap = new Map();
   if (!db || !target) return [];
+  const weights = await activeXRayWeights(db);
   const targetId = target.id || "";
   if (target.group_id) {
     const { results } = await db
@@ -2364,7 +2478,10 @@ async function queryWorkerExactDuplicates(db, target, limit = 25) {
       .bind(target.group_id, targetId)
       .all();
     for (const r of results || []) {
-      if (r && r.id) dupMap.set(r.id, r);
+      if (r && r.id) {
+        r.xray_photo_group = true;
+        dupMap.set(r.id, r);
+      }
     }
   }
   if (target.district && Number(target.area_m2) > 0) {
@@ -2405,7 +2522,17 @@ async function queryWorkerExactDuplicates(db, target, limit = 25) {
     const { results } = await db.prepare(sqlParts.join(" ")).bind(...params).all();
     for (const r of results || []) {
       if (!r || !r.id) continue;
-      if (!workerCandidateMatchesTarget(target, r)) continue;
+      if (weights) {
+        const p = workerChallengerPosterior(weights, target, r);
+        if (p === null) continue;
+        r.xray_posterior = p;
+        r.xray_weights = weights.id;
+      } else if (!workerCandidateMatchesTarget(target, r)) {
+        continue;
+      }
+      if (dupMap.has(r.id) && dupMap.get(r.id).xray_photo_group) {
+        r.xray_photo_group = true;
+      }
       dupMap.set(r.id, r);
     }
   }
@@ -2582,7 +2709,7 @@ async function buildPhoneReport(db, parsed, live, postTarget = null) {
         else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
         else diffStr = " (იგივე ფასი)";
       }
-      lines.push(`• <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}${dPhonePart}`);
+      lines.push(`• <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}${dPhonePart}${duplicateSureness(dup)}`);
     }
   }
 
@@ -2838,7 +2965,7 @@ async function handleXRayQuery(text, env, opts = {}) {
           else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
           else diffStr = " (იგივე ფასი)";
         }
-        lines.push(`${i + 1}. <a href="${dup.url || "#"}">${dupSrc}</a> — <b>$${dupPrice.toLocaleString()}</b>${diffStr} | ${dupOwner}${dupPhonePart}`);
+        lines.push(`${i + 1}. <a href="${dup.url || "#"}">${dupSrc}</a> — <b>$${dupPrice.toLocaleString()}</b>${diffStr} | ${dupOwner}${dupPhonePart}${duplicateSureness(dup)}`);
       }
     } else {
       lines.push("🎯 <b>იგივე ბინა სხვაგან:</b> დუბლიკატი სხვა პორტალზე არ იძებნება.");
