@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import sqlite3
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +10,7 @@ from unittest.mock import MagicMock
 
 from core.database import XRAY_TABLES_DDL
 import core.xray_weights as xw
-from scripts.estimate_xray_weights import run
+from scripts.estimate_xray_weights import main, run
 
 
 class TestXrayWeights(unittest.TestCase):
@@ -654,3 +655,73 @@ class TestXrayWeights(unittest.TestCase):
         finally:
             xw._candidate_matches_target = orig_champ
             xw.challenger_says_same = orig_chall
+
+    def test_15_review_sprint_options(self):
+        # 1. Negative inputs return exit code 2
+        self.assertEqual(main(["--review-uncertain", "-1"]), 2)
+        self.assertEqual(main(["--review-random", "-1"]), 2)
+
+        # 2. Setup in-memory sqlite with properties and XRAY_TABLES_DDL
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE properties (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                url TEXT,
+                district TEXT,
+                subdistrict TEXT,
+                street TEXT,
+                floor TEXT,
+                total_floors INTEGER,
+                rooms INTEGER,
+                bedrooms INTEGER,
+                area_m2 REAL,
+                price_usd REAL,
+                deal_type TEXT,
+                phone_number TEXT,
+                group_id TEXT
+            )
+        """)
+        for ddl in XRAY_TABLES_DDL:
+            conn.execute(ddl)
+
+        conn.execute("""
+            INSERT INTO properties (id, source, url, district, area_m2, floor, deal_type, price_usd, phone_number)
+            VALUES ('ss_ge_1', 'ss_ge', 'https://ss.ge/1', 'Vake', 55, '3', 'sale', 80000, '555000111')
+        """)
+        conn.commit()
+
+        class FakeSettings:
+            TELEGRAM_CHAT_ID = "777"
+            TELEGRAM_BOT_TOKEN = "fake_token"
+            CLOUDFLARE_PROXY_URL = "http://fake"
+            CLOUDFLARE_SYNC_KEY = "fake_key"
+
+        now = datetime(2026, 11, 9, 3, 0, tzinfo=timezone.utc)
+        fake_send = MagicMock(return_value={"ok": True})
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir) / "out"
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                run(
+                    conn,
+                    FakeSettings(),
+                    now,
+                    fake_send,
+                    out_dir=str(out_dir),
+                    dry_run=False,
+                    review_uncertain=0,
+                    review_random=0,
+                )
+
+            # Summary sent without "შესამოწმებელი"
+            self.assertEqual(fake_send.call_count, 1)
+            call_args = fake_send.call_args[0]
+            payload = call_args[1]
+            self.assertNotIn("შესამოწმებელი", payload["text"])
+
+            # 0 rows in xray_results
+            rows = conn.execute("SELECT * FROM xray_results").fetchall()
+            self.assertEqual(len(rows), 0)

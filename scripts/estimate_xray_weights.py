@@ -138,7 +138,7 @@ def summary_text(
             "⏳ ახალი წესი ჯერ ვერ ამტკიცებს, რომ ძველზე უკეთესია. ბოტი ძველ წესს იყენებს."
         )
 
-    if sent is not None:
+    if sent is not None and sent > 0:
         lines.append(f"ამ კვირის შესამოწმებელი: {sent} წყვილი (ქვემოთ).")
 
     return "\n".join(lines)
@@ -154,6 +154,8 @@ def run(
     vectors: Optional[List[Dict[str, Any]]] = None,
     send_photo: Optional[Any] = None,
     download: Optional[Any] = None,
+    review_uncertain: int = 5,
+    review_random: int = 5,
 ) -> int:
     iso = now.isocalendar()
     week = f"{iso.year}-W{iso.week:02d}"
@@ -207,7 +209,13 @@ def run(
     )
 
     picks = pick_review_pairs(
-        listings, weights, counts.get("pools", {}), seen_pair_keys(conn, records), week
+        listings,
+        weights,
+        counts.get("pools", {}),
+        seen_pair_keys(conn, records),
+        week,
+        n_uncertain=review_uncertain,
+        n_random=review_random,
     )
     clean_picks = [
         {
@@ -345,7 +353,23 @@ def main(
         action="store_true",
         help="Read-only mode: do not write to D1 and do not send Telegram messages",
     )
+    parser.add_argument(
+        "--review-uncertain",
+        type=int,
+        default=5,
+        help="Pairs where the two rules disagree (weekly default 5; a sprint e.g. 30; 0 = summary only)",
+    )
+    parser.add_argument(
+        "--review-random",
+        type=int,
+        default=5,
+        help="Random pairs (weekly default 5; a sprint e.g. 10; 0 = summary only)",
+    )
     args = parser.parse_args(argv)
+
+    if args.review_uncertain < 0 or args.review_random < 0:
+        print("review_uncertain and review_random must be non-negative", file=sys.stderr)
+        return 2
 
     if not settings.CLOUDFLARE_PROXY_URL:
         print("CLOUDFLARE_PROXY_URL", file=sys.stderr)
@@ -382,6 +406,8 @@ def main(
         dry_run=args.dry_run,
         send_photo=send_photo,
         download=download,
+        review_uncertain=args.review_uncertain,
+        review_random=args.review_random,
     )
 
 

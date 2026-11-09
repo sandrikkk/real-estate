@@ -243,13 +243,44 @@ def _pool(
         yield PoolItem(key, a, b, post, champ, levels)
 
 
+def _round_robin(
+    sorted_kinds: List[Tuple[Any, Dict[str, Any]]], n: int
+) -> List[Tuple[PoolItem, int]]:
+    """Return up to n items round-robin across kinds (ordered by count descending).
+    Each returned tuple is (PoolItem, count)."""
+    picks: List[Tuple[PoolItem, int]] = []
+    if n <= 0:
+        return picks
+    round_idx = 0
+    while len(picks) < n:
+        added_any = False
+        for _kind, data in sorted_kinds:
+            items = data.get("items", [])
+            if round_idx < len(items):
+                raw = items[round_idx]
+                item = raw[1] if isinstance(raw, (list, tuple)) else raw
+                picks.append((item, data.get("count", len(items))))
+                added_any = True
+                if len(picks) == n:
+                    break
+        if not added_any:
+            break
+        round_idx += 1
+    return picks
+
+
 def pick_review_pairs(
     listings: List[Dict[str, Any]],
     weights: Dict[str, Any],
     pools_counts: Dict[str, Any],
     exclude: Set[str],
     week: str,
+    n_uncertain: int = REVIEW_UNCERTAIN,
+    n_random: int = REVIEW_RANDOM,
 ) -> List[Dict[str, Any]]:
+    if n_uncertain == 0 and n_random == 0:
+        return []
+
     close_area_counts = pools_counts.get("close_area", {})
     N = sum(close_area_counts.values())
 
@@ -271,97 +302,103 @@ def pick_review_pairs(
         is_disagree = x.champ != (x.post > POSSIBLE)
         u_hash = hashlib.sha256(f"{week}:u:{x.key}".encode("utf-8")).hexdigest()
 
-        if is_disagree:
+        if is_disagree and n_uncertain > 0:
             kind = (x.levels, x.champ)
             if kind not in kinds:
-                kinds[kind] = {"count": 1, "best_hash": u_hash, "item": x}
+                kinds[kind] = {"count": 1, "items": [(u_hash, x)]}
             else:
                 kinds[kind]["count"] += 1
-                if u_hash < kinds[kind]["best_hash"]:
-                    kinds[kind]["best_hash"] = u_hash
-                    kinds[kind]["item"] = x
-        else:
+                items = kinds[kind]["items"]
+                if len(items) < n_uncertain:
+                    items.append((u_hash, x))
+                    items.sort(key=lambda t: t[0])
+                elif u_hash < items[-1][0]:
+                    items[-1] = (u_hash, x)
+                    items.sort(key=lambda t: t[0])
+        elif n_uncertain > 0:
             fb_val = (abs(x.post - 0.5), u_hash)
-            if len(fallback) < REVIEW_UNCERTAIN:
+            if len(fallback) < n_uncertain:
                 fallback.append((fb_val[0], fb_val[1], x))
                 fallback.sort(key=lambda t: (t[0], t[1]))
             elif fb_val < (fallback[-1][0], fallback[-1][1]):
                 fallback[-1] = (fb_val[0], fb_val[1], x)
                 fallback.sort(key=lambda t: (t[0], t[1]))
 
-        if P > 0 and N > 0:
-            q_val = 0.5 * x.post / P + 0.5 / N
-        elif N > 0:
-            q_val = 1.0 / N
-        else:
-            q_val = 1.0
+        if n_random > 0:
+            if P > 0 and N > 0:
+                q_val = 0.5 * x.post / P + 0.5 / N
+            elif N > 0:
+                q_val = 1.0 / N
+            else:
+                q_val = 1.0
 
-        h01 = _hash01(f"{week}:r:{x.key}")
-        es_key = -math.log(h01) / q_val
-        k_rand = REVIEW_RANDOM + REVIEW_UNCERTAIN
-        if len(rand) < k_rand:
-            rand.append((es_key, x.key, x, q_val))
-            rand.sort(key=lambda t: t[0])
-        elif es_key < rand[-1][0]:
-            rand[-1] = (es_key, x.key, x, q_val)
-            rand.sort(key=lambda t: t[0])
+            h01 = _hash01(f"{week}:r:{x.key}")
+            es_key = -math.log(h01) / q_val
+            k_rand = n_random + n_uncertain
+            if len(rand) < k_rand:
+                rand.append((es_key, x.key, x, q_val))
+                rand.sort(key=lambda t: t[0])
+            elif es_key < rand[-1][0]:
+                rand[-1] = (es_key, x.key, x, q_val)
+                rand.sort(key=lambda t: t[0])
 
     sorted_kinds = sorted(kinds.items(), key=lambda item: (-item[1]["count"], str(item[0])))
     uncertain_picks: List[Dict[str, Any]] = []
-    for _kind, data in sorted_kinds[:REVIEW_UNCERTAIN]:
-        item = data["item"]
-        uncertain_picks.append(
-            {
-                "a": item.a,
-                "b": item.b,
-                "key": item.key,
-                "origin": "review_uncertain",
-                "posterior": item.post,
-                "champion": item.champ,
-                "kind_pairs": data["count"],
-                "q": None,
-                "pool": N,
-            }
-        )
-
-    if len(uncertain_picks) < REVIEW_UNCERTAIN:
-        needed = REVIEW_UNCERTAIN - len(uncertain_picks)
-        for _, _, fb_item in fallback[:needed]:
+    if n_uncertain > 0:
+        for item, count in _round_robin(sorted_kinds, n_uncertain):
             uncertain_picks.append(
                 {
-                    "a": fb_item.a,
-                    "b": fb_item.b,
-                    "key": fb_item.key,
+                    "a": item.a,
+                    "b": item.b,
+                    "key": item.key,
                     "origin": "review_uncertain",
-                    "posterior": fb_item.post,
-                    "champion": fb_item.champ,
-                    "kind_pairs": None,
+                    "posterior": item.post,
+                    "champion": item.champ,
+                    "kind_pairs": count,
                     "q": None,
                     "pool": N,
                 }
             )
 
+        if len(uncertain_picks) < n_uncertain:
+            needed = n_uncertain - len(uncertain_picks)
+            for _, _, fb_item in fallback[:needed]:
+                uncertain_picks.append(
+                    {
+                        "a": fb_item.a,
+                        "b": fb_item.b,
+                        "key": fb_item.key,
+                        "origin": "review_uncertain",
+                        "posterior": fb_item.post,
+                        "champion": fb_item.champ,
+                        "kind_pairs": None,
+                        "q": None,
+                        "pool": N,
+                    }
+                )
+
     uncertain_keys = {p["key"] for p in uncertain_picks}
     random_picks: List[Dict[str, Any]] = []
-    rand.sort(key=lambda t: t[0])
-    for _es_k, key, item, q_val in rand:
-        if key in uncertain_keys:
-            continue
-        random_picks.append(
-            {
-                "a": item.a,
-                "b": item.b,
-                "key": item.key,
-                "origin": "review_random",
-                "posterior": item.post,
-                "champion": item.champ,
-                "kind_pairs": None,
-                "q": q_val,
-                "pool": N,
-            }
-        )
-        if len(random_picks) == REVIEW_RANDOM:
-            break
+    if n_random > 0:
+        rand.sort(key=lambda t: t[0])
+        for _es_k, key, item, q_val in rand:
+            if key in uncertain_keys:
+                continue
+            random_picks.append(
+                {
+                    "a": item.a,
+                    "b": item.b,
+                    "key": item.key,
+                    "origin": "review_random",
+                    "posterior": item.post,
+                    "champion": item.champ,
+                    "kind_pairs": None,
+                    "q": q_val,
+                    "pool": N,
+                }
+            )
+            if len(random_picks) == n_random:
+                break
 
     all_picks = uncertain_picks + random_picks
     all_picks.sort(key=lambda p: hashlib.sha256(f"{week}:o:{p['key']}".encode("utf-8")).hexdigest())
