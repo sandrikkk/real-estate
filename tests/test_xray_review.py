@@ -1,0 +1,480 @@
+"""Unit tests for core/xray_review.py (ADR 0002, weekly review queue)."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import unittest
+from unittest.mock import MagicMock
+
+import core.xray_review as xr
+from core.database import XRAY_TABLES_DDL
+from core.golden_pairs import build_golden_pairs
+from core.xray_weights import count_pairs, estimate, group_pairs
+
+
+class TestXrayReview(unittest.TestCase):
+    def _make_synthetic_fixture(self):
+        """Create ~30 listings in 2 blocks (Vake:sale and Saburtalo:sale)."""
+        listings = []
+        # Block 1: Vake, sale (15 listings)
+        for i in range(1, 16):
+            listings.append(
+                {
+                    "id": f"vake_{i}",
+                    "source": "myhome" if i % 2 == 1 else "ss_ge",
+                    "url": f"https://portal.example/vake/{i}",
+                    "district": "Vake",
+                    "subdistrict": "Vake Park",
+                    "street": "Chavchavadze Ave",
+                    "floor": str(i % 5 + 1),
+                    "total_floors": 10,
+                    "rooms": 2 + (i % 2),
+                    "bedrooms": 1 + (i % 2),
+                    "area_m2": 50.0 + (i % 6),
+                    "price_usd": 80000.0 + i * 1000,
+                    "deal_type": "sale",
+                    "phone_number": f"5550001{i:02d}",
+                    "group_id": f"g_vake_{i // 3}" if i <= 9 else None,
+                }
+            )
+        # Block 2: Saburtalo, sale (15 listings)
+        for i in range(1, 16):
+            listings.append(
+                {
+                    "id": f"sab_{i}",
+                    "source": "myhome" if i % 2 == 1 else "ss_ge",
+                    "url": f"https://portal.example/sab/{i}",
+                    "district": "Saburtalo",
+                    "subdistrict": "Delisi",
+                    "street": "Vazha-Pshavela Ave",
+                    "floor": str(i % 4 + 1),
+                    "total_floors": 9,
+                    "rooms": 2 + (i % 3),
+                    "bedrooms": 1 + (i % 3),
+                    "area_m2": 52.0 + (i % 5),
+                    "price_usd": 75000.0 + i * 1200,
+                    "deal_type": "sale",
+                    "phone_number": f"5550002{i:02d}",
+                    "group_id": f"g_sab_{i // 3}" if i <= 9 else None,
+                }
+            )
+        return listings
+
+    def test_01_picks_synthetic(self):
+        fixture = self._make_synthetic_fixture()
+        counts = count_pairs(fixture)
+        groups = group_pairs(fixture)
+        weights, _ = estimate(counts, groups)
+
+        week = "2026-W46"
+        picks = xr.pick_review_pairs(fixture, weights, counts["pools"], set(), week)
+
+        # 1. At most 10 picks
+        self.assertLessEqual(len(picks), 10)
+        self.assertGreater(len(picks), 0)
+
+        # 2. No duplicate keys
+        keys = [p["key"] for p in picks]
+        self.assertEqual(len(keys), len(set(keys)))
+
+        # 3. Two calls with the same week give identical picks
+        picks_repeat = xr.pick_review_pairs(fixture, weights, counts["pools"], set(), week)
+        self.assertEqual(keys, [p["key"] for p in picks_repeat])
+
+        # 4. every review_random pick has 0 < q <= 1; every review_uncertain pick has q is None
+        for p in picks:
+            if p["origin"] == "review_random":
+                self.assertIsNotNone(p["q"])
+                self.assertGreater(p["q"], 0.0)
+                self.assertLessEqual(p["q"], 1.0)
+            elif p["origin"] == "review_uncertain":
+                self.assertIsNone(p["q"])
+            else:
+                self.fail(f"Unexpected origin: {p['origin']}")
+
+        # 5. Exclude works
+        first_key = picks[0]["key"]
+        picks_excluded = xr.pick_review_pairs(fixture, weights, counts["pools"], {first_key}, week)
+        self.assertNotIn(first_key, {p["key"] for p in picks_excluded})
+
+    def test_02_disagreement_first_one_per_kind(self):
+        fixture = self._make_synthetic_fixture()
+        counts = count_pairs(fixture)
+        groups = group_pairs(fixture)
+        weights, _ = estimate(counts, groups)
+
+        week = "2026-W46"
+
+        # Precompute post_by_pattern to inspect pattern differences
+        post_by_pattern = {}
+        for p in counts["pools"]["close_area"]:
+            post_by_pattern[p] = xr._pattern_posterior(weights, p)
+
+        pool_items = list(xr._pool(fixture, weights, set(), post_by_pattern))
+        self.assertGreaterEqual(len(pool_items), 10)
+
+        # Find 2 pairs with DIFFERENT levels patterns
+        p1 = pool_items[0]
+        p2 = next(item for item in pool_items[1:] if item.levels != p1.levels)
+
+        orig_champ = xr._candidate_matches_target
+        try:
+            # Case A: exactly 2 pool pairs of different patterns disagree with challenger
+            # For p1 and p2, set champ opposite of challenger (post > 0.5)
+            # For all others, set champ equal to challenger
+            def mock_champ_2(a, b):
+                k = xr.pair_key(a["id"], b["id"])
+                if k == p1.key:
+                    return not (p1.post > xr.POSSIBLE)
+                if k == p2.key:
+                    return not (p2.post > xr.POSSIBLE)
+                # Others agree
+                item = next(x for x in pool_items if x.key == k)
+                return item.post > xr.POSSIBLE
+
+            xr._candidate_matches_target = mock_champ_2
+            picks = xr.pick_review_pairs(fixture, weights, counts["pools"], set(), week)
+            uncertain_keys = {p["key"] for p in picks if p["origin"] == "review_uncertain"}
+            self.assertIn(p1.key, uncertain_keys)
+            self.assertIn(p2.key, uncertain_keys)
+
+            # Case B: 3 pairs of the SAME pattern disagree
+            # Group pool items by levels pattern
+            from collections import defaultdict
+
+            by_pat = defaultdict(list)
+            for item in pool_items:
+                by_pat[item.levels].append(item)
+
+            pat_3 = next(items for items in by_pat.values() if len(items) >= 3)
+            same_3 = pat_3[:3]
+            same_3_keys = {item.key for item in same_3}
+
+            def mock_champ_3_same(a, b):
+                k = xr.pair_key(a["id"], b["id"])
+                if k in same_3_keys:
+                    item = next(x for x in same_3 if x.key == k)
+                    return not (item.post > xr.POSSIBLE)
+                item = next(x for x in pool_items if x.key == k)
+                return item.post > xr.POSSIBLE
+
+            xr._candidate_matches_target = mock_champ_3_same
+            picks3 = xr.pick_review_pairs(fixture, weights, counts["pools"], set(), week)
+            uncertain_picks = [p for p in picks3 if p["origin"] == "review_uncertain"]
+            picked_from_same_3 = [p for p in uncertain_picks if p["key"] in same_3_keys]
+            self.assertEqual(len(picked_from_same_3), 1)
+            self.assertEqual(picked_from_same_3[0]["kind_pairs"], 3)
+
+            # Case C: a kind where champion says yes and one where champion says no are separate kinds
+            pair_yes = same_3[0]
+            pair_no = same_3[1]
+
+            def mock_champ_separate(a, b):
+                k = xr.pair_key(a["id"], b["id"])
+                if k == pair_yes.key:
+                    # We want champ=True, but challenger=False (disagreement)
+                    return True
+                if k == pair_no.key:
+                    # We want champ=False, but challenger=True (disagreement)
+                    return False
+                item = next(x for x in pool_items if x.key == k)
+                return item.post > xr.POSSIBLE
+
+            # Force challenger posterior for pair_yes <= 0.5, and for pair_no > 0.5
+            old_log_odds = xr.log_odds
+
+            def mock_log_odds(w, levels):
+                return old_log_odds(w, levels)
+
+            xr._candidate_matches_target = mock_champ_separate
+            # Both pair_yes and pair_no disagree with opposite champion answers
+            # Verify kind keys (levels, True) and (levels, False) are separate
+            kind_yes = (pair_yes.levels, True)
+            kind_no = (pair_no.levels, False)
+            self.assertNotEqual(kind_yes, kind_no)
+        finally:
+            xr._candidate_matches_target = orig_champ
+
+    def test_03_exclusion(self):
+        fixture = self._make_synthetic_fixture()
+        counts = count_pairs(fixture)
+        groups = group_pairs(fixture)
+        weights, _ = estimate(counts, groups)
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE properties (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                url TEXT,
+                district TEXT,
+                subdistrict TEXT,
+                street TEXT,
+                floor TEXT,
+                total_floors INTEGER,
+                rooms INTEGER,
+                bedrooms INTEGER,
+                area_m2 REAL,
+                price_usd REAL,
+                deal_type TEXT,
+                phone_number TEXT,
+                group_id TEXT
+            )
+        """)
+        for ddl in XRAY_TABLES_DDL:
+            conn.execute(ddl)
+
+        # 1. Golden record listing_pair_key excluded
+        p_key = xr.pair_key(fixture[0]["id"], fixture[1]["id"])
+        records = [{"listing_pair_key": p_key}]
+
+        # 2. Existing review_random row excluded
+        p_key2 = xr.pair_key(fixture[2]["id"], fixture[3]["id"])
+        conn.execute(
+            """
+            INSERT INTO xray_results (id, chat_id, kind, target, candidates, owner_target_id, created_at)
+            VALUES ('res1', '123', 'review_random', ?, ?, NULL, '2026-11-09T00:00:00')
+            """,
+            (
+                json.dumps({"id": fixture[2]["id"]}),
+                json.dumps([{"id": fixture[3]["id"]}]),
+            ),
+        )
+        conn.commit()
+
+        seen = xr.seen_pair_keys(conn, records)
+        self.assertIn(p_key, seen)
+        self.assertIn(p_key2, seen)
+
+        picks = xr.pick_review_pairs(fixture, weights, counts["pools"], seen, "2026-W46")
+        pick_keys = {p["key"] for p in picks}
+        self.assertNotIn(p_key, pick_keys)
+        self.assertNotIn(p_key2, pick_keys)
+
+    def test_04_message(self):
+        a = {
+            "source": "myhome",
+            "url": "https://myhome.ge/1",
+            "district": "<b>Vake</b>",
+            "rooms": 2,
+            "floor": "3",
+            "total_floors": 9,
+            "area_m2": 55.0,
+            "price_usd": 75000.0,
+        }
+        b = {
+            "source": "ss_ge",
+            "url": "https://ss.ge/2",
+            "district": "Saburtalo",
+            "rooms": 3,
+            "floor": None,
+            "total_floors": 12,
+            "area_m2": 65.5,
+            "price_usd": 85000.0,
+        }
+
+        text = xr.review_text(1, 10, a, b)
+
+        # Escapes district <b>x
+        self.assertIn("&lt;b&gt;Vake&lt;/b&gt;", text)
+        self.assertNotIn("<b>Vake</b>", text)
+
+        # Missing floor leaves no სართ. part on listing b
+        b_line = [line for line in text.split("\n") if line.startswith("ბ)")][0]
+        self.assertNotIn("სართ.", b_line)
+
+        # Keyboard checks
+        kb = xr.review_keyboard("11111111-2222-3333-4444-555555555555")
+        row = kb["inline_keyboard"][0]
+        texts = [btn["text"] for btn in row]
+        self.assertEqual(texts, ["1 ✅ იგივეა", "1 ❌ სხვაა", "1 🤷 ვერ ვხვდები"])
+
+        for btn in row:
+            data = btn["callback_data"]
+            self.assertLessEqual(len(data.encode("utf-8")), 64)
+
+    def test_05_sending(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE properties (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                url TEXT,
+                district TEXT,
+                subdistrict TEXT,
+                street TEXT,
+                floor TEXT,
+                total_floors INTEGER,
+                rooms INTEGER,
+                bedrooms INTEGER,
+                area_m2 REAL,
+                price_usd REAL,
+                deal_type TEXT,
+                phone_number TEXT,
+                group_id TEXT
+            )
+        """)
+        for ddl in XRAY_TABLES_DDL:
+            conn.execute(ddl)
+
+        fixture = self._make_synthetic_fixture()
+        picks = [
+            {
+                "a": fixture[0],
+                "b": fixture[1],
+                "key": xr.pair_key(fixture[0]["id"], fixture[1]["id"]),
+                "origin": "review_uncertain",
+                "posterior": 0.52,
+                "champion": False,
+                "kind_pairs": 4,
+                "q": None,
+                "pool": 100,
+            },
+            {
+                "a": fixture[2],
+                "b": fixture[3],
+                "key": xr.pair_key(fixture[2]["id"], fixture[3]["id"]),
+                "origin": "review_random",
+                "posterior": 0.85,
+                "champion": True,
+                "kind_pairs": None,
+                "q": 0.01,
+                "pool": 100,
+            },
+            {
+                "a": fixture[4],
+                "b": fixture[5],
+                "key": xr.pair_key(fixture[4]["id"], fixture[5]["id"]),
+                "origin": "review_random",
+                "posterior": 0.12,
+                "champion": False,
+                "kind_pairs": None,
+                "q": 0.005,
+                "pool": 100,
+            },
+        ]
+
+        # Fake send fails on 2nd call
+        call_count = [0]
+
+        def fake_send(method, payload):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                return {"ok": False}
+            return {"ok": True}
+
+        fake_sleep = MagicMock()
+        sent = xr.send_review(
+            conn=conn,
+            send=fake_send,
+            chat_id="777",
+            picks=picks,
+            version="w-2026-W46",
+            week="2026-W46",
+            now_iso="2026-11-09T03:00:00",
+            sleep=fake_sleep,
+        )
+
+        self.assertEqual(sent, 2)
+        self.assertEqual(fake_sleep.call_count, 2)
+
+        rows = conn.execute("SELECT * FROM xray_results").fetchall()
+        self.assertEqual(len(rows), 2)
+        for r in rows:
+            self.assertEqual(r["chat_id"], "777")
+            target = json.loads(r["target"])
+            self.assertIn("_review", target)
+            self.assertEqual(target["_review"]["week"], "2026-W46")
+            self.assertEqual(target["_review"]["version"], "w-2026-W46")
+
+    def test_06_round_trip(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE properties (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                url TEXT,
+                district TEXT,
+                subdistrict TEXT,
+                street TEXT,
+                floor TEXT,
+                total_floors INTEGER,
+                rooms INTEGER,
+                bedrooms INTEGER,
+                area_m2 REAL,
+                price_usd REAL,
+                deal_type TEXT,
+                phone_number TEXT,
+                group_id TEXT
+            )
+        """)
+        for ddl in XRAY_TABLES_DDL:
+            conn.execute(ddl)
+
+        # Insert properties row for backfill
+        conn.execute(
+            """
+            INSERT INTO properties (id, source, url, district, area_m2, floor, deal_type, price_usd, phone_number)
+            VALUES ('ss_ge_1', 'ss_ge', 'https://ss.ge/1', 'Vake', 55, '3', 'sale', 80000, '555000111')
+            """
+        )
+        conn.commit()
+
+        fixture = self._make_synthetic_fixture()
+        pick = {
+            "a": fixture[0],
+            "b": fixture[1],
+            "key": xr.pair_key(fixture[0]["id"], fixture[1]["id"]),
+            "origin": "review_random",
+            "posterior": 0.88,
+            "champion": True,
+            "kind_pairs": None,
+            "q": 0.02,
+            "pool": 100,
+        }
+
+        fake_send = MagicMock(return_value={"ok": True})
+        xr.send_review(
+            conn=conn,
+            send=fake_send,
+            chat_id="777",
+            picks=[pick],
+            version="w-2026-W46",
+            week="2026-W46",
+            now_iso="2026-11-09T03:00:00",
+            sleep=lambda s: None,
+        )
+
+        row = conn.execute("SELECT * FROM xray_results").fetchone()
+        self.assertIsNotNone(row)
+        rid = row["id"]
+        cands = json.loads(row["candidates"])
+        cand_id = cands[0]["id"]
+
+        # Insert feedback
+        conn.execute(
+            """
+            INSERT INTO xray_feedback (job_id, candidate_id, chat_id, target_id, label, created_at)
+            VALUES (?, ?, '777', NULL, 1, '2026-11-09T04:00:00')
+            """,
+            (rid, cand_id),
+        )
+        conn.commit()
+
+        records, _ = build_golden_pairs(conn, "777")
+        self.assertEqual(len(records), 1)
+        rec = records[0]
+        self.assertEqual(rec["label_origin"], "review_random")
+        self.assertIsNotNone(rec["review"])
+        self.assertEqual(rec["review"]["origin"], "review_random")
+        self.assertEqual(rec["review"]["version"], "w-2026-W46")
+        self.assertEqual(rec["review"]["week"], "2026-W46")
+        self.assertEqual(rec["review"]["pool"], 100)
+
+
+if __name__ == "__main__":
+    unittest.main()
