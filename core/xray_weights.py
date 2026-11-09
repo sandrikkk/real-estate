@@ -518,6 +518,22 @@ def sign_test_p(wins: int, n: int) -> float:
     return sum(math.comb(n, k) for k in range(wins, n + 1)) / (2**n) if n else 1.0
 
 
+def _reply_sign(
+    records_with_disagreement: List[Tuple[Dict[str, Any], bool, bool, bool]],
+) -> Tuple[int, int, int]:
+    """(replies won, replies lost, ties): a reply wins when the challenger is right on more of
+    its disagreeing pairs than the champion, loses in the opposite case. Candidates under one
+    reply share its target, so a reply, not a pair, is one independent answer."""
+    by_reply: Dict[Any, List[int]] = defaultdict(
+        lambda: [0, 0]
+    )  # target_key -> [challenger right, champion right]
+    for r, champion, challenger, truth in records_with_disagreement:
+        by_reply[r["target_key"]][0 if challenger == truth else 1] += 1
+    won = sum(1 for w, lst in by_reply.values() if w > lst)
+    lost = sum(1 for w, lst in by_reply.values() if lst > w)
+    return won, lost, len(by_reply) - won - lost
+
+
 def gate(
     weights: Dict[str, Any],
     records: List[Dict[str, Any]],
@@ -532,18 +548,23 @@ def gate(
       disagreements = records in S where champion != challenger
       wins   = disagreements where challenger == truth
       losses = disagreements where champion == truth
+      replies = disagreeing replies (grouped by target_key)
+      replies_won / lost / tied via _reply_sign
+      p_value = sign_test_p(replies_won, replies_won + replies_lost)
       fp_challenger = records in S with label 0 and challenger True
       fp_champion   = records in S with label 0 and champion True
     Checks:
-      A. on all exam records: sign_test_p(wins, wins + losses) < 0.05
+      A. on all exam records: p_value < 0.05 (reply-level sign test)
       B. on all exam records: fp_challenger <= fp_champion
-      C. on records with target_kind == "post": wins >= losses and fp_challenger <= fp_champion
+      C. on records with target_kind == "post": replies_won >= replies_lost and fp_challenger <= fp_champion
       D. every vector with "gate": true gives challenger_says_same(*v["args"]) == v["expected"]
-    passed = A and B and C and D.
+      E. photo_floor check ok
+    passed = A and B and C and D and E.
     Returns {"exam": {"pairs", "unsure", "missing"},
-             "all": {"disagreements", "wins", "losses", "p_value", "fp_challenger", "fp_champion"},
+             "all": {"disagreements", "wins", "losses", "replies", "replies_won", "replies_lost", "replies_tied", "p_value", "fp_challenger", "fp_champion"},
              "post": {same keys},
              "vectors": {"checked": n, "failed": [names]},
+             "photo_floor": photo_check,
              "passed": bool,
              "disagreement_pairs": [{"pair_id", "label", "champion", "challenger", "posterior"}]}
     sorted by pair_id. No field values, so no PII.
@@ -613,11 +634,24 @@ def gate(
         losses = sum(1 for x in items if x["disagrees"] and x["champion"] == x["truth"])
         fp_chall = sum(1 for x in items if not x["truth"] and x["challenger"])
         fp_champ = sum(1 for x in items if not x["truth"] and x["champion"])
-        p_val = sign_test_p(wins, wins + losses)
+
+        disagreeing = [
+            (x["record"], x["champion"], x["challenger"], x["truth"])
+            for x in items
+            if x["disagrees"]
+        ]
+        rep_won, rep_lost, rep_tied = _reply_sign(disagreeing)
+        rep_total = rep_won + rep_lost + rep_tied
+        p_val = sign_test_p(rep_won, rep_won + rep_lost)
+
         return {
             "disagreements": disagreements,
             "wins": wins,
             "losses": losses,
+            "replies": rep_total,
+            "replies_won": rep_won,
+            "replies_lost": rep_lost,
+            "replies_tied": rep_tied,
             "p_value": p_val,
             "fp_challenger": fp_chall,
             "fp_champion": fp_champ,
@@ -630,7 +664,7 @@ def gate(
     check_a = all_stats["p_value"] < 0.05
     check_b = all_stats["fp_challenger"] <= all_stats["fp_champion"]
     check_c = (
-        post_stats["wins"] >= post_stats["losses"]
+        post_stats["replies_won"] >= post_stats["replies_lost"]
         and post_stats["fp_challenger"] <= post_stats["fp_champion"]
     )
 

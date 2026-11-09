@@ -69,10 +69,11 @@ def summary_text(
     if disagreements == 0:
         lines.append("ძველი და ახალი წესი შენს ყველა პასუხზე ერთნაირად ფიქრობს.")
     else:
-        wins = report.get("all", {}).get("wins", 0)
-        losses = report.get("all", {}).get("losses", 0)
+        replies = report.get("all", {}).get("replies", 0)
+        replies_won = report.get("all", {}).get("replies_won", 0)
+        replies_lost = report.get("all", {}).get("replies_lost", 0)
         lines.append(
-            f"ძველი და ახალი წესი {disagreements} წყვილზე არ ეთანხმება: ახალი მართალია {wins}-ში, ძველი {losses}-ში."
+            f"ძველი და ახალი წესი {disagreements} წყვილზე არ ეთანხმება ({replies} X-Ray პასუხში): ახალი მართალია {replies_won} პასუხში, ძველი {replies_lost}-ში."
         )
 
     if not report.get("photo_floor", {}).get("ok", True):

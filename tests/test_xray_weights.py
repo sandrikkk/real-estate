@@ -231,11 +231,16 @@ class TestXrayWeights(unittest.TestCase):
             xw._candidate_matches_target = mock_champ
             xw.challenger_says_same = mock_chall
 
-            # (a) 5 wins, 0 losses, vectors pass -> passed
+            # (a) 5 wins under 5 different target_keys -> p_value == 1/32, passes gate
             res_a = xw.gate(weights, records_5, vectors_pass, {"ok": True})
             self.assertTrue(res_a["passed"])
             self.assertEqual(res_a["all"]["wins"], 5)
             self.assertEqual(res_a["all"]["losses"], 0)
+            self.assertEqual(res_a["all"]["replies"], 5)
+            self.assertEqual(res_a["all"]["replies_won"], 5)
+            self.assertEqual(res_a["all"]["replies_lost"], 0)
+            self.assertEqual(res_a["all"]["replies_tied"], 0)
+            self.assertEqual(res_a["all"]["p_value"], 1 / 32)
 
             # (b) One extra challenger false match -> fails B
             # Add record with label 0, challenger True, champion False
@@ -267,6 +272,7 @@ class TestXrayWeights(unittest.TestCase):
             res_c = xw.gate(weights, records_5 + post_recs, vectors_pass, {"ok": True})
             self.assertFalse(res_c["passed"])
             self.assertLess(res_c["post"]["wins"], res_c["post"]["losses"])
+            self.assertLess(res_c["post"]["replies_won"], res_c["post"]["replies_lost"])
 
             # (d) One gate vector failing -> not passed, and name in failed
             vectors_fail = [
@@ -564,3 +570,87 @@ class TestXrayWeights(unittest.TestCase):
         gate_res = xw.gate(w, [], [], rep["photo_floor"])
         self.assertFalse(gate_res["passed"])
         self.assertFalse(gate_res["photo_floor"]["ok"])
+
+    def test_14_reply_sign_and_gate(self):
+        # 1. Direct _reply_sign test: tie with 2 challenger-right, 2 champion-right
+        rec1 = {"target_key": "rep1"}
+        rec2 = {"target_key": "rep1"}
+        rec3 = {"target_key": "rep1"}
+        rec4 = {"target_key": "rep1"}
+        disagree_items = [
+            (rec1, False, True, True),  # challenger right
+            (rec2, False, True, True),  # challenger right
+            (rec3, True, False, True),  # champion right
+            (rec4, True, False, True),  # champion right
+        ]
+        won, lost, tied = xw._reply_sign(disagree_items)
+        self.assertEqual(won, 0)
+        self.assertEqual(lost, 0)
+        self.assertEqual(tied, 1)
+
+        # 2. Gate with 5 disagreement wins under ONE target_key:
+        # gives replies_won == 1, p_value == 0.5, gate not passed (A)
+        weights = {"lambda": 0.01, "fields": {}}
+
+        def make_rec(pid, label=1, target_key="single_target"):
+            return {
+                "pair_id": pid,
+                "target_key": target_key,
+                "label": label,
+                "label_origin": "organic",
+                "reply_kind": "dup",
+                "target_kind": "listing",
+                "listing_pair_key": f"{pid}__cand",
+                "shown_at": "2026-11-09T00:00:00",
+                "labelled_at": "2026-11-09T00:00:00",
+                "snapshot": "at_label",
+                "target": {"pair_id": pid, "district": "Vake"},
+                "candidate": {"pair_id": pid, "id": f"cand_{pid}", "district": "Vake"},
+                "relations": {},
+                "evidence": {},
+                "review": None,
+            }
+
+        recs_one_target = [make_rec(f"single_p{i}") for i in range(1, 6)]
+        vectors_pass = [{"name": "v1", "gate": True, "args": [{}, {}], "expected": False}]
+
+        orig_champ = xw._candidate_matches_target
+        orig_chall = xw.challenger_says_same
+        try:
+            xw._candidate_matches_target = lambda t, c: False
+            xw.challenger_says_same = lambda w, *args: True
+
+            res = xw.gate(weights, recs_one_target, vectors_pass, {"ok": True})
+            self.assertFalse(res["passed"])
+            self.assertEqual(res["all"]["wins"], 5)
+            self.assertEqual(res["all"]["losses"], 0)
+            self.assertEqual(res["all"]["replies"], 1)
+            self.assertEqual(res["all"]["replies_won"], 1)
+            self.assertEqual(res["all"]["replies_lost"], 0)
+            self.assertEqual(res["all"]["replies_tied"], 0)
+            self.assertEqual(res["all"]["p_value"], 0.5)
+
+            # 3. Tie under one target in gate gives replies_tied == 1, not counted in won or lost
+            tie_recs = [
+                make_rec("t1"),
+                make_rec("t2"),
+                make_rec("t3"),
+                make_rec("t4"),
+            ]
+            champ_map = {"t1": False, "t2": False, "t3": True, "t4": True}
+            chall_map = {"t1": True, "t2": True, "t3": False, "t4": False}
+            xw._candidate_matches_target = lambda t, c: champ_map.get(t.get("pair_id"), False)
+            xw.challenger_says_same = lambda w, *args: chall_map.get(
+                args[0].get("pair_id") if args and isinstance(args[0], dict) else None, False
+            )
+
+            res_tie = xw.gate(weights, tie_recs, vectors_pass, {"ok": True})
+            self.assertFalse(res_tie["passed"])
+            self.assertEqual(res_tie["all"]["replies"], 1)
+            self.assertEqual(res_tie["all"]["replies_won"], 0)
+            self.assertEqual(res_tie["all"]["replies_lost"], 0)
+            self.assertEqual(res_tie["all"]["replies_tied"], 1)
+            self.assertEqual(res_tie["all"]["p_value"], 1.0)
+        finally:
+            xw._candidate_matches_target = orig_champ
+            xw.challenger_says_same = orig_chall

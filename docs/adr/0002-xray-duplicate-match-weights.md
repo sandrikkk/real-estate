@@ -44,7 +44,7 @@ flowchart LR
 - **Gate.**
   - The exam is every golden pair with a ✅ or ❌ answer whose fields are known. No answer is used for fitting, so there is no fit/held-out split.
   - The champion is the §5.5 rule. The challenger says "same flat" when its posterior is above one half.
-  - On the pairs where the two disagree, the challenger must be right significantly more often: a one-sided exact sign test at 5%, a statistical convention rather than a tuned value. Precision and recall are not compared, because on organic answers the champion's recall is 100% by construction: it chose every pair that was shown.
+  - On the X-Ray replies where the two disagree, the challenger must be right significantly more often: a reply counts as a win when the challenger is right on more of its disagreeing pairs than the champion, and as a loss in the opposite case, because the candidates of one reply share its target and are not independent answers. The test is a one-sided exact sign test at 5%, a statistical convention rather than a tuned value. Precision and recall are not compared, because on organic answers the champion's recall is 100% by construction: it chose every pair that was shown.
   - The challenger must make no more false matches (❌ pairs it calls the same) than the champion.
   - Facebook-style targets are checked on their own: there the challenger must win at least as many disagreements as it loses, again with no more false matches.
   - It must answer "no" on the rule vectors marked `"gate": true` in `tests/fixtures/xray_rule_vectors.json`, the false-duplicate incidents.
