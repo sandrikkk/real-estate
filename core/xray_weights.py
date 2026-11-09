@@ -51,6 +51,51 @@ LISTING_COLUMNS = (
 )
 PAGE = 1000
 POSSIBLE = 0.5  # ADR 0002: "possible duplicate" above one half (Bayes decision rule)
+STRONG = ("floor", "area", "layout", "total_floors")
+TOP = {f: LEVELS[f][0] for f in FIELDS}  # "equal" / "agree"
+Z95 = 1.959964  # two-sided 95%: a statistical convention, not a tuned value
+
+
+def wilson95(k: float, n: float) -> Tuple[float, float]:
+    if n <= 0:
+        return (0.0, 1.0)
+    p = k / n
+    c = (p + Z95 * Z95 / (2 * n)) / (1 + Z95 * Z95 / n)
+    h = Z95 * math.sqrt(p * (1 - p) / n + Z95 * Z95 / (4 * n * n)) / (1 + Z95 * Z95 / n)
+    return (max(0.0, c - h), min(1.0, c + h))
+
+
+def photo_floor_check(
+    groups: List[Tuple[Tuple[str, ...], float]], m_floor_equal: float
+) -> Dict[str, Any]:
+    """dedup groups photos without looking at the floor, so the photo groups are independent
+    evidence for the floor: EM's floor-equal m must sit inside their 95% interval. A fit that
+    learned look-alike flats instead of the same flat fails here."""
+    k = sum(w for p, w in groups if p[0] == "equal")
+    n = sum(w for p, w in groups if p[0] != UNKNOWN)
+    lo, hi = wilson95(k, n)
+    return {
+        "share": k / n if n else None,
+        "groups": n,
+        "low": lo,
+        "high": hi,
+        "em": m_floor_equal,
+        "ok": bool(n > 0 and lo <= m_floor_equal <= hi),
+    }
+
+
+def leave_one_out_pool(
+    patterns: Dict[tuple, int], field: str
+) -> Tuple[Dict[tuple, int], Tuple[str, ...]]:
+    """The pairs where every other STRONG field is at its top level, with those fields set to
+    UNKNOWN: a pool where most pairs are the same flat, so EM learns `field` from same-flat
+    pairs rather than from look-alike flats (Splink trains each field under other blocks)."""
+    others = tuple(g for g in STRONG if g != field)
+    pool = defaultdict(int)
+    for p, n in sorted(patterns.items()):
+        if all(p[FIELDS.index(g)] == TOP[g] for g in others):
+            pool[tuple(UNKNOWN if g in others else lvl for g, lvl in zip(FIELDS, p))] += n
+    return dict(pool), others
 
 
 def floor_level(a: Dict[str, Any], b: Dict[str, Any]) -> str:
@@ -162,32 +207,31 @@ def count_pairs(listings: List[Dict[str, Any]]) -> Dict[str, Any]:
     """{"pairs": N,
 
     "u_counts": {field: {level: n}},         # every block pair; UNKNOWN not counted
-    "pools": {"close_area": {pattern: n},    # area level "equal" or "close"
-              "same_floor": {pattern: n}}}   # floor level "equal"
+    "patterns": {pattern: n},                # every block pair pattern
+    "pools": {"close_area": {pattern: n}}}   # area level "equal" or "close"
     Patterns are the 5-tuples of pair_levels; store them as tuples.
     """
     pairs = 0
     u_counts = {f: {lvl: 0 for lvl in LEVELS[f]} for f in FIELDS}
+    patterns: Dict[Tuple[str, str, str, str, str], int] = defaultdict(int)
     close_area: Dict[Tuple[str, str, str, str, str], int] = defaultdict(int)
-    same_floor: Dict[Tuple[str, str, str, str, str], int] = defaultdict(int)
 
     for _a, _b, levels in iter_block_pairs(listings):
         pairs += 1
+        patterns[levels] += 1
         for f, lvl in zip(FIELDS, levels):
             if lvl != UNKNOWN:
                 u_counts[f][lvl] += 1
-        fl, ar = levels[0], levels[1]
+        ar = levels[1]
         if ar in ("equal", "close"):
             close_area[levels] += 1
-        if fl == "equal":
-            same_floor[levels] += 1
 
     return {
         "pairs": pairs,
         "u_counts": u_counts,
+        "patterns": dict(patterns),
         "pools": {
             "close_area": dict(close_area),
-            "same_floor": dict(same_floor),
         },
     }
 
@@ -258,7 +302,7 @@ def seed_m(groups: List[Tuple[Tuple[str, ...], float]]) -> Dict[str, Dict[str, f
 
 def em_session(
     pool: Dict[tuple, int],
-    blocked: str,
+    blocked: Any,
     m0: Dict[str, Dict[str, float]],
     u: Dict[str, Dict[str, float]],
     lam0: float,
@@ -278,7 +322,8 @@ def em_session(
     Returns {"m": m (blocked field copied from m0), "lambda": lam, "iterations": t, "objective": J,
              "pairs": sum n_p}.
     """
-    active = [f for f in FIELDS if f != blocked]
+    blocked_fields = (blocked,) if isinstance(blocked, str) else tuple(blocked)
+    active = [f for f in FIELDS if f not in blocked_fields]
     f_idx = {f: i for i, f in enumerate(FIELDS)}
     total_pairs = sum(pool.values())
     if total_pairs == 0:
@@ -354,10 +399,11 @@ def em_session(
         prev_J = J_next
 
     if lam <= 0 or lam >= 1:
-        raise ValueError(f"EM collapsed in {blocked}")
+        raise ValueError(f"EM collapsed in {','.join(blocked_fields)}")
 
     m_out = {f: dict(m[f]) for f in FIELDS}
-    m_out[blocked] = dict(m0[blocked])
+    for f in blocked_fields:
+        m_out[f] = dict(m0[f])
     return {
         "m": m_out,
         "lambda": lam,
@@ -372,39 +418,37 @@ def estimate(
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """(weights, em_report).
 
-    u  = u_probs(counts["u_counts"]); m0 = seed_m(groups)
-    s1 = em_session(pools["close_area"], "area",  m0, u, lam0_for(s1 pool))
-    s2 = em_session(pools["same_floor"], "floor", m0, u, lam0_for(s2 pool))
-    m["floor"] = s1.m["floor"]; m["area"] = s2.m["area"]
-    m[f][l] = (s1.m[f][l] + s2.m[f][l]) / 2 for f in layout, total_floors, location
-    lambda = s1.lambda * s1.pairs / counts["pairs"]   # nearly every true match has close areas
-    weights = {"levels_version": LEVELS_VERSION, "lambda": lambda,
-               "fields": {f: {l: {"m": m[f][l], "u": u[f][l], "bits": log2(m[f][l] / u[f][l])}}}}
-    em_report = {"close_area": {iterations, lambda, objective, pairs}, "same_floor": {...},
-                 "group_pairs": len(groups), "block_pairs": counts["pairs"]}
+    Learns m via four leave-one-out EM sessions on STRONG fields, averages location,
+    computes lambda from the mean scaled matches, and performs the photo floor check.
     """
     u = u_probs(counts["u_counts"])
     m0 = seed_m(groups)
-
     sum_group_weights = sum(w for _, w in groups)
-    s1_pool = counts["pools"]["close_area"]
-    s2_pool = counts["pools"]["same_floor"]
 
-    lam0_s1 = (sum_group_weights + 1.0) / (sum(s1_pool.values()) + 2.0)
-    lam0_s2 = (sum_group_weights + 1.0) / (sum(s2_pool.values()) + 2.0)
+    s: Dict[str, Dict[str, Any]] = {}
+    for f in STRONG:
+        pool, others = leave_one_out_pool(counts["patterns"], f)
+        pool_pairs = sum(pool.values())
+        lam0 = (sum_group_weights + 1.0) / (pool_pairs + 2.0)
+        s[f] = em_session(pool, others, m0, u, lam0)
 
-    s1 = em_session(s1_pool, "area", m0, u, lam0_s1)
-    s2 = em_session(s2_pool, "floor", m0, u, lam0_s2)
-
-    m: Dict[str, Dict[str, float]] = {
-        "floor": dict(s1["m"]["floor"]),
-        "area": dict(s2["m"]["area"]),
+    m: Dict[str, Dict[str, float]] = {}
+    for f in STRONG:
+        m[f] = dict(s[f]["m"][f])
+    m["location"] = {
+        lvl: sum(s[f]["m"]["location"][lvl] for f in STRONG) / len(STRONG)
+        for lvl in LEVELS["location"]
     }
-    for f in ("layout", "total_floors", "location"):
-        m[f] = {lvl: (s1["m"][f][lvl] + s2["m"][f][lvl]) / 2.0 for lvl in LEVELS[f]}
+
+    matches: Dict[str, float] = {}
+    for f in STRONG:
+        others = tuple(g for g in STRONG if g != f)
+        p_others = math.prod(m[g][TOP[g]] for g in others)
+        matches[f] = (s[f]["lambda"] * s[f]["pairs"]) / p_others if p_others > 0 else 0.0
 
     bp = counts["pairs"]
-    lam = s1["lambda"] * s1["pairs"] / bp if bp > 0 else 0.0
+    mean_matches = sum(matches.values()) / len(matches) if matches else 0.0
+    lam = mean_matches / bp if bp > 0 else 0.0
 
     weights = {
         "levels_version": LEVELS_VERSION,
@@ -422,21 +466,23 @@ def estimate(
         },
     }
 
+    photo_floor = photo_floor_check(groups, m["floor"]["equal"])
+
     em_report = {
-        "close_area": {
-            "iterations": s1["iterations"],
-            "lambda": s1["lambda"],
-            "objective": s1["objective"],
-            "pairs": s1["pairs"],
-        },
-        "same_floor": {
-            "iterations": s2["iterations"],
-            "lambda": s2["lambda"],
-            "objective": s2["objective"],
-            "pairs": s2["pairs"],
+        "sessions": {
+            f: {
+                "pool": s[f]["pairs"],
+                "lambda": s[f]["lambda"],
+                "iterations": s[f]["iterations"],
+                "converged": s[f]["iterations"] < EM_MAX_ITERATIONS,
+                "objective": s[f]["objective"],
+                "matches": matches[f],
+            }
+            for f in STRONG
         },
         "group_pairs": len(groups),
         "block_pairs": bp,
+        "photo_floor": photo_floor,
     }
 
     return weights, em_report
@@ -476,6 +522,7 @@ def gate(
     weights: Dict[str, Any],
     records: List[Dict[str, Any]],
     vectors: List[Dict[str, Any]],
+    photo_check: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Exam = records with label 0 or 1 and snapshot != "missing".
 
@@ -596,13 +643,15 @@ def gate(
                 failed_vectors.append(v["name"])
 
     check_d = len(failed_vectors) == 0
-    passed = bool(check_a and check_b and check_c and check_d)
+    check_e = bool(photo_check.get("ok"))
+    passed = bool(check_a and check_b and check_c and check_d and check_e)
 
     return {
         "exam": exam_stats,
         "all": all_stats,
         "post": post_stats,
         "vectors": {"checked": checked_vectors, "failed": failed_vectors},
+        "photo_floor": photo_check,
         "passed": passed,
         "disagreement_pairs": disagreement_pairs,
     }

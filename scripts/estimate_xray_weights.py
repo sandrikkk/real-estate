@@ -75,6 +75,11 @@ def summary_text(
             f"ძველი და ახალი წესი {disagreements} წყვილზე არ ეთანხმება: ახალი მართალია {wins}-ში, ძველი {losses}-ში."
         )
 
+    if not report.get("photo_floor", {}).get("ok", True):
+        lines.append(
+            "⚠️ ახალი წონები ფოტო-ჯგუფებს არ ემთხვევა (სართული), ამიტომ ეს კვირა არ ითვლება."
+        )
+
     if report.get("passed"):
         lines.append(
             "✅ ახალმა წესმა გამოცდა გაიარა. ბოტში ჯერ ისევ ძველი წესია: ჩართვა ცალკე ნაბიჯია."
@@ -119,7 +124,7 @@ def run(
         with open(vectors_path, "r", encoding="utf-8") as f:
             vectors = json.load(f)
 
-    report = gate(weights, records, vectors)
+    report = gate(weights, records, vectors, em_report["photo_floor"])
     jsonl = to_jsonl(records)
     labels_hash = hashlib.sha256(jsonl.encode("utf-8")).hexdigest()
 

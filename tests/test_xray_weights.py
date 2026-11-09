@@ -232,7 +232,7 @@ class TestXrayWeights(unittest.TestCase):
             xw.challenger_says_same = mock_chall
 
             # (a) 5 wins, 0 losses, vectors pass -> passed
-            res_a = xw.gate(weights, records_5, vectors_pass)
+            res_a = xw.gate(weights, records_5, vectors_pass, {"ok": True})
             self.assertTrue(res_a["passed"])
             self.assertEqual(res_a["all"]["wins"], 5)
             self.assertEqual(res_a["all"]["losses"], 0)
@@ -242,7 +242,7 @@ class TestXrayWeights(unittest.TestCase):
             rec_fp = make_record("p_fp", 0)
             chall_lookup["p_fp"] = True
             champ_lookup["p_fp"] = False
-            res_b = xw.gate(weights, records_5 + [rec_fp], vectors_pass)
+            res_b = xw.gate(weights, records_5 + [rec_fp], vectors_pass, {"ok": True})
             self.assertFalse(res_b["passed"])
             self.assertGreater(res_b["all"]["fp_challenger"], res_b["all"]["fp_champion"])
 
@@ -264,7 +264,7 @@ class TestXrayWeights(unittest.TestCase):
             champ_lookup["post3"] = True
             chall_lookup["post3"] = False
 
-            res_c = xw.gate(weights, records_5 + post_recs, vectors_pass)
+            res_c = xw.gate(weights, records_5 + post_recs, vectors_pass, {"ok": True})
             self.assertFalse(res_c["passed"])
             self.assertLess(res_c["post"]["wins"], res_c["post"]["losses"])
 
@@ -272,14 +272,16 @@ class TestXrayWeights(unittest.TestCase):
             vectors_fail = [
                 {"name": "vector_failing_name", "gate": True, "args": [{}, {}], "expected": True}
             ]
-            res_d = xw.gate(weights, records_5, vectors_fail)
+            res_d = xw.gate(weights, records_5, vectors_fail, {"ok": True})
             self.assertFalse(res_d["passed"])
             self.assertIn("vector_failing_name", res_d["vectors"]["failed"])
 
             # (e) -1 and missing records excluded and counted
             rec_unsure = make_record("p_u", -1)
             rec_missing = make_record("p_m", 1, snapshot="missing")
-            res_e = xw.gate(weights, records_5 + [rec_unsure, rec_missing], vectors_pass)
+            res_e = xw.gate(
+                weights, records_5 + [rec_unsure, rec_missing], vectors_pass, {"ok": True}
+            )
             self.assertEqual(res_e["exam"]["unsure"], 1)
             self.assertEqual(res_e["exam"]["missing"], 1)
             self.assertEqual(res_e["exam"]["pairs"], 5)
@@ -297,7 +299,7 @@ class TestXrayWeights(unittest.TestCase):
         with open(vec_path, "r", encoding="utf-8") as f:
             vectors = json.load(f)
 
-        res = xw.gate(weights, [], vectors)
+        res = xw.gate(weights, [], vectors, {"ok": True})
         self.assertEqual(res["vectors"]["checked"], 6)
 
     def test_09_script(self):
@@ -403,3 +405,162 @@ class TestXrayWeights(unittest.TestCase):
         runner = unittest.TextTestRunner(stream=io.StringIO())
         result = runner.run(suite)
         self.assertTrue(result.wasSuccessful())
+
+    def test_11_wilson95(self):
+        lo, hi = xw.wilson95(98, 100)
+        self.assertTrue(lo < 0.98 < hi <= 1.0)
+        self.assertEqual(xw.wilson95(0, 0), (0.0, 1.0))
+
+    def test_12_leave_one_out_recovers_independent_data(self):
+        import itertools
+
+        n = 2_000_000
+        lam = 0.01
+
+        true_m = {
+            "floor": {"equal": 0.97, "off_by_one": 0.02, "further": 0.01},
+            "area": {"equal": 0.8, "close": 0.19, "far": 0.01},
+            "layout": {"agree": 0.98, "conflict": 0.02},
+            "total_floors": {"agree": 0.95, "conflict": 0.05},
+            "location": {"agree": 0.95, "conflict": 0.05},
+        }
+        true_u = {
+            "floor": {"equal": 0.1, "off_by_one": 0.15, "further": 0.75},
+            "area": {"equal": 0.05, "close": 0.35, "far": 0.6},
+            "layout": {"agree": 0.5, "conflict": 0.5},
+            "total_floors": {"agree": 0.1, "conflict": 0.9},
+            "location": {"agree": 0.9, "conflict": 0.1},
+        }
+
+        all_combos = list(itertools.product(*(xw.LEVELS[f] for f in xw.FIELDS)))
+        patterns = {}
+        u_counts = {f: {lvl: 0 for lvl in xw.LEVELS[f]} for f in xw.FIELDS}
+        total_pairs = 0
+
+        for p in all_combos:
+            fl, ar, lay, tf, loc = p
+            pm = (
+                true_m["floor"][fl]
+                * true_m["area"][ar]
+                * true_m["layout"][lay]
+                * true_m["total_floors"][tf]
+                * true_m["location"][loc]
+            )
+            pu = (
+                true_u["floor"][fl]
+                * true_u["area"][ar]
+                * true_u["layout"][lay]
+                * true_u["total_floors"][tf]
+                * true_u["location"][loc]
+            )
+            n_p = round(n * (lam * pm + (1 - lam) * pu))
+            patterns[p] = n_p
+            total_pairs += n_p
+            for f, lvl in zip(xw.FIELDS, p):
+                u_counts[f][lvl] += n_p
+
+        close_area = {p: count for p, count in patterns.items() if p[1] in ("equal", "close")}
+        counts = {
+            "pairs": total_pairs,
+            "u_counts": u_counts,
+            "patterns": patterns,
+            "pools": {"close_area": close_area},
+        }
+
+        groups = (
+            [(("equal", xw.UNKNOWN, "agree", "agree", "agree"), 1.0)] * 98
+            + [(("off_by_one", xw.UNKNOWN, "conflict", "conflict", "conflict"), 1.0)]
+            + [(("further", xw.UNKNOWN, "conflict", "conflict", "conflict"), 1.0)]
+        )
+
+        w, rep = xw.estimate(counts, groups)
+        self.assertTrue(rep["photo_floor"]["ok"])
+        self.assertAlmostEqual(w["lambda"] * n, 20000, delta=2000)  # within 10%
+        for f in xw.STRONG:
+            top_lvl = xw.TOP[f]
+            self.assertAlmostEqual(w["fields"][f][top_lvl]["m"], true_m[f][top_lvl], delta=0.03)
+
+    def test_13_look_alike_flats_fail_photo_check(self):
+        import itertools
+
+        n = 2_000_000
+        lam = 0.01
+
+        true_m = {
+            "floor": {"equal": 0.97, "off_by_one": 0.02, "further": 0.01},
+            "area": {"equal": 0.8, "close": 0.19, "far": 0.01},
+            "layout": {"agree": 0.98, "conflict": 0.02},
+            "total_floors": {"agree": 0.95, "conflict": 0.05},
+            "location": {"agree": 0.95, "conflict": 0.05},
+        }
+        true_u = {
+            "floor": {"equal": 0.1, "off_by_one": 0.15, "further": 0.75},
+            "area": {"equal": 0.05, "close": 0.35, "far": 0.6},
+            "layout": {"agree": 0.5, "conflict": 0.5},
+            "total_floors": {"agree": 0.1, "conflict": 0.9},
+            "location": {"agree": 0.9, "conflict": 0.1},
+        }
+
+        lookalike_p = {
+            "floor": {"equal": 0.1, "off_by_one": 0.15, "further": 0.75},
+            "area": {"equal": 0.15, "close": 0.85, "far": 0.0},
+            "layout": {"agree": 1.0, "conflict": 0.0},
+            "total_floors": {"agree": 1.0, "conflict": 0.0},
+            "location": {"agree": 0.95, "conflict": 0.05},
+        }
+
+        all_combos = list(itertools.product(*(xw.LEVELS[f] for f in xw.FIELDS)))
+        patterns = {}
+        u_counts = {f: {lvl: 0 for lvl in xw.LEVELS[f]} for f in xw.FIELDS}
+        total_pairs = 0
+
+        for p in all_combos:
+            fl, ar, lay, tf, loc = p
+            pm = (
+                true_m["floor"][fl]
+                * true_m["area"][ar]
+                * true_m["layout"][lay]
+                * true_m["total_floors"][tf]
+                * true_m["location"][loc]
+            )
+            pu_random = (
+                true_u["floor"][fl]
+                * true_u["area"][ar]
+                * true_u["layout"][lay]
+                * true_u["total_floors"][tf]
+                * true_u["location"][loc]
+            )
+            pu_lookalike = (
+                lookalike_p["floor"][fl]
+                * lookalike_p["area"][ar]
+                * lookalike_p["layout"][lay]
+                * lookalike_p["total_floors"][tf]
+                * lookalike_p["location"][loc]
+            )
+            pu = 0.70 * pu_random + 0.30 * pu_lookalike
+            n_p = round(n * (lam * pm + (1 - lam) * pu))
+            patterns[p] = n_p
+            total_pairs += n_p
+            for f, lvl in zip(xw.FIELDS, p):
+                u_counts[f][lvl] += n_p
+
+        close_area = {p: count for p, count in patterns.items() if p[1] in ("equal", "close")}
+        counts = {
+            "pairs": total_pairs,
+            "u_counts": u_counts,
+            "patterns": patterns,
+            "pools": {"close_area": close_area},
+        }
+
+        groups = (
+            [(("equal", xw.UNKNOWN, "agree", "agree", "agree"), 1.0)] * 98
+            + [(("off_by_one", xw.UNKNOWN, "conflict", "conflict", "conflict"), 1.0)]
+            + [(("further", xw.UNKNOWN, "conflict", "conflict", "conflict"), 1.0)]
+        )
+
+        w, rep = xw.estimate(counts, groups)
+        self.assertFalse(rep["photo_floor"]["ok"])
+
+        gate_res = xw.gate(w, [], [], rep["photo_floor"])
+        self.assertFalse(gate_res["passed"])
+        self.assertFalse(gate_res["photo_floor"]["ok"])

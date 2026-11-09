@@ -32,8 +32,8 @@ flowchart LR
 - **Comparison levels.** They extend today's agree/conflict/unknown helpers to area, floor, total floors, layout, and location (including the micro-district). A level boundary only groups values. The weight of each level is learned, so a level that carries no signal ends up near zero. An unknown field weighs 0.
 - **Estimation.** A weekly GitHub Actions cron (free), `scripts/estimate_xray_weights.py`, reads the comparison columns of `properties` once, in pages on the primary key ([ADR 0001](0001-eliminate-d1-full-table-scans.md)), and enumerates every pair in a block (same district and deal type: 7.3 million pairs in November 2026, a few minutes):
   - `u` is each level's share over all those pairs, counted exactly, with no sample.
-  - `m` comes from EM in two sessions, as Splink trains: one over the pairs with close areas, which learns every field but area, and one over the pairs on the same floor, which learns every field but floor. Fields learned in both are averaged. Photo-group pairs give the starting values.
-  - λ is EM's match share among the close-area pairs, scaled to all block pairs.
+  - `m` comes from EM in four sessions, one per strong field (floor, area, rooms, building height). Each session runs over the pairs where the other three agree, so most of its pairs are the same flat and EM learns the field from them, not from look-alike flats. Location is averaged over the four. Photo-group pairs give the starting values.
+  - λ: each session's match count, divided by the share of true matches its block keeps, gives the number of same-flat pairs; λ is their mean over all block pairs.
   - A +1 (Laplace) count on every level keeps a level that is never seen from getting an infinite weight.
 - **Labels.**
   - Pairs that share a photo-hash `group_id` (`core/dedup.py`) are weak matches. They only give EM its starting values and are never an exam answer. The pairs of one group together weigh 1 (each weighs `2 / (s·(s − 1))` in a group of s), so a 60-member render group counts as much as a 2-member one. They never inform the area field, because dedup only groups areas within ±15%.
@@ -48,6 +48,7 @@ flowchart LR
   - The challenger must make no more false matches (❌ pairs it calls the same) than the champion.
   - Facebook-style targets are checked on their own: there the challenger must win at least as many disagreements as it loses, again with no more false matches.
   - It must answer "no" on the rule vectors marked `"gate": true` in `tests/fixtures/xray_rule_vectors.json`, the false-duplicate incidents.
+  - dedup groups photos without looking at the floor, so the photo groups are independent evidence for it: EM's floor-equal m must sit inside their 95% Wilson interval, or the week does not count. A loose pool once taught EM "look-alike flats" (λ = 0.156, floor-equal m = 0.17 against the photos' 0.98); this check stops that.
   - Until a challenger passes, nothing changes for users. The weekly summary shows the disagreements: this is the shadow mode.
 - **Thresholds.** A pair is a "possible duplicate" when its posterior is above one half (`🤔 შესაძლოა იგივე ბინაა`). A stricter "match" tier, if any, is set from the exam in the change that turns the scorer on. No threshold is typed in by hand.
 - **Delivery.**
