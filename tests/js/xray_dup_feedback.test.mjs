@@ -237,3 +237,39 @@ test("a prototype key is not an answer", async () => {
     goOffline();
   }
 });
+
+test("a fd: press on a row with kind: 'review_random' and owner_target_id: null records the label and edits markup to 1 row of 3 buttons", async () => {
+  const calls = serveNetwork();
+  try {
+    const REVIEW_RESULT_ID = "77777777-4444-4333-8444-555555555555";
+    const reviewResultRow = {
+      id: REVIEW_RESULT_ID,
+      chat_id: String(CHAT),
+      kind: "review_random",
+      target: "{}",
+      candidates: JSON.stringify([{ id: "ss_ge_5", url: DUP.url }]),
+      owner_target_id: null,
+      created_at: "2026-11-09T10:00:00.000Z"
+    };
+    const reviewResultById = [
+      /FROM xray_results WHERE id = \? AND chat_id = \?/,
+      p => (p[0] === REVIEW_RESULT_ID && p[1] === String(CHAT) ? [reviewResultRow] : [])
+    ];
+    const reviewAnswered = [
+      /FROM xray_feedback WHERE job_id = \? AND chat_id = \?/,
+      () => [{ candidate_id: "ss_ge_5", label: 1 }]
+    ];
+    const db = recordingD1([reviewResultById, reviewAnswered]);
+    await webhook(env(db), press(`fd:${REVIEW_RESULT_ID}:0:y`));
+    const fb = db.log.find(e => /INSERT OR REPLACE INTO xray_feedback/.test(e.sql));
+    assert.deepEqual(fb.params.slice(0, 5), [REVIEW_RESULT_ID, "ss_ge_5", String(CHAT), null, 1]);
+    const edits = telegram(calls, "editMessageReplyMarkup");
+    assert.equal(edits.length, 1);
+    const rows = edits[0].body.reply_markup.inline_keyboard;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].length, 3);
+    assert.equal(rows[0][0].text, "1 ✅ იგივეა ✓");
+  } finally {
+    goOffline();
+  }
+});

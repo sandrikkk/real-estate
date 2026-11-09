@@ -41,6 +41,7 @@ flowchart LR
   - Each saved reply keeps the shown candidates' fields (`xrayResultCandidate` in `worker.js`, `snapshot_fields` in `core/xray.py`), so an answer is judged on what the admin saw. Answers given before 2026-11-09 are filled from `properties` and marked `backfilled`.
   - `core/golden_pairs.py` turns the answers into the **golden pairs**: one record per answer, with no phone number, author id or chat id (the repository is public), only whether the two sides share them.
   - Human answers are the exam, never the textbook: no weight is fitted on them. Organic answers cover only pairs the bot chose to show, which the old rule had already accepted. The weekly review adds pairs the bot did not choose.
+- **Weekly review.** After estimation the same job sends the admin up to ten close-area pairs from the whole database, with the usual ✅/❌/🤷 buttons and without saying why each was picked: five where the champion and the challenger disagree (one pair per kind of disagreement, the kinds that cover the most pairs first, so each answer settles a different question), and five drawn at random with a probability that leans toward likely matches (half in proportion to the posterior, half uniform). Each random pick keeps its probability, so counts over those answers can be re-weighted into unbiased estimates (importance sampling, as in OASIS). A pair already answered or already sent is never sent again.
 - **Gate.**
   - The exam is every golden pair with a ✅ or ❌ answer whose fields are known. No answer is used for fitting, so there is no fit/held-out split.
   - The champion is the §5.5 rule. The challenger says "same flat" when its posterior is above one half.
@@ -82,5 +83,5 @@ flowchart LR
 - [x] The user approves the Georgian wording for "possible duplicate" (`🤔 შესაძლოა იგივე ბინაა`, 2026-11-08) and accepts this ADR.
 - [x] Keep the shown candidates' fields, add 🤷, build the golden pairs (`core/golden_pairs.py`).
 - [x] Add the D1 table `xray_weights`, `core/xray_weights.py`, `scripts/estimate_xray_weights.py` and `.github/workflows/xray-weights.yml` (estimation, gate, summary).
-- [ ] The weekly review: pairs the bot did not choose, sent to the admin.
+- [x] The weekly review: pairs the bot did not choose, sent to the admin.
 - [ ] Turn the scorer on in `worker.js` and `core/xray.py` after the first `passed` row, with the §5.5 rule as the fallback, a parity test, and a rollback when the share of ❌ answers rises.

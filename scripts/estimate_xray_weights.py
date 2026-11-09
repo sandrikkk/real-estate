@@ -21,6 +21,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import settings  # noqa: E402
 from core.database import D1Client, D1Connection, XRAY_WEIGHTS_DDL  # noqa: E402
 from core.golden_pairs import build_golden_pairs, summarize, to_jsonl  # noqa: E402
+from core.xray_review import (  # noqa: E402
+    pick_review_pairs,
+    seen_pair_keys,
+    send_review,
+)
 from core.xray_weights import (  # noqa: E402
     count_pairs,
     estimate,
@@ -91,7 +96,7 @@ def summary_text(
         )
 
     if sent is not None:
-        lines.append(f"📬 შემოწმების რიგი: გაიგზავნა {sent} ახალი წყვილი.")
+        lines.append(f"ამ კვირის შესამოწმებელი: {sent} წყვილი (ქვემოთ).")
 
     return "\n".join(lines)
 
@@ -156,6 +161,26 @@ def run(
         encoding="utf-8",
     )
 
+    picks = pick_review_pairs(
+        listings, weights, counts.get("pools", {}), seen_pair_keys(conn, records), week
+    )
+    clean_picks = [
+        {
+            "key": p["key"],
+            "origin": p["origin"],
+            "posterior": p["posterior"],
+            "champion": p["champion"],
+            "kind_pairs": p.get("kind_pairs"),
+            "q": p.get("q"),
+            "pool": p["pool"],
+        }
+        for p in picks
+    ]
+    (out_path / "review_picks.json").write_text(
+        json.dumps(clean_picks, ensure_ascii=False, indent=1) + "\n",
+        encoding="utf-8",
+    )
+
     status = "passed" if report.get("passed") else "candidate"
 
     if not dry_run:
@@ -191,10 +216,12 @@ def run(
                 "sendMessage",
                 {
                     "chat_id": chat_id,
-                    "text": summary_text(version, summary, report),
+                    "text": summary_text(version, summary, report, sent=len(picks)),
                     "parse_mode": "HTML",
                 },
             )
+            now_iso = now.isoformat()
+            send_review(conn, send, chat_id, picks, version, week, now_iso)
 
     print(f"X-Ray weights {version}: {status}")
     print(
