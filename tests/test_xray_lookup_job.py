@@ -12,6 +12,7 @@ import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from core.database import DatabaseEngine
 from core.xray import SNAPSHOT_FIELDS
@@ -389,6 +390,48 @@ class TestXRayOwnerJob(unittest.TestCase):
         self.assertEqual(stored["candidates"], [])
         self.assertIn("⚠️ myhome ახლა არ პასუხობს", stored["text"])
         self.assertEqual(self.notified, [OWNER_JOB])
+
+    @mock.patch.object(xray_lookup, "search_owner")
+    def test_lookup_owner_keeps_candidate_fields(self, mock_search):
+        fake_owner = {
+            "id": "myhome_42",
+            "source": "myhome",
+            "url": "https://www.myhome.ge/ka/pr/42/",
+            "district": "გლდანი",
+            "rooms": 3,
+            "floor": "1",
+            "area_m2": 72,
+            "photo_matches": 2,
+            "extra_field": "ignore",
+        }
+        mock_search.return_value = {
+            "target": {"district": "გლდანი", "rooms": 3},
+            "owners": [fake_owner],
+            "weak": False,
+            "failed": [],
+            "truncated": {},
+        }
+        outcome = asyncio.run(xray_lookup.lookup_owner(self.conn, TARGET_ID, quiet_sources()))
+        self.assertTrue(outcome["ok"])
+        cand = outcome["result"]["candidates"][0]
+        self.assertEqual(cand["id"], "myhome_42")
+        self.assertEqual(cand["url"], "https://www.myhome.ge/ka/pr/42/")
+        self.assertEqual(cand["area_m2"], 72)
+        self.assertEqual(cand["photo_matches"], 2)
+        self.assertTrue(set(cand.keys()).issubset(set(SNAPSHOT_FIELDS) | {"url", "photo_matches"}))
+        self.assertNotIn("extra_field", cand)
+
+        self.assertEqual(self.run_job(quiet_sources())["status"], "done")
+        stored = json.loads(self.job()["result"])
+        stored_cand = stored["candidates"][0]
+        self.assertEqual(stored_cand["id"], "myhome_42")
+        self.assertEqual(stored_cand["url"], "https://www.myhome.ge/ka/pr/42/")
+        self.assertEqual(stored_cand["area_m2"], 72)
+        self.assertEqual(stored_cand["photo_matches"], 2)
+        self.assertTrue(
+            set(stored_cand.keys()).issubset(set(SNAPSHOT_FIELDS) | {"url", "photo_matches"})
+        )
+        self.assertNotIn("extra_field", stored_cand)
 
     def test_a_crash_fails_the_job_and_still_tells_the_user(self):
         self.assertEqual(self.run_job(quiet_sources(fail=True))["status"], "failed")

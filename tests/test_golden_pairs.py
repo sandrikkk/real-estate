@@ -301,8 +301,9 @@ class TestGoldenPairs(unittest.TestCase):
         self.assertEqual(j2["reply_kind"], "photo")
         self.assertEqual(j2["evidence"], {"photo_matches": 2})
         self.assertNotIn("photo_matches", j2["candidate"])
-        self.assertEqual(j2["target"]["photo_batch"], "777:m5")
+        self.assertNotIn("photo_batch", j2["target"])
         self.assertEqual(j2["target"]["district"], "გლდანი")
+        self.assertNotIn("777:", to_jsonl(records))
 
     def test_owner(self):
         records, _ = build_golden_pairs(self.conn, "777")

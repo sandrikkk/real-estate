@@ -17,7 +17,17 @@ from core.photo_match import _caption_flat
 from core.xray import snapshot_fields
 
 PORTAL_PREFIXES = ("myhome_", "ss_ge_")
-PII_FIELDS = ("phone9", "phone_number", "author_id", "phone_9", "formatted_phone", "masked_phone")
+# Phone forms (parse_xray_input also returns phone_9, formatted_phone and masked_phone), the
+# seller's account, and photo_batch, which is "<chat id>:<message id>" (ADR 0005).
+PII_FIELDS = (
+    "phone9",
+    "phone_number",
+    "author_id",
+    "phone_9",
+    "formatted_phone",
+    "masked_phone",
+    "photo_batch",
+)
 REVIEW_KINDS = ("review_uncertain", "review_random")
 CHUNK = 50  # ids per IN (...) query (ADR 0001)
 
@@ -122,8 +132,7 @@ def build_golden_pairs(conn: Any, admin_chat_id: str) -> Tuple[List[Dict[str, An
                     else {}
                 )
             elif kind == "photo":
-                flat = _caption_flat(conn, row.get("target_id"))
-                target = {"photo_batch": row.get("target_id"), **flat}
+                target = dict(_caption_flat(conn, row.get("target_id")))
                 if "phone9" not in target and target.get("phone_9"):
                     target["phone9"] = str(target["phone_9"])
             else:
