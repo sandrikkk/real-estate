@@ -848,3 +848,65 @@ def gate(
         "passed": passed,
         "disagreement_pairs": disagreement_pairs,
     }
+
+
+def calibration(weights: Dict[str, Any], records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Isotonic (PAV) map from this weights' raw posterior to the admin's answered rate.
+
+    Exam = records with label 0/1 and snapshot != "missing". Points (posterior, label) sorted by
+    (posterior, pair_id) so ties are deterministic. Each point starts a block [k, n, hi]; while the
+    previous block's Laplace rate (k+1)/(n+2) >= the last one's, merge them (hi = the larger).
+    Returns {"breakpoints": [[hi, (k+1)/(n+2)], ...], "answers": n_total}.
+    No tuned number: PAV has none; Laplace is the +1 used everywhere in ADR 0002.
+    """
+    exam_pts: List[Tuple[float, str, int]] = []
+    for r in records:
+        if r.get("snapshot") == "missing":
+            continue
+        lbl = r.get("label")
+        if lbl not in (0, 1):
+            continue
+        pid = str(r.get("pair_id") or "")
+        target = r.get("target") or {}
+        cand = r.get("candidate") or {}
+        t = {**target, "pair_id": pid}
+        c = {**cand, "pair_id": pid}
+        p = posterior(weights, t, c)
+        exam_pts.append((float(p), pid, int(lbl)))
+
+    exam_pts.sort(key=lambda pt: (pt[0], pt[1]))
+    n_total = len(exam_pts)
+    if n_total == 0:
+        return {"breakpoints": [], "answers": 0}
+
+    stack: List[List[Any]] = []
+    for p, _pid, y in exam_pts:
+        stack.append([float(y), 1, float(p)])
+        while len(stack) >= 2:
+            prev = stack[-2]
+            curr = stack[-1]
+            rate_prev = (prev[0] + 1.0) / (prev[1] + 2.0)
+            rate_curr = (curr[0] + 1.0) / (curr[1] + 2.0)
+            if rate_prev >= rate_curr:
+                prev[0] += curr[0]
+                prev[1] += curr[1]
+                prev[2] = max(prev[2], curr[2])
+                stack.pop()
+            else:
+                break
+
+    breakpoints = [[b[2], (b[0] + 1.0) / (b[1] + 2.0)] for b in stack]
+    return {"breakpoints": breakpoints, "answers": n_total}
+
+
+def calibrated(cal: Optional[Dict[str, Any]], p: float) -> float:
+    """The rate of the first breakpoint whose hi >= p; above the last one, the last rate."""
+    if not cal:
+        return p
+    bps = cal.get("breakpoints")
+    if not bps:
+        return p
+    for hi, rate in bps:
+        if p <= hi:
+            return rate
+    return bps[-1][1]

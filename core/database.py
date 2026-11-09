@@ -26,6 +26,14 @@ XRAY_WEIGHTS_DDL = """
     )
     """
 
+XRAY_CALIBRATION_DDL = """
+    CREATE TABLE IF NOT EXISTS xray_calibration (
+        weights_id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        calibration TEXT NOT NULL
+    )
+    """
+
 # X-Ray MyHome lookups (ADR 0003, ADR 0004). xray_jobs holds what the Worker queued for the
 # GitHub Actions job (kind "phone" or "listing"); xray_live_listings holds what it found. Live hits stay out of
 # `properties`, which decides whether a scraped listing is new: a row there is never alerted.
@@ -130,6 +138,7 @@ XRAY_TABLES_DDL = (
     )
     """,
     XRAY_WEIGHTS_DDL,
+    XRAY_CALIBRATION_DDL,
 )
 
 # Columns added after the X-Ray tables first shipped. CREATE TABLE IF NOT EXISTS never adds a

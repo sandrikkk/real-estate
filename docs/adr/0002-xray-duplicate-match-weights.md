@@ -53,6 +53,7 @@ flowchart LR
   - dedup groups photos without looking at the floor, so the photo groups are independent evidence for it: EM's floor-equal m must sit inside their 95% Wilson interval, or the week does not count. A loose pool once taught EM "look-alike flats" (λ = 0.156, floor-equal m = 0.17 against the photos' 0.98); this check stops that.
   - Until a challenger passes, nothing changes for users. The weekly summary shows the disagreements: this is the shadow mode.
 - **Thresholds.** A pair is a "possible duplicate" when its posterior is above one half (`🤔 შესაძლოა იგივე ბინაა`). A stricter "match" tier, if any, is set from the exam in the change that turns the scorer on. No threshold is typed in by hand.
+- **Calibration.** Each run fits an isotonic (PAV) map from a weights version's raw posterior to the admin's answered rate (Laplace +1 per block) and stores it in D1 xray_calibration for both the active weights and the new candidate. The Worker shows and decides on the calibrated rate (shown when above one half, with the floor-and-area guard). The gate still uses the raw posterior, so calibration never grades itself. On 2026-11-10 raw 0.75–0.85 calibrated to 62% and raw 0.37–0.75 to 39%.
 - **Delivery.**
   - Each run writes one row to D1 `xray_weights` with:
     - its version (`w-<ISO week>`);

@@ -35,13 +35,14 @@ function runVector(fn, args) {
     case "levels": return JSON.parse(JSON.stringify(w.xrayPairLevels(args[0], args[1], 1)));
     case "levels_v2": return JSON.parse(JSON.stringify(w.xrayPairLevels(args[0], args[1], 2)));
     case "challenger": {
-      const p = w.workerChallengerPosterior(sampleWeights, ...args);
-      return p === null ? null : Math.round(p * 1e6) / 1e6;
+      const v = w.workerChallengerPosterior(sampleWeights, ...args);
+      return v === null ? null : Math.round((v.raw !== undefined ? v.raw : v) * 1e6) / 1e6;
     }
     case "challenger_v2": {
-      const p = w.workerChallengerPosterior(sampleWeightsV2, ...args);
-      return p === null ? null : Math.round(p * 1e6) / 1e6;
+      const v = w.workerChallengerPosterior(sampleWeightsV2, ...args);
+      return v === null ? null : Math.round((v.raw !== undefined ? v.raw : v) * 1e6) / 1e6;
     }
+    case "calibrated": return w.xrayCalibrated(...args);
     default: throw new Error(`unknown vector function: ${fn}`);
   }
 }
