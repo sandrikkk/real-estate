@@ -169,7 +169,7 @@ class TestXrayReview(unittest.TestCase):
             picks3 = xr.pick_review_pairs(fixture, weights, counts["pools"], set(), week)
             uncertain_picks = [p for p in picks3 if p["origin"] == "review_uncertain"]
             picked_from_same_3 = [p for p in uncertain_picks if p["key"] in same_3_keys]
-            self.assertEqual(len(picked_from_same_3), 1)
+            self.assertEqual(len(picked_from_same_3), 3)
             self.assertEqual(picked_from_same_3[0]["kind_pairs"], 3)
 
             # Case C: a kind where champion says yes and one where champion says no are separate kinds
@@ -756,6 +756,57 @@ class TestXrayReview(unittest.TestCase):
         caption = xr.review_caption(10, 10, a, b)
         self.assertLessEqual(len(caption), 1024)
         self.assertIn("ზედა რიგი: ა", caption)
+
+    def test_13_round_robin(self):
+        # 1. Round-robin. With 3 disagreement kinds of sizes 5, 3 and 1 and n_uncertain=6:
+        # the kinds of the picks, in order, are [k5, k3, k1, k5, k3, k5]; all keys are distinct.
+        k5_pattern = ("equal", "equal", "agree", "agree", "agree")
+        k3_pattern = ("close", "equal", "agree", "agree", "agree")
+        k1_pattern = ("equal", "close", "agree", "agree", "agree")
+
+        k5 = (k5_pattern, True)
+        k3 = (k3_pattern, False)
+        k1 = (k1_pattern, True)
+
+        items = []
+        for i in range(1, 6):
+            items.append(
+                xr.PoolItem(
+                    f"k5_{i}", {"id": f"a_5_{i}"}, {"id": f"b_5_{i}"}, 0.1, True, k5_pattern
+                )
+            )
+        for i in range(1, 4):
+            items.append(
+                xr.PoolItem(
+                    f"k3_{i}", {"id": f"a_3_{i}"}, {"id": f"b_3_{i}"}, 0.9, False, k3_pattern
+                )
+            )
+        items.append(xr.PoolItem("k1_1", {"id": "a_1_1"}, {"id": "b_1_1"}, 0.2, True, k1_pattern))
+
+        with unittest.mock.patch("core.xray_review._pool", return_value=iter(items)):
+            picks = xr.pick_review_pairs(
+                [], {}, {"close_area": {}}, set(), "2026-W46", n_uncertain=6, n_random=0
+            )
+
+        self.assertEqual(len(picks), 6)
+
+        kind_sequence = []
+        for p in picks:
+            matching = next(x for x in items if x.key == p["key"])
+            kind_sequence.append((matching.levels, matching.champ))
+
+        self.assertEqual(kind_sequence, [k5, k3, k1, k5, k3, k5])
+
+        keys = [p["key"] for p in picks]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_14_zero_uncertain_and_zero_random(self):
+        # 2. n_uncertain=0, n_random=0 gives [], and iter_block_pairs is not called (patch it to raise).
+        with unittest.mock.patch(
+            "core.xray_review.iter_block_pairs", side_effect=RuntimeError("must not be called")
+        ):
+            picks = xr.pick_review_pairs([], {}, {}, set(), "2026-W46", n_uncertain=0, n_random=0)
+            self.assertEqual(picks, [])
 
 
 if __name__ == "__main__":

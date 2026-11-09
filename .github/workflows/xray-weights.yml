@@ -7,6 +7,13 @@ on:
   schedule:
     - cron: "0 3 * * 1"
   workflow_dispatch:
+    inputs:
+      review_uncertain:
+        description: "Pairs where the two rules disagree (weekly default 5; a sprint e.g. 30; 0 = summary only)"
+        default: "5"
+      review_random:
+        description: "Random pairs (weekly default 5; a sprint e.g. 10; 0 = summary only)"
+        default: "5"
 
 permissions:
   contents: read
@@ -41,7 +48,9 @@ jobs:
           CLOUDFLARE_SYNC_KEY: ${{ secrets.CLOUDFLARE_SYNC_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python scripts/estimate_xray_weights.py --out-dir out
+          REVIEW_UNCERTAIN: ${{ inputs.review_uncertain }}
+          REVIEW_RANDOM: ${{ inputs.review_random }}
+        run: python scripts/estimate_xray_weights.py --out-dir out --review-uncertain "${REVIEW_UNCERTAIN:-5}" --review-random "${REVIEW_RANDOM:-5}"
 
       - name: Keep the run's files
         if: always()
