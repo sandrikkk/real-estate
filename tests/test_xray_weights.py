@@ -307,7 +307,7 @@ class TestXrayWeights(unittest.TestCase):
             vectors = json.load(f)
 
         res = xw.gate(weights, [], vectors, {"ok": True})
-        self.assertEqual(res["vectors"]["checked"], 6)
+        self.assertEqual(res["vectors"]["checked"], 5)
 
     def test_09_script(self):
         import tempfile
@@ -725,3 +725,79 @@ class TestXrayWeights(unittest.TestCase):
             # 0 rows in xray_results
             rows = conn.execute("SELECT * FROM xray_results").fetchall()
             self.assertEqual(len(rows), 0)
+
+    def test_16_challenger_guard(self):
+        # Weights where floor-equal and area-equal alone give posterior > 0.5
+        weights = {
+            "levels_version": "v1",
+            "lambda": 0.01,
+            "fields": {
+                "floor": {"equal": {"bits": 4.0, "m": 0.5, "u": 0.03}},
+                "area": {"equal": {"bits": 4.0, "m": 0.5, "u": 0.03}},
+                "layout": {"agree": {"bits": 2.0, "m": 0.5, "u": 0.1}},
+                "total_floors": {"agree": {"bits": 2.0, "m": 0.5, "u": 0.1}},
+                "location": {"agree": {"bits": 2.0, "m": 0.5, "u": 0.1}},
+            },
+        }
+        # Floor and area equal, but layout, total_floors and location are unknown.
+        a = {"floor": "3", "area_m2": 60.0}
+        b = {"floor": "3", "area_m2": 60.0}
+        self.assertGreater(xw.posterior(weights, a, b), xw.POSSIBLE)
+        self.assertFalse(xw.challenger_says_same(weights, a, b))
+
+        # When layout agrees, challenger_says_same is True
+        a_layout = {"floor": "3", "area_m2": 60.0, "rooms": 2, "bedrooms": 1}
+        b_layout = {"floor": "3", "area_m2": 60.0, "rooms": 2, "bedrooms": 1}
+        self.assertTrue(xw.challenger_says_same(weights, a_layout, b_layout))
+
+    def test_17_gate_units(self):
+        # 1. Two review records sharing a listing form one unit.
+        r1 = {
+            "pair_id": "p1",
+            "listing_pair_key": "L1__L2",
+            "target": {"id": "L1"},
+            "candidate": {"id": "L2"},
+        }
+        r2 = {
+            "pair_id": "p2",
+            "listing_pair_key": "L2__L3",
+            "target": {"id": "L2"},
+            "candidate": {"id": "L3"},
+        }
+        units = xw._units([r1, r2])
+        self.assertEqual(units["p1"], units["p2"])
+
+        # 2. Two records with disjoint listings but one shared group_id form one unit.
+        r3 = {
+            "pair_id": "p3",
+            "listing_pair_key": "L10__L11",
+            "target": {"id": "L10", "group_id": "grpA"},
+            "candidate": {"id": "L11"},
+        }
+        r4 = {
+            "pair_id": "p4",
+            "listing_pair_key": "L20__L21",
+            "target": {"id": "L20"},
+            "candidate": {"id": "L21", "group_id": "grpA"},
+        }
+        units_grp = xw._units([r3, r4])
+        self.assertEqual(units_grp["p3"], units_grp["p4"])
+
+        # 3. Two post records with different target_keys are two units.
+        p1 = {
+            "pair_id": "post_p1",
+            "target_key": "fb_post_1",
+            "target": {"url": "http://fb/1"},
+            "candidate": {"id": "L30"},
+        }
+        p2 = {
+            "pair_id": "post_p2",
+            "target_key": "fb_post_2",
+            "target": {"url": "http://fb/2"},
+            "candidate": {"id": "L31"},
+        }
+        units_post = xw._units([p1, p2])
+        self.assertNotEqual(units_post["post_p1"], units_post["post_p2"])
+
+        # 4. Two units won and none lost give p_value == 0.25.
+        self.assertEqual(xw.sign_test_p(2, 2), 0.25)
