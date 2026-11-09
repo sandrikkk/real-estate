@@ -39,7 +39,8 @@
     "area_m2": 72
    }
   ],
-  "expected": false
+  "expected": false,
+  "gate": true
  },
  {
   "name": "matches: floor and area alone are not enough",
@@ -58,7 +59,8 @@
     "area_m2": 72
    }
   ],
-  "expected": false
+  "expected": false,
+  "gate": true
  },
  {
   "name": "matches: a different floor rejects",
@@ -79,7 +81,8 @@
     "area_m2": 72
    }
   ],
-  "expected": false
+  "expected": false,
+  "gate": true
  },
  {
   "name": "matches: a different room count rejects",
@@ -100,7 +103,8 @@
     "area_m2": 72
    }
   ],
-  "expected": false
+  "expected": false,
+  "gate": true
  },
  {
   "name": "matches: total floors 3 apart reject",
@@ -123,7 +127,8 @@
     "total_floors": 12
    }
   ],
-  "expected": false
+  "expected": false,
+  "gate": true
  },
  {
   "name": "matches: total floors 1 apart are unknown and rooms still agree",
@@ -209,7 +214,8 @@
     "price_usd": 92000
    }
   ],
-  "expected": false
+  "expected": false,
+  "gate": true
  },
  {
   "name": "layout: equal rooms agree",

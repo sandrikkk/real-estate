@@ -11,6 +11,21 @@ from typing import Dict, Optional, Set
 from config import settings
 from core.models import DistrictPriceStats, PropertyListing
 
+# One row per weekly run of scripts/estimate_xray_weights.py (ADR 0002). status is "candidate"
+# or "passed"; nothing reads the weights until a later change turns the scorer on.
+XRAY_WEIGHTS_DDL = """
+    CREATE TABLE IF NOT EXISTS xray_weights (
+        id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        weights TEXT NOT NULL,
+        thresholds TEXT NOT NULL,
+        counts TEXT NOT NULL,
+        labels_hash TEXT NOT NULL,
+        report TEXT NOT NULL
+    )
+    """
+
 # X-Ray MyHome lookups (ADR 0003, ADR 0004). xray_jobs holds what the Worker queued for the
 # GitHub Actions job (kind "phone" or "listing"); xray_live_listings holds what it found. Live hits stay out of
 # `properties`, which decides whether a scraped listing is new: a row there is never alerted.
@@ -114,6 +129,7 @@ XRAY_TABLES_DDL = (
         created_at TEXT NOT NULL
     )
     """,
+    XRAY_WEIGHTS_DDL,
 )
 
 # Columns added after the X-Ray tables first shipped. CREATE TABLE IF NOT EXISTS never adds a
