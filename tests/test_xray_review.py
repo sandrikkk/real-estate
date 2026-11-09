@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import contextlib
+import hashlib
 import io
 import json
 import sqlite3
@@ -759,7 +761,8 @@ class TestXrayReview(unittest.TestCase):
 
     def test_13_round_robin(self):
         # 1. Round-robin. With 3 disagreement kinds of sizes 5, 3 and 1 and n_uncertain=6:
-        # the kinds of the picks, in order, are [k5, k3, k1, k5, k3, k5]; all keys are distinct.
+        # _round_robin asserts the exact order [k5, k3, k1, k5, k3, k5];
+        # pick_review_pairs asserts Counter == {k5: 3, k3: 2, k1: 1} and distinct keys.
         k5_pattern = ("equal", "equal", "agree", "agree", "agree")
         k3_pattern = ("close", "equal", "agree", "agree", "agree")
         k1_pattern = ("equal", "close", "agree", "agree", "agree")
@@ -768,34 +771,41 @@ class TestXrayReview(unittest.TestCase):
         k3 = (k3_pattern, False)
         k1 = (k1_pattern, True)
 
-        items = []
-        for i in range(1, 6):
-            items.append(
-                xr.PoolItem(
-                    f"k5_{i}", {"id": f"a_5_{i}"}, {"id": f"b_5_{i}"}, 0.1, True, k5_pattern
-                )
-            )
-        for i in range(1, 4):
-            items.append(
-                xr.PoolItem(
-                    f"k3_{i}", {"id": f"a_3_{i}"}, {"id": f"b_3_{i}"}, 0.9, False, k3_pattern
-                )
-            )
-        items.append(xr.PoolItem("k1_1", {"id": "a_1_1"}, {"id": "b_1_1"}, 0.2, True, k1_pattern))
+        items_k5 = [
+            xr.PoolItem(f"k5_{i}", {"id": f"a_5_{i}"}, {"id": f"b_5_{i}"}, 0.1, True, k5_pattern)
+            for i in range(1, 6)
+        ]
+        items_k3 = [
+            xr.PoolItem(f"k3_{i}", {"id": f"a_3_{i}"}, {"id": f"b_3_{i}"}, 0.9, False, k3_pattern)
+            for i in range(1, 4)
+        ]
+        items_k1 = [xr.PoolItem("k1_1", {"id": "a_1_1"}, {"id": "b_1_1"}, 0.2, True, k1_pattern)]
+        all_items = items_k5 + items_k3 + items_k1
 
-        with unittest.mock.patch("core.xray_review._pool", return_value=iter(items)):
+        # Test _round_robin directly: order [k5, k3, k1, k5, k3, k5]
+        sorted_kinds = [
+            (k5, {"count": 5, "items": [(0.0, x) for x in items_k5]}),
+            (k3, {"count": 3, "items": [(0.0, x) for x in items_k3]}),
+            (k1, {"count": 1, "items": [(0.0, x) for x in items_k1]}),
+        ]
+        rr_picks = xr._round_robin(sorted_kinds, 6)
+        rr_kinds = [(item.levels, item.champ) for item, _count in rr_picks]
+        self.assertEqual(rr_kinds, [k5, k3, k1, k5, k3, k5])
+
+        # pick_review_pairs shuffles with sha256, so assert multiset
+        with unittest.mock.patch("core.xray_review._pool", return_value=iter(all_items)):
             picks = xr.pick_review_pairs(
                 [], {}, {"close_area": {}}, set(), "2026-W46", n_uncertain=6, n_random=0
             )
 
         self.assertEqual(len(picks), 6)
 
-        kind_sequence = []
+        kind_counts = Counter()
         for p in picks:
-            matching = next(x for x in items if x.key == p["key"])
-            kind_sequence.append((matching.levels, matching.champ))
+            matching = next(x for x in all_items if x.key == p["key"])
+            kind_counts[(matching.levels, matching.champ)] += 1
 
-        self.assertEqual(kind_sequence, [k5, k3, k1, k5, k3, k5])
+        self.assertEqual(kind_counts, Counter({k5: 3, k3: 2, k1: 1}))
 
         keys = [p["key"] for p in picks]
         self.assertEqual(len(keys), len(set(keys)))
@@ -807,6 +817,30 @@ class TestXrayReview(unittest.TestCase):
         ):
             picks = xr.pick_review_pairs([], {}, {}, set(), "2026-W46", n_uncertain=0, n_random=0)
             self.assertEqual(picks, [])
+
+    def test_15_blind_order(self):
+        # Sprint-sized call (n_uncertain=6, n_random=4) returns keys ordered by sha256(f"{week}:o:{key}")
+        fixture = self._make_synthetic_fixture()
+        counts = count_pairs(fixture)
+        groups = group_pairs(fixture)
+        weights, _ = estimate(counts, groups)
+        week = "2026-W46"
+
+        picks = xr.pick_review_pairs(
+            fixture, weights, counts["pools"], set(), week, n_uncertain=6, n_random=4
+        )
+        self.assertEqual(len(picks), 10)
+
+        keys = [p["key"] for p in picks]
+        expected_keys = sorted(
+            keys,
+            key=lambda k: hashlib.sha256(f"{week}:o:{k}".encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(keys, expected_keys)
+
+        origins = [p["origin"] for p in picks]
+        uncertain_then_random = sorted(origins, key=lambda o: 0 if o == "review_uncertain" else 1)
+        self.assertNotEqual(origins, uncertain_then_random)
 
 
 if __name__ == "__main__":

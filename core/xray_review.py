@@ -243,6 +243,32 @@ def _pool(
         yield PoolItem(key, a, b, post, champ, levels)
 
 
+def _round_robin(
+    sorted_kinds: List[Tuple[Any, Dict[str, Any]]], n: int
+) -> List[Tuple[PoolItem, int]]:
+    """Return up to n items round-robin across kinds (ordered by count descending).
+    Each returned tuple is (PoolItem, count)."""
+    picks: List[Tuple[PoolItem, int]] = []
+    if n <= 0:
+        return picks
+    round_idx = 0
+    while len(picks) < n:
+        added_any = False
+        for _kind, data in sorted_kinds:
+            items = data.get("items", [])
+            if round_idx < len(items):
+                raw = items[round_idx]
+                item = raw[1] if isinstance(raw, (list, tuple)) else raw
+                picks.append((item, data.get("count", len(items))))
+                added_any = True
+                if len(picks) == n:
+                    break
+        if not added_any:
+            break
+        round_idx += 1
+    return picks
+
+
 def pick_review_pairs(
     listings: List[Dict[str, Any]],
     weights: Dict[str, Any],
@@ -319,32 +345,20 @@ def pick_review_pairs(
     sorted_kinds = sorted(kinds.items(), key=lambda item: (-item[1]["count"], str(item[0])))
     uncertain_picks: List[Dict[str, Any]] = []
     if n_uncertain > 0:
-        round_idx = 0
-        while len(uncertain_picks) < n_uncertain:
-            added_any = False
-            for _kind, data in sorted_kinds:
-                items = data["items"]
-                if round_idx < len(items):
-                    item = items[round_idx][1]
-                    uncertain_picks.append(
-                        {
-                            "a": item.a,
-                            "b": item.b,
-                            "key": item.key,
-                            "origin": "review_uncertain",
-                            "posterior": item.post,
-                            "champion": item.champ,
-                            "kind_pairs": data["count"],
-                            "q": None,
-                            "pool": N,
-                        }
-                    )
-                    added_any = True
-                    if len(uncertain_picks) == n_uncertain:
-                        break
-            if not added_any:
-                break
-            round_idx += 1
+        for item, count in _round_robin(sorted_kinds, n_uncertain):
+            uncertain_picks.append(
+                {
+                    "a": item.a,
+                    "b": item.b,
+                    "key": item.key,
+                    "origin": "review_uncertain",
+                    "posterior": item.post,
+                    "champion": item.champ,
+                    "kind_pairs": count,
+                    "q": None,
+                    "pool": N,
+                }
+            )
 
         if len(uncertain_picks) < n_uncertain:
             needed = n_uncertain - len(uncertain_picks)
@@ -387,6 +401,7 @@ def pick_review_pairs(
                 break
 
     all_picks = uncertain_picks + random_picks
+    all_picks.sort(key=lambda p: hashlib.sha256(f"{week}:o:{p['key']}".encode("utf-8")).hexdigest())
     return all_picks
 
 
