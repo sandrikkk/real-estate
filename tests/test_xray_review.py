@@ -122,9 +122,14 @@ class TestXrayReview(unittest.TestCase):
         pool_items = list(xr._pool(fixture, weights, set(), post_by_pattern))
         self.assertGreaterEqual(len(pool_items), 10)
 
-        # Find 2 pairs with DIFFERENT levels patterns
+        # Find 2 pairs with DIFFERENT levels patterns and disjoint listings
         p1 = pool_items[0]
-        p2 = next(item for item in pool_items[1:] if item.levels != p1.levels)
+        p2 = next(
+            item
+            for item in pool_items[1:]
+            if item.levels != p1.levels
+            and not ({item.a["id"], item.b["id"]} & {p1.a["id"], p1.b["id"]})
+        )
 
         orig_champ = xr._candidate_matches_target
         try:
@@ -155,8 +160,22 @@ class TestXrayReview(unittest.TestCase):
             for item in pool_items:
                 by_pat[item.levels].append(item)
 
-            pat_3 = next(items for items in by_pat.values() if len(items) >= 3)
-            same_3 = pat_3[:3]
+            same_3 = None
+            for pat, items in by_pat.items():
+                disjoint = []
+                seen_ids = set()
+                for it in items:
+                    ids = {it.a["id"], it.b["id"]}
+                    if not (seen_ids & ids):
+                        disjoint.append(it)
+                        seen_ids.update(ids)
+                    if len(disjoint) == 3:
+                        break
+                if len(disjoint) == 3:
+                    same_3 = disjoint
+                    break
+
+            self.assertIsNotNone(same_3)
             same_3_keys = {item.key for item in same_3}
 
             def mock_champ_3_same(a, b):
@@ -841,6 +860,75 @@ class TestXrayReview(unittest.TestCase):
         origins = [p["origin"] for p in picks]
         uncertain_then_random = sorted(origins, key=lambda o: 0 if o == "review_uncertain" else 1)
         self.assertNotEqual(origins, uncertain_then_random)
+
+    def test_16_sampler_no_repeated_photos(self):
+        fixture = self._make_synthetic_fixture()
+        # Set identical group_id on two listings in fixture: vake_1 and vake_2
+        fixture[0]["group_id"] = "shared_group_xyz"
+        fixture[1]["group_id"] = "shared_group_xyz"
+
+        counts = count_pairs(fixture)
+        groups = group_pairs(fixture)
+        weights, _ = estimate(counts, groups)
+        week = "2026-W46"
+
+        # 1. A pair whose listings share group_id is never picked
+        picks = xr.pick_review_pairs(
+            fixture, weights, counts["pools"], set(), week, n_uncertain=10, n_random=10
+        )
+        for p in picks:
+            g_a = p["a"].get("group_id")
+            g_b = p["b"].get("group_id")
+            self.assertFalse(g_a and g_b and g_a == g_b, f"Pair {p['key']} shares group_id {g_a}")
+
+        # 2. A listing present in an existing review row is never picked
+        class MockConn:
+            def execute(self, sql, params=()):
+                class MockRow:
+                    def __init__(self, t, c):
+                        self.t = json.dumps(t)
+                        self.c = json.dumps(c)
+
+                    def __getitem__(self, item):
+                        if item == "target":
+                            return self.t
+                        if item == "candidates":
+                            return self.c
+                        raise KeyError(item)
+
+                class MockCursor:
+                    def fetchall(self):
+                        return [MockRow({"id": "vake_3"}, [{"id": "vake_99"}])]
+
+                return MockCursor()
+
+        seen_pairs, seen_listings = xr.seen_review_items(MockConn(), [])
+        self.assertIn("vake_3", seen_listings)
+
+        picks_with_seen = xr.pick_review_pairs(
+            fixture,
+            weights,
+            counts["pools"],
+            seen_pairs,
+            week,
+            n_uncertain=6,
+            n_random=4,
+            seen_listing_ids=seen_listings,
+        )
+        for p in picks_with_seen:
+            self.assertNotEqual(str(p["a"]["id"]), "vake_3")
+            self.assertNotEqual(str(p["b"]["id"]), "vake_3")
+
+        # 3. In one sprint-sized call (n_uncertain=6, n_random=4) no listing id appears twice
+        picks_sprint = xr.pick_review_pairs(
+            fixture, weights, counts["pools"], set(), week, n_uncertain=6, n_random=4
+        )
+        listing_ids = []
+        for p in picks_sprint:
+            listing_ids.append(str(p["a"]["id"]))
+            listing_ids.append(str(p["b"]["id"]))
+        self.assertEqual(len(listing_ids), len(set(listing_ids)))
+        self.assertEqual(len(set(listing_ids)), 2 * len(picks_sprint))
 
 
 if __name__ == "__main__":

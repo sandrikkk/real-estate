@@ -500,8 +500,8 @@ def log_odds(weights: Dict[str, Any], levels: Tuple[str, ...]) -> float:
     return math.log(lam / (1 - lam)) + bits * math.log(2)
 
 
-def posterior(weights: Dict[str, Any], a: Dict[str, Any], b: Dict[str, Any]) -> float:
-    z = log_odds(weights, pair_levels(a, b))
+def _posterior_from_levels(weights: Dict[str, Any], levels: Tuple[str, ...]) -> float:
+    z = log_odds(weights, levels)
     if z <= -700:
         return 0.0
     if z >= 700:
@@ -509,8 +509,19 @@ def posterior(weights: Dict[str, Any], a: Dict[str, Any], b: Dict[str, Any]) -> 
     return 1.0 / (1.0 + math.exp(-z))
 
 
+def posterior(weights: Dict[str, Any], a: Dict[str, Any], b: Dict[str, Any]) -> float:
+    return _posterior_from_levels(weights, pair_levels(a, b))
+
+
 def challenger_says_same(weights: Dict[str, Any], a: Dict[str, Any], b: Dict[str, Any]) -> bool:
-    return posterior(weights, a, b) > POSSIBLE
+    """Posterior above one half, and (§5.5, kept by the admin on 2026-11-10) at least one fact
+    beyond floor and area agrees: floor and area alone fit many unrelated flats."""
+    levels = pair_levels(a, b)
+    return _posterior_from_levels(weights, levels) > POSSIBLE and "agree" in (
+        levels[2],
+        levels[3],
+        levels[4],
+    )
 
 
 def sign_test_p(wins: int, n: int) -> float:
@@ -518,20 +529,97 @@ def sign_test_p(wins: int, n: int) -> float:
     return sum(math.comb(n, k) for k in range(wins, n + 1)) / (2**n) if n else 1.0
 
 
+def _units(records: List[Dict[str, Any]]) -> Dict[str, str]:
+    """Union-find mapping each record's pair_id to its unit string.
+
+    Nodes: 'L:<listing id>' and 'G:<group_id>'.
+    A record with listing_pair_key: union its two listing ids, and union each listing
+    with 'G:'+group_id when target.get('group_id') or candidate.get('group_id') is non-empty.
+    A record without listing_pair_key (a post reply): its unit is 'R:'+target_key.
+    The unit of a listing record is the root of its first listing.
+    """
+    parent: Dict[str, str] = {}
+
+    def find(x: str) -> str:
+        if x not in parent:
+            parent[x] = x
+            return x
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+
+    def union(x: str, y: str) -> None:
+        rx = find(x)
+        ry = find(y)
+        if rx != ry:
+            if rx < ry:
+                parent[ry] = rx
+            else:
+                parent[rx] = ry
+
+    for r in records:
+        if r.get("listing_pair_key"):
+            t = r.get("target") or {}
+            c = r.get("candidate") or {}
+            t_id = str(t.get("id") or r.get("target_key") or "").strip()
+            c_id = str(c.get("id") or "").strip()
+            if t_id and c_id:
+                u_t = f"L:{t_id}"
+                u_c = f"L:{c_id}"
+                union(u_t, u_c)
+                t_grp = str(t.get("group_id") or "").strip()
+                if t_grp:
+                    union(u_t, f"G:{t_grp}")
+                c_grp = str(c.get("group_id") or "").strip()
+                if c_grp:
+                    union(u_c, f"G:{c_grp}")
+            elif t_id:
+                u_t = f"L:{t_id}"
+                t_grp = str(t.get("group_id") or "").strip()
+                if t_grp:
+                    union(u_t, f"G:{t_grp}")
+
+    unit_map: Dict[str, str] = {}
+    for r in records:
+        pid = r.get("pair_id")
+        if not pid:
+            continue
+        if r.get("listing_pair_key"):
+            t = r.get("target") or {}
+            t_id = str(t.get("id") or r.get("target_key") or "").strip()
+            unit_map[pid] = find(f"L:{t_id}") if t_id else f"P:{pid}"
+        else:
+            t_key = str(r.get("target_key") or pid)
+            unit_map[pid] = f"R:{t_key}"
+
+    return unit_map
+
+
+def _unit_sign(
+    records_with_disagreement: List[Tuple[Dict[str, Any], bool, bool, bool]],
+    unit_of: Any,
+) -> Tuple[int, int, int]:
+    """(units won, units lost, ties): a unit wins when the challenger is right on more of
+    its disagreeing pairs than the champion, loses in the opposite case.
+    """
+    by_unit: Dict[str, List[int]] = defaultdict(lambda: [0, 0])
+    for r, champion, challenger, truth in records_with_disagreement:
+        if callable(unit_of):
+            u = unit_of(r)
+        elif isinstance(unit_of, dict):
+            u = unit_of.get(r.get("pair_id", ""), str(r.get("target_key", "")))
+        else:
+            u = str(r.get("target_key", ""))
+        by_unit[u][0 if challenger == truth else 1] += 1
+    won = sum(1 for w, lst in by_unit.values() if w > lst)
+    lost = sum(1 for w, lst in by_unit.values() if lst > w)
+    return won, lost, len(by_unit) - won - lost
+
+
 def _reply_sign(
     records_with_disagreement: List[Tuple[Dict[str, Any], bool, bool, bool]],
 ) -> Tuple[int, int, int]:
-    """(replies won, replies lost, ties): a reply wins when the challenger is right on more of
-    its disagreeing pairs than the champion, loses in the opposite case. Candidates under one
-    reply share its target, so a reply, not a pair, is one independent answer."""
-    by_reply: Dict[Any, List[int]] = defaultdict(
-        lambda: [0, 0]
-    )  # target_key -> [challenger right, champion right]
-    for r, champion, challenger, truth in records_with_disagreement:
-        by_reply[r["target_key"]][0 if challenger == truth else 1] += 1
-    won = sum(1 for w, lst in by_reply.values() if w > lst)
-    lost = sum(1 for w, lst in by_reply.values() if lst > w)
-    return won, lost, len(by_reply) - won - lost
+    return _unit_sign(records_with_disagreement, lambda r: r.get("target_key", ""))
 
 
 def gate(
@@ -628,6 +716,8 @@ def gate(
 
     disagreement_pairs.sort(key=lambda d: str(d["pair_id"]))
 
+    unit_map = _units([x["record"] for x in evaluated])
+
     def calc_stratum(items: List[Dict[str, Any]]) -> Dict[str, Any]:
         disagreements = sum(1 for x in items if x["disagrees"])
         wins = sum(1 for x in items if x["disagrees"] and x["challenger"] == x["truth"])
@@ -640,7 +730,7 @@ def gate(
             for x in items
             if x["disagrees"]
         ]
-        rep_won, rep_lost, rep_tied = _reply_sign(disagreeing)
+        rep_won, rep_lost, rep_tied = _unit_sign(disagreeing, unit_map)
         rep_total = rep_won + rep_lost + rep_tied
         p_val = sign_test_p(rep_won, rep_won + rep_lost)
 
@@ -681,6 +771,7 @@ def gate(
     passed = bool(check_a and check_b and check_c and check_d and check_e)
 
     return {
+        "unit": "independent flat (listings joined by shared listings and photo groups) or X-Ray reply",
         "exam": exam_stats,
         "all": all_stats,
         "post": post_stats,

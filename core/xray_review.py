@@ -161,8 +161,11 @@ def pair_key(a_id: Any, b_id: Any) -> str:
     return "__".join(sorted([str(a_id), str(b_id)]))
 
 
-def seen_pair_keys(conn: Any, records: List[Dict[str, Any]]) -> Set[str]:
-    seen: Set[str] = {r["listing_pair_key"] for r in records if r.get("listing_pair_key")}
+def seen_review_items(conn: Any, records: List[Dict[str, Any]]) -> Tuple[Set[str], Set[str]]:
+    """(seen_pairs, seen_listings): pairs already in golden records or sent for review,
+    and listing IDs already sent for review (target or candidates[0])."""
+    seen_pairs: Set[str] = {r["listing_pair_key"] for r in records if r.get("listing_pair_key")}
+    seen_listings: Set[str] = set()
     try:
         rows = conn.execute(
             "SELECT target, candidates FROM xray_results WHERE kind IN ('review_uncertain', 'review_random')"
@@ -175,13 +178,29 @@ def seen_pair_keys(conn: Any, records: List[Dict[str, Any]]) -> Set[str]:
                     if isinstance(r["candidates"], str)
                     else (r["candidates"] or [])
                 )
-                if t.get("id") and cands and cands[0].get("id"):
-                    seen.add(pair_key(t["id"], cands[0]["id"]))
+                t_id = t.get("id")
+                c_id = cands[0].get("id") if (cands and isinstance(cands, list)) else None
+                if t_id:
+                    seen_listings.add(str(t_id))
+                if c_id:
+                    seen_listings.add(str(c_id))
+                if t_id and c_id:
+                    seen_pairs.add(pair_key(t_id, c_id))
             except Exception:
                 continue
     except Exception:
         pass
-    return seen
+    return seen_pairs, seen_listings
+
+
+def seen_pair_keys(conn: Any, records: List[Dict[str, Any]]) -> Set[str]:
+    pairs, _ = seen_review_items(conn, records)
+    return pairs
+
+
+def seen_listing_ids(conn: Any) -> Set[str]:
+    _, listings = seen_review_items(conn, [])
+    return listings
 
 
 def _hash01(text: str) -> float:
@@ -229,9 +248,19 @@ def _pool(
     weights: Dict[str, Any],
     exclude: Set[str],
     post_by_pattern: Dict[Tuple[str, ...], float],
+    seen_listing_ids: Optional[Set[str]] = None,
 ) -> Iterator[PoolItem]:
+    seen_ids = seen_listing_ids or set()
     for a, b, levels in iter_block_pairs(listings):
         if levels[1] not in ("equal", "close"):
+            continue
+        id_a = str(a.get("id") or "")
+        id_b = str(b.get("id") or "")
+        if id_a in seen_ids or id_b in seen_ids:
+            continue
+        g_a = str(a.get("group_id") or "").strip()
+        g_b = str(b.get("group_id") or "").strip()
+        if g_a and g_b and g_a == g_b:
             continue
         key = pair_key(a["id"], b["id"])
         if key in exclude:
@@ -244,28 +273,40 @@ def _pool(
 
 
 def _round_robin(
-    sorted_kinds: List[Tuple[Any, Dict[str, Any]]], n: int
+    sorted_kinds: List[Tuple[Any, Dict[str, Any]]],
+    n: int,
+    used_listing_ids: Optional[Set[str]] = None,
 ) -> List[Tuple[PoolItem, int]]:
     """Return up to n items round-robin across kinds (ordered by count descending).
-    Each returned tuple is (PoolItem, count)."""
+    Each returned tuple is (PoolItem, count). Skips a kind's item when either of its listing ids
+    is already in used_listing_ids, and takes that kind's following item."""
     picks: List[Tuple[PoolItem, int]] = []
     if n <= 0:
         return picks
-    round_idx = 0
+    used = used_listing_ids if used_listing_ids is not None else set()
+    cursors = [0] * len(sorted_kinds)
     while len(picks) < n:
         added_any = False
-        for _kind, data in sorted_kinds:
+        for k_idx, (_kind, data) in enumerate(sorted_kinds):
             items = data.get("items", [])
-            if round_idx < len(items):
-                raw = items[round_idx]
+            while cursors[k_idx] < len(items):
+                idx = cursors[k_idx]
+                cursors[k_idx] += 1
+                raw = items[idx]
                 item = raw[1] if isinstance(raw, (list, tuple)) else raw
+                id_a = str(item.a.get("id") or "")
+                id_b = str(item.b.get("id") or "")
+                if id_a in used or id_b in used:
+                    continue
                 picks.append((item, data.get("count", len(items))))
+                used.add(id_a)
+                used.add(id_b)
                 added_any = True
-                if len(picks) == n:
-                    break
+                break
+            if len(picks) == n:
+                break
         if not added_any:
             break
-        round_idx += 1
     return picks
 
 
@@ -277,6 +318,7 @@ def pick_review_pairs(
     week: str,
     n_uncertain: int = REVIEW_UNCERTAIN,
     n_random: int = REVIEW_RANDOM,
+    seen_listing_ids: Optional[Set[str]] = None,
 ) -> List[Dict[str, Any]]:
     if n_uncertain == 0 and n_random == 0:
         return []
@@ -298,7 +340,7 @@ def pick_review_pairs(
     fallback: List[Tuple[float, str, PoolItem]] = []
     rand: List[Tuple[float, str, PoolItem, float]] = []
 
-    for x in _pool(listings, weights, exclude, post_by_pattern):
+    for x in _pool(listings, weights, exclude, post_by_pattern, seen_listing_ids):
         is_disagree = x.champ != (x.post > POSSIBLE)
         u_hash = hashlib.sha256(f"{week}:u:{x.key}".encode("utf-8")).hexdigest()
 
@@ -309,7 +351,8 @@ def pick_review_pairs(
             else:
                 kinds[kind]["count"] += 1
                 items = kinds[kind]["items"]
-                if len(items) < n_uncertain:
+                cap = max(50, n_uncertain * 2)
+                if len(items) < cap:
                     items.append((u_hash, x))
                     items.sort(key=lambda t: t[0])
                 elif u_hash < items[-1][0]:
@@ -317,7 +360,8 @@ def pick_review_pairs(
                     items.sort(key=lambda t: t[0])
         elif n_uncertain > 0:
             fb_val = (abs(x.post - 0.5), u_hash)
-            if len(fallback) < n_uncertain:
+            cap_fb = max(100, n_uncertain * 3)
+            if len(fallback) < cap_fb:
                 fallback.append((fb_val[0], fb_val[1], x))
                 fallback.sort(key=lambda t: (t[0], t[1]))
             elif fb_val < (fallback[-1][0], fallback[-1][1]):
@@ -334,7 +378,7 @@ def pick_review_pairs(
 
             h01 = _hash01(f"{week}:r:{x.key}")
             es_key = -math.log(h01) / q_val
-            k_rand = n_random + n_uncertain
+            k_rand = max(100, (n_random + n_uncertain) * 4)
             if len(rand) < k_rand:
                 rand.append((es_key, x.key, x, q_val))
                 rand.sort(key=lambda t: t[0])
@@ -342,10 +386,11 @@ def pick_review_pairs(
                 rand[-1] = (es_key, x.key, x, q_val)
                 rand.sort(key=lambda t: t[0])
 
+    used_listing_ids: Set[str] = set()
     sorted_kinds = sorted(kinds.items(), key=lambda item: (-item[1]["count"], str(item[0])))
     uncertain_picks: List[Dict[str, Any]] = []
     if n_uncertain > 0:
-        for item, count in _round_robin(sorted_kinds, n_uncertain):
+        for item, count in _round_robin(sorted_kinds, n_uncertain, used_listing_ids):
             uncertain_picks.append(
                 {
                     "a": item.a,
@@ -361,8 +406,11 @@ def pick_review_pairs(
             )
 
         if len(uncertain_picks) < n_uncertain:
-            needed = n_uncertain - len(uncertain_picks)
-            for _, _, fb_item in fallback[:needed]:
+            for _, _, fb_item in fallback:
+                id_a = str(fb_item.a.get("id") or "")
+                id_b = str(fb_item.b.get("id") or "")
+                if id_a in used_listing_ids or id_b in used_listing_ids:
+                    continue
                 uncertain_picks.append(
                     {
                         "a": fb_item.a,
@@ -376,6 +424,10 @@ def pick_review_pairs(
                         "pool": N,
                     }
                 )
+                used_listing_ids.add(id_a)
+                used_listing_ids.add(id_b)
+                if len(uncertain_picks) == n_uncertain:
+                    break
 
     uncertain_keys = {p["key"] for p in uncertain_picks}
     random_picks: List[Dict[str, Any]] = []
@@ -383,6 +435,10 @@ def pick_review_pairs(
         rand.sort(key=lambda t: t[0])
         for _es_k, key, item, q_val in rand:
             if key in uncertain_keys:
+                continue
+            id_a = str(item.a.get("id") or "")
+            id_b = str(item.b.get("id") or "")
+            if id_a in used_listing_ids or id_b in used_listing_ids:
                 continue
             random_picks.append(
                 {
@@ -397,6 +453,8 @@ def pick_review_pairs(
                     "pool": N,
                 }
             )
+            used_listing_ids.add(id_a)
+            used_listing_ids.add(id_b)
             if len(random_picks) == n_random:
                 break
 

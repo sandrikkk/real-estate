@@ -27,7 +27,7 @@ from core.xray_review import (  # noqa: E402
     load_photo_urls,
     photo_downloader,
     pick_review_pairs,
-    seen_pair_keys,
+    seen_review_items,
     send_review,
 )
 from core.xray_weights import (  # noqa: E402
@@ -121,7 +121,7 @@ def summary_text(
         replies_won = report.get("all", {}).get("replies_won", 0)
         replies_lost = report.get("all", {}).get("replies_lost", 0)
         lines.append(
-            f"ძველი და ახალი წესი {disagreements} წყვილზე არ ეთანხმება ({replies} X-Ray პასუხში): ახალი მართალია {replies_won} პასუხში, ძველი {replies_lost}-ში."
+            f"ძველი და ახალი წესი {disagreements} წყვილზე არ ეთანხმება ({replies} დამოუკიდებელ ბინაში): ახალი მართალია {replies_won}-ში, ძველი {replies_lost}-ში."
         )
 
     if not report.get("photo_floor", {}).get("ok", True):
@@ -208,14 +208,16 @@ def run(
         encoding="utf-8",
     )
 
+    seen_pairs, seen_listings = seen_review_items(conn, records)
     picks = pick_review_pairs(
         listings,
         weights,
         counts.get("pools", {}),
-        seen_pair_keys(conn, records),
+        seen_pairs,
         week,
         n_uncertain=review_uncertain,
         n_random=review_random,
+        seen_listing_ids=seen_listings,
     )
     clean_picks = [
         {
