@@ -15,6 +15,9 @@ const vectors = JSON.parse(
 const sampleWeights = JSON.parse(
   fs.readFileSync(path.join(repoRoot, "tests", "fixtures", "xray_weights_sample.json"), "utf8")
 );
+const sampleWeightsV2 = JSON.parse(
+  fs.readFileSync(path.join(repoRoot, "tests", "fixtures", "xray_weights_sample_v2.json"), "utf8")
+);
 
 function runVector(fn, args) {
   switch (fn) {
@@ -29,9 +32,14 @@ function runVector(fn, args) {
       return { is_broker: v.isBroker, badge: v.badge, reason: v.reason };
     }
     case "snapshot": return JSON.parse(JSON.stringify(w.xrayResultCandidate(...args)));
-    case "levels": return JSON.parse(JSON.stringify(w.xrayPairLevels(...args)));
+    case "levels": return JSON.parse(JSON.stringify(w.xrayPairLevels(args[0], args[1], 1)));
+    case "levels_v2": return JSON.parse(JSON.stringify(w.xrayPairLevels(args[0], args[1], 2)));
     case "challenger": {
       const p = w.workerChallengerPosterior(sampleWeights, ...args);
+      return p === null ? null : Math.round(p * 1e6) / 1e6;
+    }
+    case "challenger_v2": {
+      const p = w.workerChallengerPosterior(sampleWeightsV2, ...args);
       return p === null ? null : Math.round(p * 1e6) / 1e6;
     }
     default: throw new Error(`unknown vector function: ${fn}`);

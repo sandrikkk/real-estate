@@ -10,6 +10,9 @@ const w = loadWorker();
 const sampleWeights = JSON.parse(
   fs.readFileSync(path.join(repoRoot, "tests", "fixtures", "xray_weights_sample.json"), "utf8")
 );
+const sampleWeightsV2 = JSON.parse(
+  fs.readFileSync(path.join(repoRoot, "tests", "fixtures", "xray_weights_sample_v2.json"), "utf8")
+);
 
 const CHAT = 123;
 const PHONE = "555000111";
@@ -128,7 +131,7 @@ await test("3. invalid weights: fallback to §5.5 rule without confidence percen
   const calls = serveNetwork();
   const invalidWeightsRoute = [
     /FROM xray_weights WHERE status = 'passed'/,
-    () => [{ id: "w-bad", weights: JSON.stringify({ levels_version: 2 }) }]
+    () => [{ id: "w-bad", weights: JSON.stringify({ levels_version: 3 }) }]
   ];
   const db = recordingD1([invalidWeightsRoute, dupRoute]);
   await webhook(env(db), message(POST));
@@ -213,4 +216,36 @@ await test("7. saved snapshot carries xray_posterior and xray_weights", async ()
   assert.equal(candidates[0].xray_weights, "w-2026-W46");
   assert.equal(typeof candidates[0].xray_posterior, "number");
   assert.equal(Math.round(candidates[0].xray_posterior * 100), 86);
+});
+
+await test("8. v2 weights from D1: loads v2 row and shows 76% on 9.0 pair (lower than v1)", async () => {
+  w.resetXRayWeightsCache();
+  const calls = serveNetwork();
+  const passedV2Route = [
+    /FROM xray_weights WHERE status = 'passed'/,
+    () => [{ id: sampleWeightsV2.id, weights: JSON.stringify(sampleWeightsV2) }]
+  ];
+  const target9 = { district: "გლდანი", rooms: 3, bedrooms: 2, floor: "8", total_floors: 10, area_m2: 50 };
+  const cand9 = {
+    id: "ss_ge_9", source: "ss_ge", url: "https://home.ss.ge/ka/udzravi-qoneba/9",
+    district: "გლდანი", street: "შენგელია რ. ქ. 7", rooms: 3, bedrooms: 2, floor: "8", total_floors: 9, area_m2: 50, price_usd: 60000,
+    is_owner: true, phone_number: "599111444"
+  };
+  const dup9Route = [
+    /FROM properties WHERE district IN/,
+    () => [cand9]
+  ];
+  const post9 = "იყიდება 3-ოთახიანი ბინა გლდანში, 50 მ², 8/10 სართული, $60,000. დარეკეთ: " + PHONE;
+  const db = recordingD1([passedV2Route, dup9Route]);
+  await webhook(env(db), message(post9));
+  const reply = telegram(calls, "sendMessage").find(c => c.body.text.includes("რენტგენი"));
+  assert.ok(reply, "reply sent");
+  assert.ok(reply.body.text.includes("სავარაუდოდ 76%"), "includes v2 confidence percent 76%");
+  assert.ok(reply.body.text.includes(cand9.url), "includes duplicate");
+
+  const p1 = w.workerChallengerPosterior(sampleWeights, target9, cand9);
+  const p2 = w.workerChallengerPosterior(sampleWeightsV2, target9, cand9);
+  assert.equal(Math.round(p1 * 1e6) / 1e6, 0.853746);
+  assert.equal(Math.round(p2 * 1e6) / 1e6, 0.762542);
+  assert.ok(p2 < p1, "v2 posterior is lower than v1");
 });
