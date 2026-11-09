@@ -815,5 +815,469 @@
    "area_m2": 50.5,
    "url": null
   }
+ },
+ {
+  "name": "levels: another micro-district rejects",
+  "fn": "levels",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - III მ/რ",
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": [
+   "equal",
+   "equal",
+   "agree",
+   "unknown",
+   "conflict"
+  ]
+ },
+ {
+  "name": "challenger: another micro-district rejects",
+  "fn": "challenger",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - III მ/რ",
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": 0.67879
+ },
+ {
+  "name": "levels: floor and area alone are not enough",
+  "fn": "levels",
+  "args": [
+   {
+    "district": "გლდანი",
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "",
+    "rooms": null,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": [
+   "equal",
+   "equal",
+   "unknown",
+   "unknown",
+   "unknown"
+  ]
+ },
+ {
+  "name": "challenger: floor and area alone are not enough",
+  "fn": "challenger",
+  "args": [
+   {
+    "district": "გლდანი",
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "",
+    "rooms": null,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": null
+ },
+ {
+  "name": "levels: a different floor rejects",
+  "fn": "levels",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 3,
+    "floor": "5",
+    "area_m2": 72
+   }
+  ],
+  "expected": [
+   "further",
+   "equal",
+   "agree",
+   "unknown",
+   "agree"
+  ]
+ },
+ {
+  "name": "challenger: a different floor rejects",
+  "fn": "challenger",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 3,
+    "floor": "5",
+    "area_m2": 72
+   }
+  ],
+  "expected": null
+ },
+ {
+  "name": "levels: a different room count rejects",
+  "fn": "levels",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 4,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": [
+   "equal",
+   "equal",
+   "conflict",
+   "unknown",
+   "agree"
+  ]
+ },
+ {
+  "name": "challenger: a different room count rejects",
+  "fn": "challenger",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 4,
+    "floor": "1",
+    "area_m2": 72
+   }
+  ],
+  "expected": null
+ },
+ {
+  "name": "levels: total floors 3 apart reject",
+  "fn": "levels",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72,
+    "total_floors": 9
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72,
+    "total_floors": 12
+   }
+  ],
+  "expected": [
+   "equal",
+   "equal",
+   "agree",
+   "conflict",
+   "agree"
+  ]
+ },
+ {
+  "name": "challenger: total floors 3 apart reject",
+  "fn": "challenger",
+  "args": [
+   {
+    "district": "გლდანი",
+    "micro": 6,
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72,
+    "total_floors": 9
+   },
+   {
+    "district": "გლდანი",
+    "street": "გლდანი - VI მ/რ",
+    "rooms": 3,
+    "floor": "1",
+    "area_m2": 72,
+    "total_floors": 12
+   }
+  ],
+  "expected": null
+ },
+ {
+  "name": "levels: the Temqa post is not the Nadzaladevi flat (incident 2026-11-06)",
+  "fn": "levels",
+  "args": [
+   {
+    "district": "თემქა",
+    "micro": 3,
+    "floor": "1",
+    "rooms": 2,
+    "bedrooms": 1,
+    "area_m2": 62,
+    "total_floors": 8,
+    "price_usd": 79000
+   },
+   {
+    "district": "ნაძალადევი",
+    "street": "ზედაზნის ქ. 6",
+    "floor": "1",
+    "rooms": 4,
+    "bedrooms": 3,
+    "area_m2": 63,
+    "total_floors": 12,
+    "price_usd": 92000
+   }
+  ],
+  "expected": [
+   "equal",
+   "close",
+   "conflict",
+   "conflict",
+   "unknown"
+  ]
+ },
+ {
+  "name": "challenger: the Temqa post is not the Nadzaladevi flat (incident 2026-11-06)",
+  "fn": "challenger",
+  "args": [
+   {
+    "district": "თემქა",
+    "micro": 3,
+    "floor": "1",
+    "rooms": 2,
+    "bedrooms": 1,
+    "area_m2": 62,
+    "total_floors": 8,
+    "price_usd": 79000
+   },
+   {
+    "district": "ნაძალადევი",
+    "street": "ზედაზნის ქ. 6",
+    "floor": "1",
+    "rooms": 4,
+    "bedrooms": 3,
+    "area_m2": 63,
+    "total_floors": 12,
+    "price_usd": 92000
+   }
+  ],
+  "expected": null
+ },
+ {
+  "name": "levels: all agree",
+  "fn": "levels",
+  "args": [
+   {
+    "district": "ვაკე",
+    "floor": "3",
+    "area_m2": 55,
+    "rooms": 3,
+    "total_floors": 9
+   },
+   {
+    "district": "ვაკე",
+    "floor": "3",
+    "area_m2": 55.4,
+    "rooms": 3,
+    "total_floors": 9
+   }
+  ],
+  "expected": [
+   "equal",
+   "equal",
+   "agree",
+   "agree",
+   "unknown"
+  ]
+ },
+ {
+  "name": "challenger: all agree",
+  "fn": "challenger",
+  "args": [
+   {
+    "district": "ვაკე",
+    "floor": "3",
+    "area_m2": 55,
+    "rooms": 3,
+    "total_floors": 9
+   },
+   {
+    "district": "ვაკე",
+    "floor": "3",
+    "area_m2": 55.4,
+    "rooms": 3,
+    "total_floors": 9
+   }
+  ],
+  "expected": 0.979429
+ },
+ {
+  "name": "levels: neighbour floor",
+  "fn": "levels",
+  "args": [
+   {
+    "district": "ვაკე",
+    "floor": "3",
+    "area_m2": 55,
+    "rooms": 3,
+    "total_floors": 9
+   },
+   {
+    "district": "ვაკე",
+    "floor": "4",
+    "area_m2": 55.4,
+    "rooms": 3,
+    "total_floors": 9
+   }
+  ],
+  "expected": [
+   "off_by_one",
+   "equal",
+   "agree",
+   "agree",
+   "unknown"
+  ]
+ },
+ {
+  "name": "challenger: neighbour floor",
+  "fn": "challenger",
+  "args": [
+   {
+    "district": "ვაკე",
+    "floor": "3",
+    "area_m2": 55,
+    "rooms": 3,
+    "total_floors": 9
+   },
+   {
+    "district": "ვაკე",
+    "floor": "4",
+    "area_m2": 55.4,
+    "rooms": 3,
+    "total_floors": 9
+   }
+  ],
+  "expected": null
+ },
+ {
+  "name": "levels: floor and area only",
+  "fn": "levels",
+  "args": [
+   {
+    "floor": "3",
+    "area_m2": 55
+   },
+   {
+    "floor": "3",
+    "area_m2": 55
+   }
+  ],
+  "expected": [
+   "equal",
+   "equal",
+   "unknown",
+   "unknown",
+   "unknown"
+  ]
+ },
+ {
+  "name": "challenger: floor and area only",
+  "fn": "challenger",
+  "args": [
+   {
+    "floor": "3",
+    "area_m2": 55
+   },
+   {
+    "floor": "3",
+    "area_m2": 55
+   }
+  ],
+  "expected": null
+ },
+ {
+  "name": "levels: floor strings 5a and 5",
+  "fn": "levels",
+  "args": [
+   {
+    "floor": "5a"
+   },
+   {
+    "floor": "5"
+   }
+  ],
+  "expected": [
+   "unknown",
+   "unknown",
+   "unknown",
+   "unknown",
+   "unknown"
+  ]
+ },
+ {
+  "name": "challenger: floor strings 5a and 5",
+  "fn": "challenger",
+  "args": [
+   {
+    "floor": "5a"
+   },
+   {
+    "floor": "5"
+   }
+  ],
+  "expected": null
  }
 ]

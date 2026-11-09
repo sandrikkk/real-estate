@@ -27,6 +27,10 @@ from core.xray import (
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 with open(os.path.join(REPO, "tests", "fixtures", "xray_rule_vectors.json"), encoding="utf-8") as f:
     VECTORS = json.load(f)
+with open(
+    os.path.join(REPO, "tests", "fixtures", "xray_weights_sample.json"), encoding="utf-8"
+) as f:
+    SAMPLE_WEIGHTS = json.load(f)
 
 
 def run_vector(fn, args):
@@ -45,6 +49,16 @@ def run_vector(fn, args):
         return {k: verdict[k] for k in ("is_broker", "badge", "reason")}
     if fn == "snapshot":
         return snapshot_fields(*args)
+    if fn == "levels":
+        from core.xray_weights import pair_levels
+
+        return list(pair_levels(*args))
+    if fn == "challenger":
+        from core.xray_weights import challenger_says_same, posterior
+
+        if not challenger_says_same(SAMPLE_WEIGHTS, *args):
+            return None
+        return round(posterior(SAMPLE_WEIGHTS, *args), 6)
     raise AssertionError(f"unknown vector function: {fn}")
 
 

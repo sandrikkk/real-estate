@@ -8,6 +8,7 @@ from core.database import DatabaseEngine
 from core.district_prices import parse_price_table
 from core.models import PropertyListing
 from core.xray import (
+    find_exact_duplicates,
     parse_xray_input,
     run_xray_on_db,
 )
@@ -27,6 +28,8 @@ def _make_listing(
     author_id: str = "u1",
     author_listings_count: int = 1,
     group_id: str = None,
+    street: str = None,
+    total_floors: int = None,
 ) -> PropertyListing:
     return PropertyListing(
         id=f"{source}_{source_id}",
@@ -41,8 +44,10 @@ def _make_listing(
         price_per_m2=round(price_usd / area_m2, 2) if area_m2 else 1000.0,
         area_m2=area_m2,
         floor=floor,
+        total_floors=total_floors,
         rooms=rooms,
         district=district,
+        street=street,
         city="თბილისი",
         description=f"Test listing {source_id}",
         image_urls=["https://example.com/1.jpg"],
@@ -1117,6 +1122,68 @@ class TestXRayFalseDuplicateIncident(unittest.TestCase):
         )
         self.assertEqual(unknown["is_owner"], 0)
         self.assertEqual(unknown["phone_number"], "+995 555 00 00 02")
+
+    def test_find_exact_duplicates_with_weights_and_fallback(self):
+        target = {
+            "id": "myhome_t",
+            "district": "გლდანი",
+            "micro": 6,
+            "floor": "1",
+            "area_m2": 72.0,
+            "rooms": 3,
+            "total_floors": 9,
+            "price_usd": 60000.0,
+            "deal_type": "sale",
+        }
+        cand_agree = _make_listing(
+            "cand_1",
+            source="ss_ge",
+            price_usd=60000.0,
+            area_m2=72.0,
+            district="გლდანი",
+            street="გლდანი - VI მ/რ",
+            floor="1",
+            rooms=3,
+            total_floors=9,
+        )
+        cand_only_fa = _make_listing(
+            "cand_2",
+            source="ss_ge",
+            price_usd=60000.0,
+            area_m2=72.0,
+            district="გლდანი",
+            street="",
+            floor="1",
+            rooms=None,
+        )
+        self.db.save_listings_batch([cand_agree, cand_only_fa])
+
+        sample_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "tests",
+            "fixtures",
+            "xray_weights_sample.json",
+        )
+        with open(sample_path, encoding="utf-8") as f:
+            sample_weights = json.load(f)
+
+        import sqlite3
+
+        conn = sqlite3.connect(self.db.db_path)
+        try:
+            dups_scored = find_exact_duplicates(conn, target, weights=sample_weights)
+            self.assertEqual(len(dups_scored), 1)
+            self.assertEqual(dups_scored[0]["id"], "ss_ge_cand_1")
+            self.assertIn("xray_posterior", dups_scored[0])
+            self.assertGreater(dups_scored[0]["xray_posterior"], 0.5)
+            self.assertEqual(dups_scored[0]["xray_weights"], "w-2026-W46")
+
+            dups_fallback = find_exact_duplicates(conn, target, weights=None)
+            self.assertEqual(len(dups_fallback), 1)
+            self.assertEqual(dups_fallback[0]["id"], "ss_ge_cand_1")
+            self.assertNotIn("xray_posterior", dups_fallback[0])
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

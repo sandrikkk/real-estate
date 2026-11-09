@@ -10,6 +10,7 @@ they are the exam (`gate`). No number here is tuned by hand.
 from __future__ import annotations
 
 import math
+import re
 from collections import defaultdict
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -102,10 +103,13 @@ def floor_level(a: Dict[str, Any], b: Dict[str, Any]) -> str:
     fa, fb = _clean_floor(a.get("floor")), _clean_floor(b.get("floor"))
     if not fa or not fb:
         return UNKNOWN
-    try:
-        d = abs(int(fa) - int(fb))
-    except ValueError:
+
+    def _is_int(s: str) -> bool:
+        return bool(re.fullmatch(r"[+-]?\d+", s))
+
+    if not _is_int(fa) or not _is_int(fb):
         return "equal" if fa == fb else UNKNOWN
+    d = abs(int(fa) - int(fb))
     return "equal" if d == 0 else ("off_by_one" if d == 1 else "further")
 
 
@@ -522,6 +526,31 @@ def challenger_says_same(weights: Dict[str, Any], a: Dict[str, Any], b: Dict[str
         levels[3],
         levels[4],
     )
+
+
+def valid_weights(w: Any) -> bool:
+    """Twin of worker.js validXRayWeights."""
+    if not isinstance(w, dict):
+        return False
+    if w.get("levels_version") != 1:
+        return False
+    lam = w.get("lambda")
+    if not isinstance(lam, (int, float)) or not (0 < lam < 1):
+        return False
+    fields = w.get("fields")
+    if not isinstance(fields, dict):
+        return False
+    for f in FIELDS:
+        if f not in fields or not isinstance(fields[f], dict):
+            return False
+        for lvl in LEVELS[f]:
+            lvl_dict = fields[f].get(lvl)
+            if not isinstance(lvl_dict, dict):
+                return False
+            bits = lvl_dict.get("bits")
+            if not isinstance(bits, (int, float)) or not math.isfinite(bits):
+                return False
+    return True
 
 
 def sign_test_p(wins: int, n: int) -> float:

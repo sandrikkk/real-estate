@@ -760,7 +760,11 @@ def _candidate_matches_target(target: Dict[str, Any], cand: Dict[str, Any]) -> b
     return False
 
 
-def find_exact_duplicates(conn: sqlite3.Connection, target: Dict[str, Any]) -> List[Dict[str, Any]]:
+def find_exact_duplicates(
+    conn: sqlite3.Connection,
+    target: Dict[str, Any],
+    weights: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     target_id = target.get("id") or ""
@@ -777,6 +781,7 @@ def find_exact_duplicates(conn: sqlite3.Connection, target: Dict[str, Any]) -> L
         )
         for row in cur.fetchall():
             d = dict(row)
+            d["xray_photo_group"] = True
             candidates_by_id[d["id"]] = d
 
     if district and area_m2 and float(area_m2) > 0:
@@ -821,8 +826,17 @@ def find_exact_duplicates(conn: sqlite3.Connection, target: Dict[str, Any]) -> L
         cur.execute(" ".join(sql_parts), tuple(params))
         for row in cur.fetchall():
             d = dict(row)
-            if not _candidate_matches_target(target, d):
+            if weights:
+                from core.xray_weights import challenger_says_same, posterior
+
+                if not challenger_says_same(weights, target, d):
+                    continue
+                d["xray_posterior"] = posterior(weights, target, d)
+                d["xray_weights"] = weights.get("id")
+            elif not _candidate_matches_target(target, d):
                 continue
+            if d["id"] in candidates_by_id and candidates_by_id[d["id"]].get("xray_photo_group"):
+                d["xray_photo_group"] = True
             candidates_by_id[d["id"]] = d
 
     results = list(candidates_by_id.values())

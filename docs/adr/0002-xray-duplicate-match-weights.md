@@ -61,7 +61,7 @@ flowchart LR
     - the gate report;
     - a status of `candidate` or `passed`.
   - The run's files (golden pairs, weights, report; no phone numbers) are kept as a 90-day Actions artifact.
-  - A later change makes the Worker read the newest `passed` row once per isolate, with the §5.5 rule as the fallback, and log the version each reply used.
+  - Since 2026-11-10 the Worker reads the newest passed row once per isolate and filters the reply's duplicate lines with it (posterior above one half plus the §5.5 floor-and-area guard), showing " · სავარაუდოდ N%" on each line and " · იგივე ფოტოები" for a photo-group match. If no passed row exists or it cannot be read, the §5.5 rule decides. Each line's score and the weights version are saved with the candidate. The owner search switches next.
 
 ## Consequences
 
@@ -85,4 +85,5 @@ flowchart LR
 - [x] Keep the shown candidates' fields, add 🤷, build the golden pairs (`core/golden_pairs.py`).
 - [x] Add the D1 table `xray_weights`, `core/xray_weights.py`, `scripts/estimate_xray_weights.py` and `.github/workflows/xray-weights.yml` (estimation, gate, summary).
 - [x] The weekly review: pairs the bot did not choose, sent to the admin.
-- [ ] Turn the scorer on in `worker.js` and `core/xray.py` after the first `passed` row, with the §5.5 rule as the fallback, a parity test, and a rollback when the share of ❌ answers rises.
+- [x] Turn the scorer on in worker.js (duplicate lines)
+- [ ] Owner search (core/owner_search.py) uses the passed weights; rollback when the share of ❌ answers rises.
