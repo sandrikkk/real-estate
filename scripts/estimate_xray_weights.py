@@ -20,7 +20,12 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings  # noqa: E402
-from core.database import D1Client, D1Connection, XRAY_WEIGHTS_DDL  # noqa: E402
+from core.database import (  # noqa: E402
+    D1Client,
+    D1Connection,
+    XRAY_CALIBRATION_DDL,
+    XRAY_WEIGHTS_DDL,
+)
 from core.golden_pairs import build_golden_pairs, summarize, to_jsonl  # noqa: E402
 from core.xray_review import (  # noqa: E402
     collage,
@@ -31,6 +36,7 @@ from core.xray_review import (  # noqa: E402
     send_review,
 )
 from core.xray_weights import (  # noqa: E402
+    calibration,
     count_pairs,
     estimate,
     gate,
@@ -214,6 +220,11 @@ def run(
         champion = None
 
     report = gate(weights, records, vectors, em_report["photo_floor"], champion=champion)
+    calibrations: Dict[str, Any] = {}
+    if champion:
+        champ_id = champion.get("id") or "champion"
+        calibrations[champ_id] = calibration(champion, records)
+    calibrations[version] = calibration(weights, records)
     jsonl = to_jsonl(records)
     labels_hash = hashlib.sha256(jsonl.encode("utf-8")).hexdigest()
 
@@ -241,6 +252,10 @@ def run(
     )
     (out_path / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, sort_keys=True, indent=1) + "\n",
+        encoding="utf-8",
+    )
+    (out_path / "calibration.json").write_text(
+        json.dumps(calibrations, ensure_ascii=False, sort_keys=True, indent=1) + "\n",
         encoding="utf-8",
     )
 
@@ -316,6 +331,17 @@ def run(
                 report_json,
             ),
         )
+        conn.execute(XRAY_CALIBRATION_DDL)
+        for w_id, cal in calibrations.items():
+            cal_json = json.dumps(cal, ensure_ascii=False, sort_keys=True)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO xray_calibration
+                (weights_id, created_at, calibration)
+                VALUES (?, ?, ?)
+                """,
+                (w_id, created_at, cal_json),
+            )
         conn.commit()
 
         if send:

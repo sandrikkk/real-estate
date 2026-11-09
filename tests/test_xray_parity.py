@@ -73,6 +73,10 @@ def run_vector(fn, args):
         if not challenger_says_same(SAMPLE_WEIGHTS_V2, *args):
             return None
         return round(posterior(SAMPLE_WEIGHTS_V2, *args), 6)
+    if fn == "calibrated":
+        from core.xray_weights import calibrated
+
+        return calibrated(*args)
     raise AssertionError(f"unknown vector function: {fn}")
 
 

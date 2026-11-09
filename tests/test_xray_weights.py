@@ -987,3 +987,219 @@ class TestXrayWeights(unittest.TestCase):
             # Report used the active champion
             report_data = json.loads((out_dir / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(report_data["champion"], champ_id)
+
+    def test_22_calibration_pav(self):
+        weights = {"lambda": 0.01, "levels_version": 2, "fields": {}}
+        p_map = {
+            "p1": 0.1,
+            "p2": 0.2,
+            "p3": 0.3,
+            "p4": 0.4,
+            "p5": 0.5,
+            "p6": 0.6,
+            "p7": 0.7,
+            "p8": 0.8,
+        }
+        orig_post = xw.posterior
+        try:
+            xw.posterior = lambda w, t, c: p_map[t["pair_id"]]
+            recs = [
+                {
+                    "pair_id": "p1",
+                    "snapshot": "present",
+                    "label": 0,
+                    "target": {"pair_id": "p1"},
+                    "candidate": {"pair_id": "p1"},
+                },
+                {
+                    "pair_id": "p2",
+                    "snapshot": "present",
+                    "label": 0,
+                    "target": {"pair_id": "p2"},
+                    "candidate": {"pair_id": "p2"},
+                },
+                {
+                    "pair_id": "p3",
+                    "snapshot": "present",
+                    "label": 1,
+                    "target": {"pair_id": "p3"},
+                    "candidate": {"pair_id": "p3"},
+                },
+                {
+                    "pair_id": "p4",
+                    "snapshot": "present",
+                    "label": 0,
+                    "target": {"pair_id": "p4"},
+                    "candidate": {"pair_id": "p4"},
+                },
+                {
+                    "pair_id": "p5",
+                    "snapshot": "present",
+                    "label": 1,
+                    "target": {"pair_id": "p5"},
+                    "candidate": {"pair_id": "p5"},
+                },
+                {
+                    "pair_id": "p6",
+                    "snapshot": "present",
+                    "label": 1,
+                    "target": {"pair_id": "p6"},
+                    "candidate": {"pair_id": "p6"},
+                },
+                {
+                    "pair_id": "p7",
+                    "snapshot": "present",
+                    "label": 1,
+                    "target": {"pair_id": "p7"},
+                    "candidate": {"pair_id": "p7"},
+                },
+                {
+                    "pair_id": "p8",
+                    "snapshot": "present",
+                    "label": 1,
+                    "target": {"pair_id": "p8"},
+                    "candidate": {"pair_id": "p8"},
+                },
+            ]
+            cal1 = xw.calibration(weights, recs)
+            self.assertEqual(cal1["answers"], 8)
+            expected_bps = [
+                [0.2, 0.25],
+                [0.4, 0.5],
+                [0.8, 5.0 / 6.0],
+            ]
+            self.assertEqual(len(cal1["breakpoints"]), 3)
+            for (hi, rate), (exp_hi, exp_rate) in zip(cal1["breakpoints"], expected_bps):
+                self.assertAlmostEqual(hi, exp_hi)
+                self.assertAlmostEqual(rate, exp_rate)
+
+            # Identical output on second run
+            cal2 = xw.calibration(weights, recs)
+            self.assertEqual(cal1, cal2)
+
+            # Tie order by pair_id
+            recs_tie = [
+                {
+                    "pair_id": "pB",
+                    "snapshot": "present",
+                    "label": 1,
+                    "target": {"pair_id": "pB"},
+                    "candidate": {"pair_id": "pB"},
+                },
+                {
+                    "pair_id": "pA",
+                    "snapshot": "present",
+                    "label": 0,
+                    "target": {"pair_id": "pA"},
+                    "candidate": {"pair_id": "pA"},
+                },
+            ]
+            xw.posterior = lambda w, t, c: 0.5
+            cal_tie = xw.calibration(weights, recs_tie)
+            self.assertEqual(cal_tie["answers"], 2)
+            # pA (y=0, rate=1/3) sorted before pB (y=1, rate=2/3), so 1/3 < 2/3: 2 blocks
+            self.assertEqual(len(cal_tie["breakpoints"]), 2)
+            self.assertAlmostEqual(cal_tie["breakpoints"][0][1], 1.0 / 3.0)
+            self.assertAlmostEqual(cal_tie["breakpoints"][1][1], 2.0 / 3.0)
+        finally:
+            xw.posterior = orig_post
+
+    def test_23_script_writes_two_calibration_rows(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE properties (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                url TEXT,
+                district TEXT,
+                subdistrict TEXT,
+                street TEXT,
+                floor TEXT,
+                total_floors INTEGER,
+                rooms INTEGER,
+                bedrooms INTEGER,
+                area_m2 REAL,
+                price_usd REAL,
+                deal_type TEXT,
+                phone_number TEXT,
+                group_id TEXT
+            )
+        """)
+        for ddl in XRAY_TABLES_DDL:
+            conn.execute(ddl)
+
+        conn.execute("""
+            INSERT INTO properties (id, source, url, district, area_m2, floor, deal_type, price_usd, phone_number)
+            VALUES ('ss_ge_1', 'ss_ge', 'https://ss.ge/1', 'Vake', 55, '3', 'sale', 80000, '555000111')
+        """)
+        conn.commit()
+
+        sample_v2_path = (
+            Path(__file__).resolve().parent / "fixtures" / "xray_weights_sample_v2.json"
+        )
+        with open(sample_v2_path, encoding="utf-8") as f:
+            w2 = json.load(f)
+
+        champ_id = "w-2026-W46-20261109T030000Z"
+        conn.execute(
+            """
+            INSERT INTO xray_weights (id, created_at, status, weights, thresholds, counts, labels_hash, report)
+            VALUES (?, '2026-11-09T03:00:00Z', 'passed', ?, '{}', '{}', 'hash1', '{}')
+            """,
+            (champ_id, json.dumps(w2)),
+        )
+        conn.commit()
+
+        class FakeSettings:
+            TELEGRAM_CHAT_ID = "777"
+            TELEGRAM_BOT_TOKEN = "fake_token"
+            CLOUDFLARE_PROXY_URL = "http://fake"
+            CLOUDFLARE_SYNC_KEY = "fake_key"
+
+        now = datetime(2026, 11, 9, 4, 0, tzinfo=timezone.utc)
+        fake_send = MagicMock(return_value={"ok": True})
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir) / "out"
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                run(
+                    conn,
+                    FakeSettings(),
+                    now,
+                    fake_send,
+                    out_dir=str(out_dir),
+                    dry_run=False,
+                    review_uncertain=0,
+                    review_random=0,
+                )
+
+            # Live run writes 2 rows in xray_calibration: champion and challenger
+            cal_rows = conn.execute(
+                "SELECT weights_id FROM xray_calibration ORDER BY weights_id"
+            ).fetchall()
+            self.assertEqual(len(cal_rows), 2)
+            self.assertEqual(cal_rows[0]["weights_id"], champ_id)
+            self.assertEqual(cal_rows[1]["weights_id"], "w-2026-W46-20261109T040000Z")
+
+            # Dry run writes calibration.json and writes 0 new rows
+            dry_out = Path(tmp_dir) / "dry_out"
+            conn.execute("DELETE FROM xray_calibration")
+            conn.commit()
+            buf_dry = io.StringIO()
+            with contextlib.redirect_stdout(buf_dry):
+                run(
+                    conn,
+                    FakeSettings(),
+                    now,
+                    fake_send,
+                    out_dir=str(dry_out),
+                    dry_run=True,
+                    review_uncertain=0,
+                    review_random=0,
+                )
+            cal_json = json.loads((dry_out / "calibration.json").read_text(encoding="utf-8"))
+            self.assertIn(champ_id, cal_json)
+            self.assertIn("w-2026-W46-20261109T040000Z", cal_json)
+            self.assertEqual(len(conn.execute("SELECT * FROM xray_calibration").fetchall()), 0)

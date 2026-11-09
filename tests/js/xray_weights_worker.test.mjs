@@ -245,7 +245,76 @@ await test("8. v2 weights from D1: loads v2 row and shows 76% on 9.0 pair (lower
 
   const p1 = w.workerChallengerPosterior(sampleWeights, target9, cand9);
   const p2 = w.workerChallengerPosterior(sampleWeightsV2, target9, cand9);
-  assert.equal(Math.round(p1 * 1e6) / 1e6, 0.853746);
-  assert.equal(Math.round(p2 * 1e6) / 1e6, 0.762542);
-  assert.ok(p2 < p1, "v2 posterior is lower than v1");
+  assert.equal(Math.round((p1.shown || p1) * 1e6) / 1e6, 0.853746);
+  assert.equal(Math.round((p2.shown || p2) * 1e6) / 1e6, 0.762542);
+  assert.ok((p2.shown || p2) < (p1.shown || p1), "v2 posterior is lower than v1");
+});
+
+await test("9. with calibration row: pair at raw 0.854 shows 62%, pair at raw 0.68 is not shown", async () => {
+  w.resetXRayWeightsCache();
+  const calls = serveNetwork();
+  const calData = {
+    breakpoints: [
+      [0.70, 0.44],
+      [0.90, 0.62],
+      [0.99, 0.94]
+    ],
+    answers: 65
+  };
+  const passedWeightsRoute = [
+    /FROM xray_weights WHERE status = 'passed'/,
+    () => [{ id: "w-2026-W46", weights: JSON.stringify(sampleWeights) }]
+  ];
+  const calRoute = [
+    /FROM xray_calibration WHERE weights_id = \?/,
+    () => [{ calibration: JSON.stringify(calData) }]
+  ];
+  const cand1 = { ...DUP_AGREE, id: "ss_ge_cand1", url: "https://home.ss.ge/ka/udzravi-qoneba/cand1" };
+  const cand2 = {
+    id: "ss_ge_cand2", source: "ss_ge", url: "https://home.ss.ge/ka/udzravi-qoneba/cand2",
+    district: "გლდანი", street: "გლდანი - VII მ/რ", area_m2: 72, floor: "1", rooms: 3, price_usd: 60000,
+    is_owner: true, phone_number: "599111888"
+  };
+  const dupMultiRoute = [
+    /FROM properties WHERE district IN/,
+    () => [cand1, cand2]
+  ];
+
+  const db = recordingD1([passedWeightsRoute, calRoute, dupMultiRoute]);
+  await webhook(env(db), message(POST));
+  const reply = telegram(calls, "sendMessage").find(c => c.body.text.includes("რენტგენი"));
+  assert.ok(reply, "reply sent");
+  assert.ok(reply.body.text.includes("სავარაუდოდ 62%"), "cand1 calibrated to 62%");
+  assert.ok(reply.body.text.includes(cand1.url), "includes cand1");
+  assert.ok(!reply.body.text.includes(cand2.url), "rejects cand2 because calibrated rate 44% <= 50%");
+});
+
+await test("10. invalid calibration: ignored and falls back to raw weights", async () => {
+  w.resetXRayWeightsCache();
+  const calls = serveNetwork();
+  const invalidCalData = {
+    breakpoints: [
+      [0.70, 0.44],
+      [0.50, 0.62]
+    ],
+    answers: 65
+  };
+  const passedWeightsRoute = [
+    /FROM xray_weights WHERE status = 'passed'/,
+    () => [{ id: "w-2026-W46", weights: JSON.stringify(sampleWeights) }]
+  ];
+  const calRoute = [
+    /FROM xray_calibration WHERE weights_id = \?/,
+    () => [{ calibration: JSON.stringify(invalidCalData) }]
+  ];
+  const cand1 = { ...DUP_AGREE, id: "ss_ge_cand1" };
+  const dupRoute = [
+    /FROM properties WHERE district IN/,
+    () => [cand1]
+  ];
+  const db = recordingD1([passedWeightsRoute, calRoute, dupRoute]);
+  await webhook(env(db), message(POST));
+  const reply = telegram(calls, "sendMessage").find(c => c.body.text.includes("რენტგენი"));
+  assert.ok(reply, "reply sent");
+  assert.ok(reply.body.text.includes("სავარაუდოდ 86%"), "fallback to raw posterior (86%)");
 });

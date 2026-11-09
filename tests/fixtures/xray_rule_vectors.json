@@ -1797,5 +1797,180 @@
    }
   ],
   "expected": 0.762542
+ },
+ {
+  "name": "calibrated: below first breakpoint",
+  "fn": "calibrated",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.3,
+      0.2
+     ],
+     [
+      0.7,
+      0.5
+     ],
+     [
+      0.9,
+      0.85
+     ]
+    ],
+    "answers": 10
+   },
+   0.1
+  ],
+  "expected": 0.2
+ },
+ {
+  "name": "calibrated: exactly at first breakpoint",
+  "fn": "calibrated",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.3,
+      0.2
+     ],
+     [
+      0.7,
+      0.5
+     ],
+     [
+      0.9,
+      0.85
+     ]
+    ],
+    "answers": 10
+   },
+   0.3
+  ],
+  "expected": 0.2
+ },
+ {
+  "name": "calibrated: between first and second",
+  "fn": "calibrated",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.3,
+      0.2
+     ],
+     [
+      0.7,
+      0.5
+     ],
+     [
+      0.9,
+      0.85
+     ]
+    ],
+    "answers": 10
+   },
+   0.5
+  ],
+  "expected": 0.5
+ },
+ {
+  "name": "calibrated: exactly at second breakpoint",
+  "fn": "calibrated",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.3,
+      0.2
+     ],
+     [
+      0.7,
+      0.5
+     ],
+     [
+      0.9,
+      0.85
+     ]
+    ],
+    "answers": 10
+   },
+   0.7
+  ],
+  "expected": 0.5
+ },
+ {
+  "name": "calibrated: between second and third",
+  "fn": "calibrated",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.3,
+      0.2
+     ],
+     [
+      0.7,
+      0.5
+     ],
+     [
+      0.9,
+      0.85
+     ]
+    ],
+    "answers": 10
+   },
+   0.85
+  ],
+  "expected": 0.85
+ },
+ {
+  "name": "calibrated: exactly at last breakpoint",
+  "fn": "calibrated",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.3,
+      0.2
+     ],
+     [
+      0.7,
+      0.5
+     ],
+     [
+      0.9,
+      0.85
+     ]
+    ],
+    "answers": 10
+   },
+   0.9
+  ],
+  "expected": 0.85
+ },
+ {
+  "name": "calibrated: above last breakpoint",
+  "fn": "calibrated",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.3,
+      0.2
+     ],
+     [
+      0.7,
+      0.5
+     ],
+     [
+      0.9,
+      0.85
+     ]
+    ],
+    "answers": 10
+   },
+   0.99
+  ],
+  "expected": 0.85
  }
 ]

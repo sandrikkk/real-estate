@@ -1185,6 +1185,78 @@ class TestXRayFalseDuplicateIncident(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_find_exact_duplicates_with_calibration(self):
+        target = {
+            "id": "target_post",
+            "district": "გლდანი",
+            "area_m2": 72.0,
+            "floor": "1",
+            "rooms": 3,
+            "deal_type": "sale",
+        }
+        cand_agree = _make_listing(
+            "cand_cal_1",
+            source="ss_ge",
+            price_usd=60000.0,
+            area_m2=72.0,
+            district="გლდანი",
+            street="გლდანი - VI მ/რ",
+            floor="1",
+            rooms=3,
+            total_floors=9,
+        )
+        self.db.save_listings_batch([cand_agree])
+
+        sample_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "tests",
+            "fixtures",
+            "xray_weights_sample.json",
+        )
+        with open(sample_path, encoding="utf-8") as f:
+            sample_weights = json.load(f)
+
+        import sqlite3
+
+        conn = sqlite3.connect(self.db.db_path)
+        try:
+            # 1. Without calibration: raw posterior ~0.86
+            dups = find_exact_duplicates(conn, target, weights=sample_weights)
+            self.assertEqual(len(dups), 1)
+            raw_p = dups[0]["xray_posterior"]
+            self.assertAlmostEqual(raw_p, 0.8579, places=3)
+
+            # 2. With calibration that shifts 0.86 to 0.62: shown is 0.62, raw is saved
+            cal_weights = {
+                **sample_weights,
+                "calibration": {
+                    "breakpoints": [
+                        [0.70, 0.44],
+                        [0.90, 0.62],
+                    ],
+                    "answers": 50,
+                },
+            }
+            dups_cal = find_exact_duplicates(conn, target, weights=cal_weights)
+            self.assertEqual(len(dups_cal), 1)
+            self.assertAlmostEqual(dups_cal[0]["xray_posterior"], 0.62)
+            self.assertAlmostEqual(dups_cal[0]["xray_posterior_raw"], raw_p)
+
+            # 3. Calibration below 0.5: candidate is hidden
+            cal_low = {
+                **sample_weights,
+                "calibration": {
+                    "breakpoints": [
+                        [0.90, 0.45],
+                    ],
+                    "answers": 50,
+                },
+            }
+            dups_hidden = find_exact_duplicates(conn, target, weights=cal_low)
+            self.assertEqual(len(dups_hidden), 0)
+        finally:
+            conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

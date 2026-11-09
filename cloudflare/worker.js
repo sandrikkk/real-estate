@@ -2059,6 +2059,7 @@ function xrayResultCandidate(row) {
   if (!out.phone9 && row && row.phone_number) out.phone9 = String(row.phone_number);
   out.url = (row && row.url) || null;
   if (row && typeof row.xray_posterior === "number") out.xray_posterior = Math.round(row.xray_posterior * 10000) / 10000;
+  if (row && typeof row.xray_posterior_raw === "number") out.xray_posterior_raw = Math.round(row.xray_posterior_raw * 10000) / 10000;
   if (row && row.xray_weights) out.xray_weights = row.xray_weights;
   if (row && row.xray_photo_group) out.xray_photo_group = true;
   return out;
@@ -2403,12 +2404,33 @@ function xrayPosteriorFromLevels(weights, levels) {
   return z > -700 ? 1 / (1 + Math.exp(-z)) : 0;
 }
 
+function validXRayCalibration(cal) {
+  if (!cal || !Array.isArray(cal.breakpoints) || cal.breakpoints.length === 0) return false;
+  let prevHi = -Infinity;
+  for (const bp of cal.breakpoints) {
+    if (!Array.isArray(bp) || bp.length !== 2) return false;
+    const [hi, rate] = bp;
+    if (typeof hi !== "number" || typeof rate !== "number" || !Number.isFinite(hi) || !Number.isFinite(rate)) return false;
+    if (hi < 0 || hi > 1 || rate < 0 || rate > 1) return false;
+    if (hi < prevHi) return false;
+    prevHi = hi;
+  }
+  return true;
+}
+
+function xrayCalibrated(cal, p) {
+  for (const [hi, rate] of cal.breakpoints) if (p <= hi) return rate;
+  return cal.breakpoints[cal.breakpoints.length - 1][1];
+}
+
 // Posterior above one half, and (§5.5, kept by the admin on 2026-11-10) at least one fact beyond
 // floor and area agrees. Returns the posterior when the pair counts as the same flat, else null.
 function workerChallengerPosterior(weights, a, b) {
   const levels = xrayPairLevels(a, b, weights?.levels_version);
   const p = xrayPosteriorFromLevels(weights, levels);
-  return p > 0.5 && [levels[2], levels[3], levels[4]].includes("agree") ? p : null;
+  const guard = [levels[2], levels[3], levels[4]].includes("agree");
+  const shown = weights?.calibration ? xrayCalibrated(weights.calibration, p) : p;
+  return shown > 0.5 && guard ? { shown, raw: p } : null;
 }
 
 function validXRayWeights(w) {
@@ -2435,6 +2457,22 @@ async function activeXRayWeights(db) {
   } catch (err) {
     console.error("X-Ray weights load error:", err && err.message);
     return null;
+  }
+  if (XRAY_WEIGHTS && XRAY_WEIGHTS.id) {
+    try {
+      const calRow = await db
+        .prepare("SELECT calibration FROM xray_calibration WHERE weights_id = ?")
+        .bind(XRAY_WEIGHTS.id)
+        .first();
+      if (calRow && calRow.calibration) {
+        const cal = typeof calRow.calibration === "string" ? JSON.parse(calRow.calibration) : calRow.calibration;
+        if (validXRayCalibration(cal)) {
+          XRAY_WEIGHTS.calibration = cal;
+        }
+      }
+    } catch (err) {
+      console.error("X-Ray calibration load error:", err && err.message);
+    }
   }
   console.log(`X-Ray weights: ${XRAY_WEIGHTS ? XRAY_WEIGHTS.id : "none, §5.5 rule"}`);
   return XRAY_WEIGHTS;
@@ -2533,9 +2571,10 @@ async function queryWorkerExactDuplicates(db, target, limit = 25) {
     for (const r of results || []) {
       if (!r || !r.id) continue;
       if (weights) {
-        const p = workerChallengerPosterior(weights, target, r);
-        if (p === null) continue;
-        r.xray_posterior = p;
+        const v = workerChallengerPosterior(weights, target, r);
+        if (v === null) continue;
+        r.xray_posterior = v.shown;
+        r.xray_posterior_raw = v.raw;
         r.xray_weights = weights.id;
       } else if (!workerCandidateMatchesTarget(target, r)) {
         continue;
@@ -2790,6 +2829,7 @@ async function handleXRayQuery(text, env, opts = {}) {
         price_usd: parsed.price_usd || 0,
         area_m2: parsed.area_m2 || 0,
         district: parsed.district || "",
+        micro: parsed.micro || null,
         floor: parsed.floor || "",
         rooms: parsed.rooms || 0,
         bedrooms: parsed.bedrooms || null,
