@@ -323,6 +323,58 @@ class TestGoldenPairs(unittest.TestCase):
         s = summarize(records, 1)
         self.assertEqual(s["label"], {"-1": 1, "0": 2, "1": 2})
 
+    def test_phone_dup_candidate_uses_its_own_ref_as_target(self):
+        self.conn.execute(
+            """
+            INSERT INTO xray_results (id, chat_id, kind, target, candidates, owner_target_id, created_at)
+            VALUES (?, ?, ?, ?, ?, NULL, ?)
+            """,
+            (
+                "RP",
+                "777",
+                "phone_dup",
+                "{}",
+                json.dumps(
+                    [
+                        {
+                            "id": "myhome_1",
+                            "source": "myhome",
+                            "phone9": "555000111",
+                            "district": "გლდანი",
+                            "area_m2": 72,
+                            "_ref": {
+                                "id": "ss_ge_main",
+                                "source": "ss_ge",
+                                "phone9": "555000111",
+                                "district": "გლდანი",
+                                "area_m2": 72,
+                            },
+                        }
+                    ]
+                ),
+                "2026-11-11T10:00:00Z",
+            ),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO xray_feedback (job_id, candidate_id, chat_id, target_id, label, created_at)
+            VALUES (?, ?, ?, NULL, ?, ?)
+            """,
+            ("RP", "myhome_1", "777", 1, "2026-11-11T10:05:00Z"),
+        )
+        self.conn.commit()
+
+        records, _ = build_golden_pairs(self.conn, "777")
+        rec = next(r for r in records if r["pair_id"] == "RP__myhome_1")
+        self.assertEqual(rec["target"]["id"], "ss_ge_main")
+        self.assertEqual(rec["target_kind"], "listing")
+        self.assertEqual(rec["listing_pair_key"], "myhome_1__ss_ge_main")
+        self.assertNotIn("_ref", rec["candidate"])
+        self.assertNotIn("phone9", rec["target"])
+        self.assertEqual(rec["relations"]["same_phone"], "agree")
+        self.assertEqual(rec["reply_kind"], "phone_dup")
+        self.assertEqual(rec["snapshot"], "at_label")
+
 
 if __name__ == "__main__":
     unittest.main()
