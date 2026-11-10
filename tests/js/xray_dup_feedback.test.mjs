@@ -399,3 +399,21 @@ test("a phone report without duplicates has no ✅/❌ buttons and saves no resu
     goOffline();
   }
 });
+
+test("phone report: a hint under the header, and the └ listing is a link", async () => {
+  serveNetwork();
+  try {
+    const db = recordingD1([propPhoneRoute, photoGroupRoute, dupRouteForMain]);
+    const parsed = { formattedPhone: "599 11 12 22", phone9: "599111222", raw: "599111222", district: null };
+    const live = { mode: "fresh", full: false, rows: [] };
+    const reportText = await w.buildPhoneReport(db, parsed, live, null, {});
+    const lines = reportText.split("\n");
+    const h = lines.indexOf("🎯 <b>ამ ნომრის სხვა ბინები სხვაგანაც:</b>");
+    assert.ok(h >= 0, "section header present");
+    assert.equal(lines[h + 1], "ℹ️ ეს ამ ნომრის <b>სხვა</b> ბინებია, არა შენი პოსტი. ✅/❌: ზედა ხაზი და მის ქვეშ └ ერთი ბინაა?");
+    const refLink = `<a href="${agentListing.url}">$${agentListing.price_usd.toLocaleString()}</a>`;
+    assert.equal(reportText.split(refLink).length - 1, 2, "both └ lines link the seller's listing");
+  } finally {
+    goOffline();
+  }
+});

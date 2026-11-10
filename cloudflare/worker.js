@@ -2772,6 +2772,7 @@ async function buildPhoneReport(db, parsed, live, postTarget = null, collect = n
     await enrichDuplicatesIfNeeded(db, sortedPhoneDups.map(item => item.dup), 3);
     lines.push("");
     lines.push("🎯 <b>ამ ნომრის სხვა ბინები სხვაგანაც:</b>");
+    lines.push("ℹ️ ეს ამ ნომრის <b>სხვა</b> ბინებია, არა შენი პოსტი. ✅/❌: ზედა ხაზი და მის ქვეშ └ ერთი ბინაა?");
     for (const [i, { dup, refPrice, ref }] of sortedPhoneDups.slice(0, 4).entries()) {
       const dPrice = Math.round(Number(dup.price_usd) || 0);
       const dSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
@@ -2786,7 +2787,7 @@ async function buildPhoneReport(db, parsed, live, postTarget = null, collect = n
       }
       lines.push(`${i + 1}. <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}${dPhonePart}${duplicateSureness(dup)}`);
       const sameAs = dup.xray_tier === "maybe" ? "შესაძლოა იგივეა, რაც" : "იგივეა, რაც";
-      lines.push(`  └ ${sameAs} $${Math.round(Number(ref.price_usd) || 0).toLocaleString()} · ${Number(ref.area_m2) || "?"} მ²${ref.district ? ` (${ref.district})` : ""}`);
+      lines.push(`  └ ${sameAs} <a href="${ref.url || "#"}">$${Math.round(Number(ref.price_usd) || 0).toLocaleString()}</a> · ${Number(ref.area_m2) || "?"} მ²${ref.district ? ` (${ref.district})` : ""}`);
     }
     if (collect) {
       collect.duplicates = sortedPhoneDups.slice(0, 4).map(({ dup, ref }) => ({
