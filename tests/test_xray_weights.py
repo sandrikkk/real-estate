@@ -1073,36 +1073,164 @@ class TestXrayWeights(unittest.TestCase):
                 self.assertAlmostEqual(hi, exp_hi)
                 self.assertAlmostEqual(rate, exp_rate)
 
-            # Identical output on second run
-            cal2 = xw.calibration(weights, recs)
-            self.assertEqual(cal1, cal2)
+            # Shuffling records or renaming every pair_id gives identical output
+            import random
 
-            # Tie order by pair_id
-            recs_tie = [
+            recs_shuffled = list(recs)
+            random.Random(42).shuffle(recs_shuffled)
+            cal_shuffled = xw.calibration(weights, recs_shuffled)
+            self.assertEqual(cal1, cal_shuffled)
+
+            recs_renamed = [
                 {
-                    "pair_id": "pB",
-                    "snapshot": "present",
-                    "label": 1,
-                    "target": {"pair_id": "pB"},
-                    "candidate": {"pair_id": "pB"},
-                },
-                {
-                    "pair_id": "pA",
-                    "snapshot": "present",
-                    "label": 0,
-                    "target": {"pair_id": "pA"},
-                    "candidate": {"pair_id": "pA"},
-                },
+                    **r,
+                    "pair_id": f"renamed_{r['pair_id']}",
+                    "target": {"pair_id": r["pair_id"]},
+                    "candidate": {"pair_id": r["pair_id"]},
+                }
+                for r in recs
             ]
+            cal_renamed = xw.calibration(weights, recs_renamed)
+            self.assertEqual(cal1, cal_renamed)
+
+            # Two answers with one score and labels 1 and 0 form one group (ties pooled)
             xw.posterior = lambda w, t, c: 0.5
-            cal_tie = xw.calibration(weights, recs_tie)
-            self.assertEqual(cal_tie["answers"], 2)
-            # pA (y=0, rate=1/3) sorted before pB (y=1, rate=2/3), so 1/3 < 2/3: 2 blocks
-            self.assertEqual(len(cal_tie["breakpoints"]), 2)
-            self.assertAlmostEqual(cal_tie["breakpoints"][0][1], 1.0 / 3.0)
-            self.assertAlmostEqual(cal_tie["breakpoints"][1][1], 2.0 / 3.0)
+            recs_10 = [
+                {"pair_id": "a", "snapshot": "present", "label": 1, "target": {}, "candidate": {}},
+                {"pair_id": "b", "snapshot": "present", "label": 0, "target": {}, "candidate": {}},
+            ]
+            cal_10 = xw.calibration(weights, recs_10)
+            self.assertEqual(len(cal_10["breakpoints"]), 1)
+            self.assertEqual(cal_10["breakpoints"][0], [0.5, 0.5])
+            self.assertEqual(cal_10["blocks"][0], [0.5, 1, 2])
+
+            # No two breakpoints share a hi; hi values rounded to 6 decimals; rates never decrease
+            prev_hi = -1.0
+            prev_rate = -1.0
+            for hi, rate in cal1["breakpoints"]:
+                self.assertGreater(hi, prev_hi)
+                self.assertEqual(hi, round(hi, 6))
+                self.assertGreaterEqual(rate, prev_rate)
+                prev_hi = hi
+                prev_rate = rate
+
+            # A top block of 14/14 after a block of 7/13 gives sure_above = the 7/13 block's hi
+            recs_top14 = []
+            for i in range(13):
+                recs_top14.append(
+                    {
+                        "pair_id": f"m{i}",
+                        "snapshot": "present",
+                        "label": 1 if i < 7 else 0,
+                        "target": {"score": 0.853746},
+                    }
+                )
+            for i in range(14):
+                recs_top14.append(
+                    {
+                        "pair_id": f"s{i}",
+                        "snapshot": "present",
+                        "label": 1,
+                        "target": {"score": 0.979429},
+                    }
+                )
+            xw.posterior = lambda w, t, c: t.get("score") or 0.5
+            cal_top = xw.calibration(weights, recs_top14)
+            self.assertEqual(len(cal_top["blocks"]), 2)
+            self.assertEqual(cal_top["sure_above"], 0.853746)
+
+            # A top block of 2/2 (Wilson lower bound below one half) gives sure_above == 1.0
+            recs_22 = [
+                {"pair_id": "t1", "snapshot": "present", "label": 1, "target": {"score": 0.9}},
+                {"pair_id": "t2", "snapshot": "present", "label": 1, "target": {"score": 0.9}},
+            ]
+            cal_22 = xw.calibration(weights, recs_22)
+            self.assertEqual(cal_22["sure_above"], 1.0)
+
+            # No answers gives sure_above == 1.0
+            cal_empty = xw.calibration(weights, [])
+            self.assertEqual(
+                cal_empty, {"breakpoints": [], "blocks": [], "sure_above": 1.0, "answers": 0}
+            )
         finally:
             xw.posterior = orig_post
+
+    def test_24_shown_pair(self):
+        sample_path = Path(__file__).resolve().parent / "fixtures" / "xray_weights_sample.json"
+        with open(sample_path, encoding="utf-8") as f:
+            weights = json.load(f)
+
+        target = {"district": "გლდანი", "area_m2": 72, "floor": "1", "rooms": 3, "micro": 6}
+        cand_agree = {
+            "district": "გლდანი",
+            "street": "გლდანი - VI მ/რ",
+            "area_m2": 72,
+            "floor": "1",
+            "rooms": 3,
+        }
+        # cand_agree raw is ~0.8537
+        cal_low = {"breakpoints": [[0.90, 0.30]], "sure_above": 0.95}
+        w_cal = {**weights, "calibration": cal_low}
+        shown = xw.shown_pair(w_cal, target, cand_agree)
+        self.assertIsNotNone(shown)
+        self.assertEqual(shown["tier"], "maybe")
+        self.assertAlmostEqual(shown["shown"], 0.30)
+        self.assertAlmostEqual(shown["raw"], 0.8579, places=3)
+
+        # Pair with raw 0.45 is None (below 0.5)
+        cand_far = {
+            "district": "გლდანი",
+            "street": "გლდანი - VI მ/რ",
+            "area_m2": 50,
+            "floor": "1",
+            "rooms": 3,
+        }
+        self.assertIsNone(xw.shown_pair(w_cal, target, cand_far))
+
+        # Guard still applies: floor/area alone without other agreed facts is None
+        cand_fa_only = {
+            "district": "საბურთალო",
+            "street": "ვაჟა-ფშაველას გამზ.",
+            "area_m2": 72,
+            "floor": "1",
+            "rooms": None,
+        }
+        self.assertIsNone(xw.shown_pair(w_cal, target, cand_fa_only))
+
+    def test_25_tier_report(self):
+        sample_path = Path(__file__).resolve().parent / "fixtures" / "xray_weights_sample.json"
+        with open(sample_path, encoding="utf-8") as f:
+            weights = json.load(f)
+
+        # 6 units: units 0..4 have 1 agreeing pair with label 1; unit 5 has 1 pair with label 0
+        recs = [
+            {
+                "pair_id": f"p{i}",
+                "listing_pair_key": f"k{i}",
+                "snapshot": "present",
+                "label": 1 if i < 5 else 0,
+                "target": {
+                    "id": f"t{i}",
+                    "district": "გლდანი",
+                    "area_m2": 72,
+                    "floor": "1",
+                    "rooms": 3,
+                },
+                "candidate": {
+                    "id": f"c{i}",
+                    "district": "გლდანი",
+                    "street": "გლდანი - VI მ/რ",
+                    "area_m2": 72,
+                    "floor": "1",
+                    "rooms": 3,
+                },
+            }
+            for i in range(6)
+        ]
+        rep = xw.tier_report(weights, recs)
+        self.assertEqual(rep["units"], 6)
+        self.assertEqual(rep["sure"]["pairs"] + rep["maybe"]["pairs"] + rep["hidden"]["pairs"], 6)
+        self.assertEqual(rep["sure"]["same"] + rep["maybe"]["same"] + rep["hidden"]["same"], 5)
 
     def test_23_script_writes_two_calibration_rows(self):
         conn = sqlite3.connect(":memory:")
@@ -1202,4 +1330,8 @@ class TestXrayWeights(unittest.TestCase):
             cal_json = json.loads((dry_out / "calibration.json").read_text(encoding="utf-8"))
             self.assertIn(champ_id, cal_json)
             self.assertIn("w-2026-W46-20261109T040000Z", cal_json)
+            self.assertIn("sure_above", cal_json[champ_id])
+            self.assertIn("blocks", cal_json[champ_id])
+            rep_json = json.loads((dry_out / "report.json").read_text(encoding="utf-8"))
+            self.assertIn("tiers", rep_json)
             self.assertEqual(len(conn.execute("SELECT * FROM xray_calibration").fetchall()), 0)

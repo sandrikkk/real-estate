@@ -77,6 +77,10 @@ def run_vector(fn, args):
         from core.xray_weights import calibrated
 
         return calibrated(*args)
+    if fn == "tier":
+        from core.xray_weights import tier
+
+        return tier(*args)
     raise AssertionError(f"unknown vector function: {fn}")
 
 

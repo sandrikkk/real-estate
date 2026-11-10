@@ -827,32 +827,27 @@ def find_exact_duplicates(
         for row in cur.fetchall():
             d = dict(row)
             if weights:
-                from core.xray_weights import (
-                    POSSIBLE,
-                    calibrated,
-                    pair_levels,
-                    posterior,
-                )
+                from core.xray_weights import shown_pair
 
-                p = posterior(weights, target, d)
-                ver = weights.get("levels_version", 1)
-                levels = pair_levels(target, d, version=ver)
-                guard = "agree" in (levels[2], levels[3], levels[4])
-                cal = weights.get("calibration")
-                shown = calibrated(cal, p) if cal else p
-                if not (shown > POSSIBLE and guard):
+                v = shown_pair(weights, target, d)
+                if v is None:
                     continue
-                d["xray_posterior"] = shown
-                d["xray_posterior_raw"] = p
+                if v["shown"] is not None:
+                    d["xray_posterior"] = v["shown"]
+                d["xray_posterior_raw"] = v["raw"]
+                d["xray_tier"] = v["tier"]
                 d["xray_weights"] = weights.get("id")
             elif not _candidate_matches_target(target, d):
                 continue
             if d["id"] in candidates_by_id and candidates_by_id[d["id"]].get("xray_photo_group"):
                 d["xray_photo_group"] = True
+                d["xray_tier"] = "sure"
             candidates_by_id[d["id"]] = d
 
     results = list(candidates_by_id.values())
-    results.sort(key=lambda r: float(r.get("price_usd") or 0.0))
+    results.sort(
+        key=lambda r: (1 if r.get("xray_tier") == "maybe" else 0, float(r.get("price_usd") or 0.0))
+    )
     return results
 
 

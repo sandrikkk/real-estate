@@ -1174,8 +1174,10 @@ class TestXRayFalseDuplicateIncident(unittest.TestCase):
             dups_scored = find_exact_duplicates(conn, target, weights=sample_weights)
             self.assertEqual(len(dups_scored), 1)
             self.assertEqual(dups_scored[0]["id"], "ss_ge_cand_1")
-            self.assertIn("xray_posterior", dups_scored[0])
-            self.assertGreater(dups_scored[0]["xray_posterior"], 0.5)
+            self.assertIn("xray_posterior_raw", dups_scored[0])
+            self.assertGreater(dups_scored[0]["xray_posterior_raw"], 0.5)
+            self.assertNotIn("xray_posterior", dups_scored[0])
+            self.assertEqual(dups_scored[0]["xray_tier"], "maybe")
             self.assertEqual(dups_scored[0]["xray_weights"], "w-2026-W46")
 
             dups_fallback = find_exact_duplicates(conn, target, weights=None)
@@ -1223,8 +1225,10 @@ class TestXRayFalseDuplicateIncident(unittest.TestCase):
             # 1. Without calibration: raw posterior ~0.86
             dups = find_exact_duplicates(conn, target, weights=sample_weights)
             self.assertEqual(len(dups), 1)
-            raw_p = dups[0]["xray_posterior"]
+            raw_p = dups[0]["xray_posterior_raw"]
             self.assertAlmostEqual(raw_p, 0.8579, places=3)
+            self.assertNotIn("xray_posterior", dups[0])
+            self.assertEqual(dups[0]["xray_tier"], "maybe")
 
             # 2. With calibration that shifts 0.86 to 0.62: shown is 0.62, raw is saved
             cal_weights = {
@@ -1242,7 +1246,7 @@ class TestXRayFalseDuplicateIncident(unittest.TestCase):
             self.assertAlmostEqual(dups_cal[0]["xray_posterior"], 0.62)
             self.assertAlmostEqual(dups_cal[0]["xray_posterior_raw"], raw_p)
 
-            # 3. Calibration below 0.5: candidate is hidden
+            # 3. Calibration below 0.5: under PR 12, candidate is NOT hidden, but shown as "maybe"
             cal_low = {
                 **sample_weights,
                 "calibration": {
@@ -1252,8 +1256,66 @@ class TestXRayFalseDuplicateIncident(unittest.TestCase):
                     "answers": 50,
                 },
             }
-            dups_hidden = find_exact_duplicates(conn, target, weights=cal_low)
-            self.assertEqual(len(dups_hidden), 0)
+            dups_low = find_exact_duplicates(conn, target, weights=cal_low)
+            self.assertEqual(len(dups_low), 1)
+            self.assertEqual(dups_low[0]["xray_tier"], "maybe")
+            self.assertAlmostEqual(dups_low[0]["xray_posterior"], 0.45)
+            self.assertAlmostEqual(dups_low[0]["xray_posterior_raw"], raw_p)
+
+            # 4. Two candidates: sure priced higher ($70,000) sorts before maybe priced lower ($50,000)
+            cand_cheap = _make_listing(
+                "cand_cheap",
+                source="ss_ge",
+                price_usd=50000.0,
+                area_m2=72.0,
+                district="გლდანი",
+                street="გლდანი - VI მ/რ",
+                floor="1",
+                rooms=3,
+                total_floors=9,
+            )
+            cand_photo = _make_listing(
+                "cand_photo",
+                source="ss_ge",
+                price_usd=70000.0,
+                area_m2=72.0,
+                district="გლდანი",
+                street="გლდანი - VI მ/რ",
+                floor="1",
+                rooms=3,
+                total_floors=9,
+            )
+            self.db.save_listings_batch([cand_cheap, cand_photo])
+            conn.execute("UPDATE properties SET group_id = 'grp1' WHERE id = 'ss_ge_cand_photo'")
+
+            # cand_cheap has p ~ 0.8579. In cal_tier with sure_above = 0.86, it's maybe.
+            cal_two_tier = {
+                **sample_weights,
+                "calibration": {
+                    "breakpoints": [[0.90, 0.62]],
+                    "sure_above": 0.86,  # 0.8579 <= 0.86 -> "maybe"
+                    "answers": 50,
+                },
+            }
+            # Query with group_id on target to trigger photo group
+            t_grp = {**target, "group_id": "grp1"}
+            res = find_exact_duplicates(conn, t_grp, weights=cal_two_tier)
+            self.assertEqual(res[0]["id"], "ss_ge_cand_photo")
+            self.assertEqual(res[0]["xray_tier"], "sure")
+            self.assertTrue(res[0]["xray_photo_group"])
+            # The remaining two are "maybe" (ss_ge_cand_cheap at 50000, cand_cal_1 at 60000)
+            self.assertEqual(res[1]["id"], "ss_ge_cand_cheap")
+            self.assertEqual(res[1]["xray_tier"], "maybe")
+            self.assertEqual(res[2]["id"], "ss_ge_cand_cal_1")
+            self.assertEqual(res[2]["xray_tier"], "maybe")
+
+            # 5. With weights=None, fallback to old rule (sorted by price)
+            res_no_weights = find_exact_duplicates(conn, target, weights=None)
+            self.assertEqual(len(res_no_weights), 3)
+            self.assertEqual(
+                [r["id"] for r in res_no_weights],
+                ["ss_ge_cand_cheap", "ss_ge_cand_cal_1", "ss_ge_cand_photo"],
+            )
         finally:
             conn.close()
 

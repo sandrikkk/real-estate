@@ -43,6 +43,7 @@ function runVector(fn, args) {
       return v === null ? null : Math.round((v.raw !== undefined ? v.raw : v) * 1e6) / 1e6;
     }
     case "calibrated": return w.xrayCalibrated(...args);
+    case "tier": return w.xrayTier(...args);
     default: throw new Error(`unknown vector function: ${fn}`);
   }
 }
