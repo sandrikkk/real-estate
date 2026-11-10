@@ -522,6 +522,6 @@ await test("14. phone report: duplicate section shows 'ამ ნომრის
   const reportText = await w.buildPhoneReport(db, parsed, live, null);
 
   assert.ok(reportText.includes("🎯 <b>ამ ნომრის სხვა ბინები სხვაგანაც:</b>"), "has agent duplicate header");
-  assert.ok(reportText.includes(`  └ იგივეა, რაც $${agentListing.price_usd.toLocaleString()} · 72 მ² (გლდანი)`), "sure tier has 'იგივეა, რაც'");
-  assert.ok(reportText.includes(`  └ შესაძლოა იგივეა, რაც $${agentListing.price_usd.toLocaleString()} · 72 მ² (გლდანი)`), "maybe tier has 'შესაძლოა იგივეა, რაც'");
+  assert.ok(reportText.includes(`  └ იგივეა, რაც <a href="${agentListing.url}">$${agentListing.price_usd.toLocaleString()}</a> · 72 მ² (გლდანი)`), "sure tier has 'იგივეა, რაც' with a link");
+  assert.ok(reportText.includes(`  └ შესაძლოა იგივეა, რაც <a href="${agentListing.url}">$${agentListing.price_usd.toLocaleString()}</a> · 72 მ² (გლდანი)`), "maybe tier has 'შესაძლოა იგივეა, რაც' with a link");
 });
