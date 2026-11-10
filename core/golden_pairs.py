@@ -143,6 +143,9 @@ def build_golden_pairs(conn: Any, admin_chat_id: str) -> Tuple[List[Dict[str, An
 
         # 4. Find the candidate
         cand = next((dict(c) for c in cands if c.get("id") == candidate_id), {"id": candidate_id})
+        ref = cand.pop("_ref", None)
+        if isinstance(ref, dict) and ref:
+            target = dict(ref)
         photo_matches = cand.pop("photo_matches", None)
         snapshot = "at_label" if set(cand) - {"id", "url"} else None
 

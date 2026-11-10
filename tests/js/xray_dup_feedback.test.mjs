@@ -273,3 +273,129 @@ test("a fd: press on a row with kind: 'review_random' and owner_target_id: null 
     goOffline();
   }
 });
+
+// Agent listing and duplicates for phone report tests
+const agentListing = {
+  id: "ss_ge_main", source: "ss_ge", url: "https://home.ss.ge/ka/udzravi-qoneba/main",
+  district: "გლდანი", street: "გლდანი - VII მ/რ", area_m2: 72, floor: "1", rooms: 3, price_usd: 61000,
+  group_id: "photo_grp_agent", is_owner: false, phone_number: "599111222"
+};
+
+const dupSure = {
+  id: "myhome_dup_sure", source: "myhome", url: "https://www.myhome.ge/ka/pr/111",
+  district: "გლდანი", street: "გლდანი - VII მ/რ 11", area_m2: 72, floor: "1", rooms: 3, price_usd: 60000,
+  group_id: "photo_grp_agent", is_owner: true, phone_number: "599000111"
+};
+
+const dupMaybe = {
+  id: "ss_ge_dup_maybe", source: "ss_ge", url: "https://home.ss.ge/ka/udzravi-qoneba/222",
+  district: "გლდანი", street: "გლდანი - VII მ/რ 12", area_m2: 72, floor: "1", rooms: 3, price_usd: 62000,
+  is_owner: true, phone_number: "599000222"
+};
+
+const propPhoneRoute = [
+  /FROM properties WHERE phone_number IN/,
+  () => [agentListing]
+];
+const photoGroupRoute = [
+  /FROM properties WHERE group_id = \? AND id != \?/,
+  () => [dupSure]
+];
+const dupRouteForMain = [
+  /FROM properties WHERE district IN/,
+  () => [dupMaybe]
+];
+
+test("phone report: numbered duplicate lines and collected candidates with their own target", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1([propPhoneRoute, photoGroupRoute, dupRouteForMain]);
+    const parsed = { formattedPhone: "599 11 12 22", phone9: "599111222", raw: "599111222", district: null };
+    const live = { mode: "fresh", full: false, rows: [] };
+    const collect = {};
+    const reportText = await w.buildPhoneReport(db, parsed, live, null, collect);
+    const dupSection = reportText.slice(reportText.indexOf("ამ ნომრის სხვა ბინები სხვაგანაც"));
+    assert.ok(dupSection.includes("1. <a href="), "dup section contains 1. <a href=");
+    assert.ok(dupSection.includes("2. <a href="), "dup section contains 2. <a href=");
+    assert.equal(collect.duplicates?.length, 2);
+    assert.ok(collect.duplicates.every(item => item._ref && item._ref.id === "ss_ge_main"));
+    assert.equal(collect.resultKind, "phone_dup");
+    assert.deepEqual(Object.keys(collect.resultTarget), []);
+  } finally {
+    goOffline();
+  }
+});
+
+test("phone follow-up carries ✅/❌ rows and saves a phone_dup result", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1([
+      [/FROM xray_jobs WHERE id = \?/, () => [{
+        id: "jp", kind: "phone", phone9: "599111222",
+        chat_id: String(CHAT), status: "done", created_at: new Date().toISOString(), page_full: 0
+      }]],
+      propPhoneRoute,
+      photoGroupRoute,
+      dupRouteForMain
+    ]);
+    const res = await w.handleXRayFollowup(new Request("https://worker.example/api/xray/followup", {
+      method: "POST", headers: { "X-Sync-Key": "k1" }, body: JSON.stringify({ job_id: "jp" })
+    }), env(db));
+    assert.equal(res.status, 200);
+    const sent = telegram(calls, "sendMessage")[0];
+    assert.ok(sent?.body?.reply_markup, "sendMessage has reply_markup");
+    const hasFd = sent.body.reply_markup.inline_keyboard.some(row =>
+      row.some(b => /^fd:[0-9a-f-]{36}:0:y$/.test(b.callback_data))
+    );
+    assert.ok(hasFd, "some button callback_data matches fd:...:y");
+    const saved = db.log.filter(e => /INSERT INTO xray_results/.test(e.sql));
+    assert.equal(saved.length, 1, "exactly one INSERT INTO xray_results");
+    assert.equal(saved[0].params[2], "phone_dup");
+    assert.equal(saved[0].params[5], null);
+    assert.equal(JSON.parse(saved[0].params[4])[0]._ref.id, "ss_ge_main");
+    assert.ok(!db.log.some(e => /INSERT INTO xray_jobs/.test(e.sql)), "no INSERT INTO xray_jobs");
+  } finally {
+    goOffline();
+  }
+});
+
+test("a phone number sent to the bot gets ✅/❌ rows on its duplicate lines", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1([propPhoneRoute, photoGroupRoute, dupRouteForMain]);
+    await webhook(env(db), message("599111222"));
+    const reply = telegram(calls, "sendMessage").find(c => c.body.text.includes("ამ ნომრის სხვა ბინები სხვაგანაც"));
+    assert.ok(reply, "reply with duplicate section found");
+    const rows = (reply.body.reply_markup && reply.body.reply_markup.inline_keyboard) || [];
+    const hasFd = rows.some(r => r.some(b => String(b.callback_data).startsWith("fd:")));
+    assert.ok(hasFd, "has an fd: button");
+    const saved = db.log.find(e => /INSERT INTO xray_results/.test(e.sql));
+    assert.ok(saved, "saved xray_results row exists");
+    assert.equal(saved.params[2], "phone_dup");
+  } finally {
+    goOffline();
+  }
+});
+
+test("a phone report without duplicates has no ✅/❌ buttons and saves no result", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1([
+      [/FROM xray_jobs WHERE id = \?/, () => [{
+        id: "jp", kind: "phone", phone9: "599111222",
+        chat_id: String(CHAT), status: "done", created_at: new Date().toISOString(), page_full: 0
+      }]],
+      propPhoneRoute
+    ]);
+    const res = await w.handleXRayFollowup(new Request("https://worker.example/api/xray/followup", {
+      method: "POST", headers: { "X-Sync-Key": "k1" }, body: JSON.stringify({ job_id: "jp" })
+    }), env(db));
+    assert.equal(res.status, 200);
+    const sent = telegram(calls, "sendMessage")[0];
+    const rows = (sent?.body?.reply_markup && sent.body.reply_markup.inline_keyboard) || [];
+    assert.ok(!rows.some(r => r.some(b => String(b.callback_data).startsWith("fd:"))));
+    assert.ok(!db.log.some(e => /INSERT INTO xray_results/.test(e.sql)));
+  } finally {
+    goOffline();
+  }
+});

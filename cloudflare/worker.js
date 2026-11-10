@@ -748,7 +748,7 @@ async function handleMessage(msg, token, kv, env) {
       collect.ownerTarget.photo_batch = collect.photoBatch;
     }
     const targetId = collect.targetId || (await rememberOwnerTarget(env, chatId, collect.ownerTarget, text));
-    const resultId = await saveXRayResult(env, chatId, "dup", collect.resultTarget, collect.duplicates, targetId);
+    const resultId = await saveXRayResult(env, chatId, collect.resultKind || "dup", collect.resultTarget, collect.duplicates, targetId);
     const markup = xrayReplyMarkup(targetId, resultId, collect.duplicates || [], []);
     await sendTelegram(token, "sendMessage", {
       chat_id: chatId,
@@ -1863,7 +1863,10 @@ async function handleXRayFollowup(request, env) {
           }
         } catch (err) {}
       }
-      text = `🔄 <b>myhome-ის შედეგი</b>\n\n${await buildPhoneReport(env.DB, parsed, live, postTarget)}`;
+      const collect = {};
+      text = `🔄 <b>myhome-ის შედეგი</b>\n\n${await buildPhoneReport(env.DB, parsed, live, postTarget, collect)}`;
+      const resultId = await saveXRayResult(env, job.chat_id, collect.resultKind, collect.resultTarget, collect.duplicates, null);
+      replyMarkup = xrayReplyMarkup(null, resultId, collect.duplicates || [], []);
     } else {
       text = `⚠️ myhome-ზე ძებნა ვერ მოხერხდა (<code>${formatGeorgianPhone(job.phone9)}</code>). ზემოთ ნაჩვენებია ჩვენი ბაზის შედეგი.`;
     }
@@ -2640,7 +2643,7 @@ async function enrichDuplicatesIfNeeded(db, dups, maxCount = 3) {
 }
 
 // The phone report. `live` is myHomeLiveState(): { mode: "fresh" | "queued" | "failed" | "none", rows, full }.
-async function buildPhoneReport(db, parsed, live, postTarget = null) {
+async function buildPhoneReport(db, parsed, live, postTarget = null, collect = null) {
   const fmtParam = parsed.formattedPhone || parsed.maskedPhone || "";
   const p9Param = parsed.phone9 || fmtParam;
   const maskParam = parsed.maskedPhone || fmtParam;
@@ -2769,7 +2772,7 @@ async function buildPhoneReport(db, parsed, live, postTarget = null) {
     await enrichDuplicatesIfNeeded(db, sortedPhoneDups.map(item => item.dup), 3);
     lines.push("");
     lines.push("🎯 <b>ამ ნომრის სხვა ბინები სხვაგანაც:</b>");
-    for (const { dup, refPrice, ref } of sortedPhoneDups.slice(0, 4)) {
+    for (const [i, { dup, refPrice, ref }] of sortedPhoneDups.slice(0, 4).entries()) {
       const dPrice = Math.round(Number(dup.price_usd) || 0);
       const dSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
       const dOwner = formatOwnerBadge(dup.is_owner);
@@ -2781,9 +2784,17 @@ async function buildPhoneReport(db, parsed, live, postTarget = null) {
         else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
         else diffStr = " (იგივე ფასი)";
       }
-      lines.push(`• <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}${dPhonePart}${duplicateSureness(dup)}`);
+      lines.push(`${i + 1}. <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}${dPhonePart}${duplicateSureness(dup)}`);
       const sameAs = dup.xray_tier === "maybe" ? "შესაძლოა იგივეა, რაც" : "იგივეა, რაც";
       lines.push(`  └ ${sameAs} $${Math.round(Number(ref.price_usd) || 0).toLocaleString()} · ${Number(ref.area_m2) || "?"} მ²${ref.district ? ` (${ref.district})` : ""}`);
+    }
+    if (collect) {
+      collect.duplicates = sortedPhoneDups.slice(0, 4).map(({ dup, ref }) => ({
+        ...xrayResultCandidate(dup),
+        _ref: xrayResultCandidate(ref)
+      }));
+      collect.resultTarget = {};
+      collect.resultKind = "phone_dup";
     }
   }
 
@@ -2805,7 +2816,7 @@ async function handleXRayQuery(text, env, opts = {}) {
         opts.collect.ownerTarget = ownerTarget({ ...(parsed.flat || {}), phone9: parsed.phone9 }, text);
       }
       // MyHome is read by a GitHub Actions job (ADR 0004); D1 holds only what matched subscriber filters.
-      return await buildPhoneReport(db, parsed, await myHomeLiveState(env, parsed, opts.chatId));
+      return await buildPhoneReport(db, parsed, await myHomeLiveState(env, parsed, opts.chatId), null, opts.collect);
     }
 
     let target = null;
