@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import math
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
+from fractions import Fraction
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from core.xray import (
@@ -595,7 +596,10 @@ def _units(records: List[Dict[str, Any]]) -> Dict[str, str]:
     Nodes: 'L:<listing id>' and 'G:<group_id>'.
     A record with listing_pair_key: union its two listing ids, and union each listing
     with 'G:'+group_id when target.get('group_id') or candidate.get('group_id') is non-empty.
-    A record without listing_pair_key (a post reply): its unit is 'R:'+target_key.
+    A record without listing_pair_key (a post reply): its node is 'P:'+post_key, or 'R:'+target_key
+    when it has no post_key; that node is unioned with 'L:'+candidate id (and the candidate's
+    'G:'+group_id), so the same post, the same candidate flat, and one post's several candidates
+    are one unit.
     The unit of a listing record is the root of its first listing.
     """
     parent: Dict[str, str] = {}
@@ -616,6 +620,11 @@ def _units(records: List[Dict[str, Any]]) -> Dict[str, str]:
                 parent[ry] = rx
             else:
                 parent[rx] = ry
+
+    def post_node(r: Dict[str, Any]) -> str:
+        if r.get("post_key"):
+            return f"P:{r['post_key']}"
+        return f"R:{r.get('target_key') or r.get('pair_id')}"
 
     for r in records:
         if r.get("listing_pair_key"):
@@ -638,6 +647,14 @@ def _units(records: List[Dict[str, Any]]) -> Dict[str, str]:
                 t_grp = str(t.get("group_id") or "").strip()
                 if t_grp:
                     union(u_t, f"G:{t_grp}")
+        else:
+            c = r.get("candidate") or {}
+            c_id = str(c.get("id") or "").strip()
+            if c_id:
+                union(post_node(r), f"L:{c_id}")
+                c_grp = str(c.get("group_id") or "").strip()
+                if c_grp:
+                    union(f"L:{c_id}", f"G:{c_grp}")
 
     unit_map: Dict[str, str] = {}
     for r in records:
@@ -649,8 +666,7 @@ def _units(records: List[Dict[str, Any]]) -> Dict[str, str]:
             t_id = str(t.get("id") or r.get("target_key") or "").strip()
             unit_map[pid] = find(f"L:{t_id}") if t_id else f"P:{pid}"
         else:
-            t_key = str(r.get("target_key") or pid)
-            unit_map[pid] = f"R:{t_key}"
+            unit_map[pid] = find(post_node(r))
 
     return unit_map
 
@@ -703,8 +719,8 @@ def gate(
       replies = disagreeing replies (grouped by target_key)
       replies_won / lost / tied via _reply_sign
       p_value = sign_test_p(replies_won, replies_won + replies_lost)
-      fp_challenger = records in S with label 0 and challenger True
-      fp_champion   = records in S with label 0 and champion True
+      fp_challenger = records in S with label 0 and challenger True, each weighing 1/(answers in its unit)
+      fp_champion   = records in S with label 0 and champion True, each weighing 1/(answers in its unit)
     Checks:
       A. on all exam records: p_value < 0.05 (reply-level sign test)
       B. on all exam records: fp_challenger <= fp_champion
@@ -784,13 +800,22 @@ def gate(
     disagreement_pairs.sort(key=lambda d: str(d["pair_id"]))
 
     unit_map = _units([x["record"] for x in evaluated])
+    unit_sizes = Counter(unit_map.values())
+
+    def fp_weight(x: Dict[str, Any]) -> Fraction:
+        u = unit_map.get(x["record"].get("pair_id") or "")
+        return Fraction(1, unit_sizes[u]) if u else Fraction(1)
 
     def calc_stratum(items: List[Dict[str, Any]]) -> Dict[str, Any]:
         disagreements = sum(1 for x in items if x["disagrees"])
         wins = sum(1 for x in items if x["disagrees"] and x["challenger"] == x["truth"])
         losses = sum(1 for x in items if x["disagrees"] and x["champion"] == x["truth"])
-        fp_chall = sum(1 for x in items if not x["truth"] and x["challenger"])
-        fp_champ = sum(1 for x in items if not x["truth"] and x["champion"])
+        fp_chall = _num(
+            sum((fp_weight(x) for x in items if not x["truth"] and x["challenger"]), Fraction(0))
+        )
+        fp_champ = _num(
+            sum((fp_weight(x) for x in items if not x["truth"] and x["champion"]), Fraction(0))
+        )
 
         disagreeing = [
             (x["record"], x["champion"], x["challenger"], x["truth"])
@@ -858,6 +883,18 @@ def score_key(p: float) -> float:
     return round(float(p), SCORE_DECIMALS)
 
 
+def _num(x: Fraction) -> Any:
+    """An exact count for JSON: an int when whole, else a float."""
+    return int(x) if x.denominator == 1 else float(x)
+
+
+def _unit_weights(records: List[Dict[str, Any]]) -> Dict[str, Fraction]:
+    """pair_id -> 1 / (answers in its flat), so each independent flat (`_units`) weighs 1."""
+    unit_map = _units(records)
+    sizes = Counter(unit_map.values())
+    return {pid: Fraction(1, sizes[u]) for pid, u in unit_map.items()}
+
+
 def calibration(weights: Dict[str, Any], records: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Isotonic (PAV) map from this weights' raw posterior to the admin's answered rate.
 
@@ -865,23 +902,20 @@ def calibration(weights: Dict[str, Any], records: List[Dict[str, Any]]) -> Dict[
     Blocks merge while the Laplace rate (k+1)/(n+2) of the previous block >= the last one.
     sure_above is the hi of the last block whose 95% Wilson lower bound <= POSSIBLE;
     if no block qualifies or the top block is not sure, sure_above is 1.0.
+    Each independent flat (`_units`) weighs 1 in total, so reposts of one flat count once.
     """
-    groups: Dict[float, List[int]] = {}  # score_key -> [same, answers]: ties pooled
-    total_answers = 0
-    for r in records:
-        if r.get("snapshot") == "missing":
-            continue
-        lbl = r.get("label")
-        if lbl not in (0, 1):
-            continue
-        total_answers += 1
+    eligible = [r for r in records if r.get("snapshot") != "missing" and r.get("label") in (0, 1)]
+    weight = _unit_weights(eligible)
+    groups: Dict[float, List[Fraction]] = {}  # score_key -> [same, answers]: ties pooled
+    for r in eligible:
+        w = weight.get(r.get("pair_id") or "", Fraction(1))
         target = r.get("target") or {}
         cand = r.get("candidate") or {}
         p = posterior(weights, target, cand)
         key = score_key(p)
-        groups.setdefault(key, [0, 0])
-        groups[key][0] += int(lbl)
-        groups[key][1] += 1
+        groups.setdefault(key, [Fraction(0), Fraction(0)])
+        groups[key][0] += int(r["label"]) * w
+        groups[key][1] += w
 
     stack: List[List[Any]] = []  # blocks [same, answers, hi]
     for key in sorted(groups):
@@ -896,16 +930,16 @@ def calibration(weights: Dict[str, Any], records: List[Dict[str, Any]]) -> Dict[
 
     sure_above = 0.0
     for k, n, hi in stack:
-        if wilson95(k, n)[0] <= POSSIBLE:
+        if wilson95(float(k), float(n))[0] <= POSSIBLE:
             sure_above = hi  # everything up to here is not sure
     if not stack or sure_above == stack[-1][2]:
         sure_above = 1.0  # the top block is not sure: nothing is
 
     return {
-        "breakpoints": [[hi, (k + 1) / (n + 2)] for k, n, hi in stack],
-        "blocks": [[hi, k, n] for k, n, hi in stack],
+        "breakpoints": [[hi, float((k + 1) / (n + 2))] for k, n, hi in stack],
+        "blocks": [[hi, _num(k), _num(n)] for k, n, hi in stack],
         "sure_above": sure_above,
-        "answers": total_answers,
+        "answers": len(eligible),
     }
 
 

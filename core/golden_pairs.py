@@ -9,6 +9,7 @@ the weekly review's answers.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -30,6 +31,9 @@ PII_FIELDS = (
 )
 REVIEW_KINDS = ("review_uncertain", "review_random")
 CHUNK = 50  # ids per IN (...) query (ADR 0001)
+# The flat a post describes. No price (a repost at a new price is the same flat) and no phone
+# (the repository is public, and a hashed phone number can be brute-forced).
+POST_KEY_FIELDS = ("district", "micro", "street", "rooms", "floor", "area_m2")
 
 
 def _chunked(items: List[Any], n: int):
@@ -42,6 +46,23 @@ def _phone9(v: Any) -> Optional[str]:
         return None
     digits = re.sub(r"\D", "", str(v))
     return digits[-9:] if len(digits) >= 9 else None
+
+
+def _norm(v: Any) -> str:
+    if v is None:
+        return ""
+    try:
+        return f"{float(v):g}"
+    except (TypeError, ValueError):
+        return str(v).strip().lower()
+
+
+def _post_key(target: Dict[str, Any]) -> Optional[str]:
+    """One key per flat a post describes, so the same post sent twice is one pair."""
+    parts = [_norm(target.get(k)) for k in POST_KEY_FIELDS]
+    if not any(parts):
+        return None
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
 def build_golden_pairs(conn: Any, admin_chat_id: str) -> Tuple[List[Dict[str, Any]], int]:
@@ -216,7 +237,7 @@ def build_golden_pairs(conn: Any, admin_chat_id: str) -> Tuple[List[Dict[str, An
                         r["snapshot"] = "missing"
 
     # 6. Relations & final record build
-    records: List[Dict[str, Any]] = []
+    latest: Dict[str, Dict[str, Any]] = {}  # one record per pair, across replies
     for item in raw_records:
         fb = item["fb"]
         target = item["target"]
@@ -267,6 +288,7 @@ def build_golden_pairs(conn: Any, admin_chat_id: str) -> Tuple[List[Dict[str, An
             "label_origin": item["label_origin"],
             "reply_kind": item["reply_kind"],
             "target_kind": target_kind,
+            "post_key": _post_key(target) if target_kind == "post" else None,
             "listing_pair_key": listing_pair_key,
             "shown_at": item["shown_at"],
             "labelled_at": fb["created_at"],
@@ -277,10 +299,22 @@ def build_golden_pairs(conn: Any, admin_chat_id: str) -> Tuple[List[Dict[str, An
             "evidence": {"photo_matches": item["photo_matches"]},
             "review": item["review"],
         }
-        records.append(rec)
+        # 10. One record per pair: a later answer replaces an earlier one, also across replies
+        if listing_pair_key:
+            dedup_key = f"L:{listing_pair_key}"
+        elif rec["post_key"]:
+            dedup_key = f"P:{rec['post_key']}:{candidate_id}"
+        else:
+            dedup_key = f"R:{rec['pair_id']}"
+        prev = latest.get(dedup_key)
+        if prev is None or (rec["labelled_at"] or "", rec["pair_id"]) > (
+            prev["labelled_at"] or "",
+            prev["pair_id"],
+        ):
+            latest[dedup_key] = rec
 
-    # 10. Order
-    return sorted(records, key=lambda r: r["pair_id"]), skipped
+    # 11. Order
+    return sorted(latest.values(), key=lambda r: r["pair_id"]), skipped
 
 
 def to_jsonl(records: List[Dict[str, Any]]) -> str:
