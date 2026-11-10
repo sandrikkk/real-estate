@@ -1335,3 +1335,95 @@ class TestXrayWeights(unittest.TestCase):
             rep_json = json.loads((dry_out / "report.json").read_text(encoding="utf-8"))
             self.assertIn("tiers", rep_json)
             self.assertEqual(len(conn.execute("SELECT * FROM xray_calibration").fetchall()), 0)
+
+    def test_30_post_units_follow_the_flat(self):
+        def post(pid, reply, key, cand):
+            return {
+                "pair_id": pid,
+                "target_key": reply,
+                "post_key": key,
+                "target": {},
+                "candidate": {"id": cand},
+            }
+
+        # 1. The same post (same post_key) answered in two replies is one unit.
+        u = xw._units([post("a", "RA", "k1", "L1"), post("b", "RB", "k1", "L1")])
+        self.assertEqual(u["a"], u["b"])
+        # 2. One post's answers on two candidates are one unit, like a listing reply.
+        u = xw._units([post("c", "RC", "k2", "L2"), post("d", "RC", "k2", "L3")])
+        self.assertEqual(u["c"], u["d"])
+        # 3. A post answer and a listing answer about the same candidate flat are one unit.
+        listing = {
+            "pair_id": "f",
+            "target_key": "RE",
+            "listing_pair_key": "L4__L5",
+            "target": {"id": "L5"},
+            "candidate": {"id": "L4"},
+        }
+        u = xw._units([post("e", "RD", "k3", "L4"), listing])
+        self.assertEqual(u["e"], u["f"])
+        # 4. Different posts about different candidates stay apart.
+        u = xw._units([post("g", "RF", "k4", "L6"), post("h", "RG", "k5", "L7")])
+        self.assertNotEqual(u["g"], u["h"])
+
+    def test_31_calibration_counts_each_flat_once(self):
+        weights = {"lambda": 0.01, "levels_version": 2, "fields": {}}
+
+        def rec(pid, a, b, label):
+            return {
+                "pair_id": pid,
+                "listing_pair_key": "__".join(sorted([a, b])),
+                "snapshot": "present",
+                "label": label,
+                "target": {"id": a},
+                "candidate": {"id": b},
+            }
+
+        orig_post = xw.posterior
+        try:
+            xw.posterior = lambda w, t, c: 0.5
+            # Three reposts of flat A answered ✅ (one unit), one other flat answered ❌.
+            recs = [
+                rec("x1", "A", "B", 1),
+                rec("x2", "A", "C", 1),
+                rec("x3", "A", "D", 1),
+                rec("y1", "E", "F", 0),
+            ]
+            cal = xw.calibration(weights, recs)
+            self.assertEqual(cal["answers"], 4)
+            self.assertEqual(cal["blocks"], [[0.5, 1, 2]])
+            self.assertEqual(cal["breakpoints"], [[0.5, 0.5]])
+        finally:
+            xw.posterior = orig_post
+
+    def test_32_gate_counts_false_matches_per_flat(self):
+        weights = {"lambda": 0.01, "fields": {}}
+
+        def rec(pid, a, b):
+            return {
+                "pair_id": pid,
+                "target_key": pid,
+                "label": 0,
+                "target_kind": "listing",
+                "listing_pair_key": "__".join(sorted([a, b])),
+                "snapshot": "at_label",
+                "target": {"id": a},
+                "candidate": {"id": b},
+                "relations": {},
+                "evidence": {},
+                "review": None,
+            }
+
+        recs = [rec("x1", "A", "B"), rec("x2", "A", "C"), rec("x3", "A", "D")]
+        vectors = [{"name": "v1", "gate": True, "args": [{}, {}], "expected": True}]
+        orig_champ = xw._candidate_matches_target
+        orig_chall = xw.challenger_says_same
+        try:
+            xw._candidate_matches_target = lambda t, c: False
+            xw.challenger_says_same = lambda w, *args: True
+            res = xw.gate(weights, recs, vectors, {"ok": True})
+            self.assertEqual(res["all"]["fp_challenger"], 1)
+            self.assertEqual(res["all"]["fp_champion"], 0)
+        finally:
+            xw._candidate_matches_target = orig_champ
+            xw.challenger_says_same = orig_chall

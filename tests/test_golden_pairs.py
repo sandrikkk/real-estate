@@ -375,6 +375,97 @@ class TestGoldenPairs(unittest.TestCase):
         self.assertEqual(rec["reply_kind"], "phone_dup")
         self.assertEqual(rec["snapshot"], "at_label")
 
+    def _add_result(self, rid, target, candidates, created_at):
+        self.conn.execute(
+            """
+            INSERT INTO xray_results (id, chat_id, kind, target, candidates, owner_target_id, created_at)
+            VALUES (?, '777', 'dup', ?, ?, NULL, ?)
+            """,
+            (rid, json.dumps(target), json.dumps(candidates), created_at),
+        )
+
+    def _add_answer(self, rid, candidate_id, label, created_at):
+        self.conn.execute(
+            """
+            INSERT INTO xray_feedback (job_id, candidate_id, chat_id, target_id, label, created_at)
+            VALUES (?, ?, '777', NULL, ?, ?)
+            """,
+            (rid, candidate_id, label, created_at),
+        )
+
+    def test_same_listing_pair_in_two_replies_keeps_only_the_latest_answer(self):
+        t = {"id": "myhome_7", "source": "myhome", "district": "საბურთალო", "area_m2": 45}
+        c = {"id": "myhome_8", "source": "myhome", "district": "საბურთალო", "area_m2": 45}
+        self._add_result("RA", t, [c], "2026-11-11T10:00:00Z")
+        self._add_result("RB", t, [c], "2026-11-11T11:00:00Z")
+        self._add_answer("RA", "myhome_8", 1, "2026-11-11T10:05:00Z")
+        self._add_answer("RB", "myhome_8", 0, "2026-11-11T11:05:00Z")
+        self.conn.commit()
+        records, _ = build_golden_pairs(self.conn, "777")
+        same = [r for r in records if r["listing_pair_key"] == "myhome_7__myhome_8"]
+        self.assertEqual(len(same), 1)
+        self.assertEqual(same[0]["pair_id"], "RB__myhome_8")
+        self.assertEqual(same[0]["label"], 0)
+
+    def test_reversed_listing_pair_is_the_same_record(self):
+        a = {"id": "myhome_7", "source": "myhome", "district": "საბურთალო", "area_m2": 45}
+        b = {"id": "myhome_8", "source": "myhome", "district": "საბურთალო", "area_m2": 45}
+        self._add_result("RA", a, [b], "2026-11-11T10:00:00Z")
+        self._add_result("RB", b, [a], "2026-11-11T11:00:00Z")
+        self._add_answer("RA", "myhome_8", 1, "2026-11-11T10:05:00Z")
+        self._add_answer("RB", "myhome_7", 1, "2026-11-11T11:05:00Z")
+        self.conn.commit()
+        records, _ = build_golden_pairs(self.conn, "777")
+        same = [r for r in records if r["listing_pair_key"] == "myhome_7__myhome_8"]
+        self.assertEqual(len(same), 1)
+        self.assertEqual(same[0]["pair_id"], "RB__myhome_7")
+
+    def test_same_post_twice_is_one_record_even_at_a_new_price(self):
+        post = {
+            "id": "fb_input",
+            "source": "facebook",
+            "district": "თემქა",
+            "rooms": 3,
+            "floor": "1",
+            "area_m2": 44,
+            "price_usd": 65000,
+            "phone9": "510102767",
+        }
+        repost = {**post, "price_usd": 62000, "area_m2": 44.0, "rooms": "3"}
+        c = {"id": "myhome_26465354", "source": "myhome", "district": "თემქა", "area_m2": 44}
+        self._add_result("RA", post, [c], "2026-11-11T10:00:00Z")
+        self._add_result("RB", repost, [c], "2026-11-11T11:00:00Z")
+        self._add_answer("RA", "myhome_26465354", 1, "2026-11-11T10:05:00Z")
+        self._add_answer("RB", "myhome_26465354", 1, "2026-11-11T11:05:00Z")
+        self.conn.commit()
+        records, _ = build_golden_pairs(self.conn, "777")
+        same = [r for r in records if r["candidate"].get("id") == "myhome_26465354"]
+        self.assertEqual(len(same), 1)
+        self.assertEqual(same[0]["pair_id"], "RB__myhome_26465354")
+        self.assertTrue(same[0]["post_key"])
+        self.assertNotIn("510102767", to_jsonl(records))
+
+    def test_different_posts_about_one_candidate_stay_two_records(self):
+        post = {
+            "id": "fb_input",
+            "source": "facebook",
+            "district": "თემქა",
+            "rooms": 3,
+            "floor": "1",
+            "area_m2": 44,
+        }
+        other = {**post, "area_m2": 60}
+        c = {"id": "myhome_26465354", "source": "myhome", "district": "თემქა", "area_m2": 44}
+        self._add_result("RA", post, [c], "2026-11-11T10:00:00Z")
+        self._add_result("RB", other, [c], "2026-11-11T11:00:00Z")
+        self._add_answer("RA", "myhome_26465354", 1, "2026-11-11T10:05:00Z")
+        self._add_answer("RB", "myhome_26465354", 0, "2026-11-11T11:05:00Z")
+        self.conn.commit()
+        records, _ = build_golden_pairs(self.conn, "777")
+        same = [r for r in records if r["candidate"].get("id") == "myhome_26465354"]
+        self.assertEqual(len(same), 2)
+        self.assertNotEqual(same[0]["post_key"], same[1]["post_key"])
+
 
 if __name__ == "__main__":
     unittest.main()
