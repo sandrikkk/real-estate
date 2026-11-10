@@ -27,7 +27,12 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 from PIL import Image, ImageOps
 from curl_cffi import requests
 
-from core.dedup import MAX_IMAGE_BYTES
+from core.dedup import (
+    MAX_IMAGE_BYTES,
+    NEW_MYHOME_PHOTO_HOST,  # noqa: F401
+    OLD_MYHOME_PHOTO_HOST,  # noqa: F401
+    current_photo_url,
+)
 from core.xray import _candidate_matches_target, _clean_floor, snapshot_fields
 from core.xray_weights import (
     POSSIBLE,
@@ -38,18 +43,10 @@ from core.xray_weights import (
 PHOTOS_PER_SIDE = 4  # photos of each listing in the picture; display only
 TILE = (320, 240)  # one photo's cell, in pixels; display only
 
-# MyHome moved its photo host in October 2026. Photos saved before that keep the old host,
-# which no longer resolves; the same path still serves on the new one.
-OLD_MYHOME_PHOTO_HOST = "//static-statements.tnet.ge/"
-NEW_MYHOME_PHOTO_HOST = "//static-api-statements.tnet.ge/"
 REVIEW_CAPTION_FOOTER = (
     "ზედა რიგი: ა, ქვედა რიგი: ბ. ფოტოები ჩვენი ბაზიდანაა, "
     "ამიტომ ჩანს მაშინაც, როცა განცხადება წაშლილია."
 )
-
-
-def current_photo_url(url: str) -> str:
-    return url.replace(OLD_MYHOME_PHOTO_HOST, NEW_MYHOME_PHOTO_HOST, 1) if url else url
 
 
 def load_photo_urls(conn: Any, ids: Any) -> Dict[str, List[str]]:
