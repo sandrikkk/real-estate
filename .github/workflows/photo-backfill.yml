@@ -1,0 +1,62 @@
+name: Photo Hash Backfill
+
+# ADR 0005: nightly hashing of listing photos that have no hash yet, so the photo search and
+# the duplicate check can see every listing. On failure the admin chat gets a Telegram message.
+on:
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Listing budget to process (default 1500)"
+        default: "1500"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: photo-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install "pydantic>=2.0.0" "pydantic-settings>=2.0.0" "python-dotenv>=1.0.0" "curl_cffi>=0.7.0" "Pillow>=10.0.0"
+
+      - name: Run photo hash backfill
+        env:
+          PYTHONUNBUFFERED: "1"
+          CLOUDFLARE_PROXY_URL: ${{ secrets.CLOUDFLARE_PROXY_URL }}
+          CLOUDFLARE_SYNC_KEY: ${{ secrets.CLOUDFLARE_SYNC_KEY }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          ARGS=""
+          if [ -n "$LIMIT" ]; then
+            ARGS="--limit $LIMIT"
+          fi
+          python scripts/backfill_photo_hashes.py $ARGS
+
+      - name: Tell the admin on Telegram
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sS -o /dev/null -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=⚠️ X-Ray: ფოტოების ჰეშირება (photo-backfill) ვერ შესრულდა. ${RUN_URL}"

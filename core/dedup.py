@@ -87,9 +87,19 @@ def is_photo_duplicate(matches: int, price_a, price_b, area_a, area_b) -> bool:
 
 # --- Image downloading ---
 
+# MyHome moved its photo host in October 2026. Photos saved before that keep the old host,
+# which no longer resolves; the same path still serves on the new one.
+OLD_MYHOME_PHOTO_HOST = "//static-statements.tnet.ge/"
+NEW_MYHOME_PHOTO_HOST = "//static-api-statements.tnet.ge/"
+
+
+def current_photo_url(url: str) -> str:
+    return url.replace(OLD_MYHOME_PHOTO_HOST, NEW_MYHOME_PHOTO_HOST, 1) if url else url
+
 
 async def _download_and_hash(url: str, session: AsyncSession, timeout: int = 10) -> Optional[str]:
     """Downloads image, returns dHash hex string or None."""
+    url = current_photo_url(url)
     try:
         resp = await session.get(url, timeout=timeout)
         if resp.status_code == 200 and 1000 < len(resp.content) <= MAX_IMAGE_BYTES:
