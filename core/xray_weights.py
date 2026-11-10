@@ -850,63 +850,148 @@ def gate(
     }
 
 
+SCORE_DECIMALS = 6  # the Worker and this module differ in a score's last digits (other math
+# libraries), so block edges compare scores rounded like the parity vectors
+
+
+def score_key(p: float) -> float:
+    return round(float(p), SCORE_DECIMALS)
+
+
 def calibration(weights: Dict[str, Any], records: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Isotonic (PAV) map from this weights' raw posterior to the admin's answered rate.
 
-    Exam = records with label 0/1 and snapshot != "missing". Points (posterior, label) sorted by
-    (posterior, pair_id) so ties are deterministic. Each point starts a block [k, n, hi]; while the
-    previous block's Laplace rate (k+1)/(n+2) >= the last one's, merge them (hi = the larger).
-    Returns {"breakpoints": [[hi, (k+1)/(n+2)], ...], "answers": n_total}.
-    No tuned number: PAV has none; Laplace is the +1 used everywhere in ADR 0002.
+    Scores rounded to SCORE_DECIMALS with ties pooled. Points sorted by score_key.
+    Blocks merge while the Laplace rate (k+1)/(n+2) of the previous block >= the last one.
+    sure_above is the hi of the last block whose 95% Wilson lower bound <= POSSIBLE;
+    if no block qualifies or the top block is not sure, sure_above is 1.0.
     """
-    exam_pts: List[Tuple[float, str, int]] = []
+    groups: Dict[float, List[int]] = {}  # score_key -> [same, answers]: ties pooled
+    total_answers = 0
     for r in records:
         if r.get("snapshot") == "missing":
             continue
         lbl = r.get("label")
         if lbl not in (0, 1):
             continue
-        pid = str(r.get("pair_id") or "")
+        total_answers += 1
         target = r.get("target") or {}
         cand = r.get("candidate") or {}
-        t = {**target, "pair_id": pid}
-        c = {**cand, "pair_id": pid}
-        p = posterior(weights, t, c)
-        exam_pts.append((float(p), pid, int(lbl)))
+        p = posterior(weights, target, cand)
+        key = score_key(p)
+        groups.setdefault(key, [0, 0])
+        groups[key][0] += int(lbl)
+        groups[key][1] += 1
 
-    exam_pts.sort(key=lambda pt: (pt[0], pt[1]))
-    n_total = len(exam_pts)
-    if n_total == 0:
-        return {"breakpoints": [], "answers": 0}
+    stack: List[List[Any]] = []  # blocks [same, answers, hi]
+    for key in sorted(groups):
+        stack.append([groups[key][0], groups[key][1], key])
+        while len(stack) >= 2 and (stack[-2][0] + 1) / (stack[-2][1] + 2) >= (stack[-1][0] + 1) / (
+            stack[-1][1] + 2
+        ):
+            k, n, hi = stack.pop()
+            stack[-1][0] += k
+            stack[-1][1] += n
+            stack[-1][2] = hi
 
-    stack: List[List[Any]] = []
-    for p, _pid, y in exam_pts:
-        stack.append([float(y), 1, float(p)])
-        while len(stack) >= 2:
-            prev = stack[-2]
-            curr = stack[-1]
-            rate_prev = (prev[0] + 1.0) / (prev[1] + 2.0)
-            rate_curr = (curr[0] + 1.0) / (curr[1] + 2.0)
-            if rate_prev >= rate_curr:
-                prev[0] += curr[0]
-                prev[1] += curr[1]
-                prev[2] = max(prev[2], curr[2])
-                stack.pop()
-            else:
-                break
+    sure_above = 0.0
+    for k, n, hi in stack:
+        if wilson95(k, n)[0] <= POSSIBLE:
+            sure_above = hi  # everything up to here is not sure
+    if not stack or sure_above == stack[-1][2]:
+        sure_above = 1.0  # the top block is not sure: nothing is
 
-    breakpoints = [[b[2], (b[0] + 1.0) / (b[1] + 2.0)] for b in stack]
-    return {"breakpoints": breakpoints, "answers": n_total}
+    return {
+        "breakpoints": [[hi, (k + 1) / (n + 2)] for k, n, hi in stack],
+        "blocks": [[hi, k, n] for k, n, hi in stack],
+        "sure_above": sure_above,
+        "answers": total_answers,
+    }
 
 
-def calibrated(cal: Optional[Dict[str, Any]], p: float) -> float:
-    """The rate of the first breakpoint whose hi >= p; above the last one, the last rate."""
-    if not cal:
-        return p
-    bps = cal.get("breakpoints")
+def calibrated(cal: Optional[Dict[str, Any]], p: float) -> Optional[float]:
+    """The rate of the first block whose hi >= p (both rounded); above the last, the last rate.
+
+    None when there is no usable calibration.
+    """
+    bps = (cal or {}).get("breakpoints") or []
     if not bps:
-        return p
+        return None
+    key = score_key(p)
     for hi, rate in bps:
-        if p <= hi:
+        if key <= score_key(hi):
             return rate
     return bps[-1][1]
+
+
+def tier(cal: Optional[Dict[str, Any]], p: float) -> str:
+    """ "sure" when the answers are confident about scores above sure_above, else "maybe"."""
+    cut = (cal or {}).get("sure_above")
+    return "sure" if isinstance(cut, (int, float)) and score_key(p) > score_key(cut) else "maybe"
+
+
+def shown_pair(
+    weights: Dict[str, Any], a: Dict[str, Any], b: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Twin of worker.js workerChallengerPosterior. None when the pair is not shown; otherwise
+
+    {"raw": posterior, "shown": calibrated rate or None, "tier": "sure" | "maybe"}.
+    Shown = the gate-tested rule: posterior above one half plus the floor-and-area guard.
+    """
+    if not challenger_says_same(weights, a, b):
+        return None
+    p = posterior(weights, a, b)
+    cal = weights.get("calibration")
+    return {"raw": p, "shown": calibrated(cal, p), "tier": tier(cal, p)}
+
+
+def tier_report(weights: Dict[str, Any], records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Leave-one-flat-out: each independent flat (`_units`) is judged by a calibration fitted on
+
+    the other flats' answers, so no answer grades itself.
+    Returns {"weights": weights.get("id"), "units": N,
+             "sure": {"pairs": n, "same": k}, "maybe": {...}, "hidden": {...}}.
+    """
+    exam = [r for r in records if r.get("snapshot") != "missing" and r.get("label") in (0, 1)]
+    unit_map = _units(exam)
+    unique_units = sorted(set(unit_map.values()))
+
+    sure_pairs, sure_same = 0, 0
+    maybe_pairs, maybe_same = 0, 0
+    hidden_pairs, hidden_same = 0, 0
+
+    records_by_unit: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in exam:
+        u = unit_map[r.get("pair_id") or ""]
+        records_by_unit[u].append(r)
+
+    for u in unique_units:
+        train_records = [
+            r for other_u in unique_units if other_u != u for r in records_by_unit[other_u]
+        ]
+        cal = calibration(weights, train_records)
+
+        for r in records_by_unit[u]:
+            lbl = int(r.get("label") or 0)
+            target = r.get("target") or {}
+            cand = r.get("candidate") or {}
+            if not challenger_says_same(weights, target, cand):
+                hidden_pairs += 1
+                hidden_same += lbl
+            else:
+                p = posterior(weights, target, cand)
+                t = tier(cal, p)
+                if t == "sure":
+                    sure_pairs += 1
+                    sure_same += lbl
+                else:
+                    maybe_pairs += 1
+                    maybe_same += lbl
+
+    return {
+        "weights": weights.get("id"),
+        "units": len(unique_units),
+        "sure": {"pairs": sure_pairs, "same": sure_same},
+        "maybe": {"pairs": maybe_pairs, "same": maybe_same},
+        "hidden": {"pairs": hidden_pairs, "same": hidden_same},
+    }

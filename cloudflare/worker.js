@@ -2060,6 +2060,7 @@ function xrayResultCandidate(row) {
   out.url = (row && row.url) || null;
   if (row && typeof row.xray_posterior === "number") out.xray_posterior = Math.round(row.xray_posterior * 10000) / 10000;
   if (row && typeof row.xray_posterior_raw === "number") out.xray_posterior_raw = Math.round(row.xray_posterior_raw * 10000) / 10000;
+  if (row && row.xray_tier) out.xray_tier = row.xray_tier;
   if (row && row.xray_weights) out.xray_weights = row.xray_weights;
   if (row && row.xray_photo_group) out.xray_photo_group = true;
   return out;
@@ -2415,22 +2416,38 @@ function validXRayCalibration(cal) {
     if (hi < prevHi) return false;
     prevHi = hi;
   }
+  if ("sure_above" in cal && !(typeof cal.sure_above === "number" && cal.sure_above >= 0 && cal.sure_above <= 1)) return false;
   return true;
 }
 
+// The Worker and core/xray_weights.py differ in a score's last digits, so block edges compare
+// scores rounded to 6 decimals on both sides (SCORE_DECIMALS in the twin).
+function xrayScoreKey(p) {
+  return Math.round(p * 1e6) / 1e6;
+}
+
 function xrayCalibrated(cal, p) {
-  for (const [hi, rate] of cal.breakpoints) if (p <= hi) return rate;
+  const key = xrayScoreKey(p);
+  for (const [hi, rate] of cal.breakpoints) if (key <= xrayScoreKey(hi)) return rate;
   return cal.breakpoints[cal.breakpoints.length - 1][1];
 }
 
-// Posterior above one half, and (§5.5, kept by the admin on 2026-11-10) at least one fact beyond
-// floor and area agrees. Returns the posterior when the pair counts as the same flat, else null.
+// "sure" when the admin's answers are confident about scores above sure_above, else "maybe".
+function xrayTier(cal, p) {
+  return cal && typeof cal.sure_above === "number" && xrayScoreKey(p) > xrayScoreKey(cal.sure_above)
+    ? "sure"
+    : "maybe";
+}
+
+// Shown = the gate-tested rule: posterior above one half, and (§5.5, kept by the admin on
+// 2026-11-10) at least one fact beyond floor and area agrees. The calibration only sets the
+// shown rate and the tier. Null when the pair is not shown.
 function workerChallengerPosterior(weights, a, b) {
   const levels = xrayPairLevels(a, b, weights?.levels_version);
   const p = xrayPosteriorFromLevels(weights, levels);
-  const guard = [levels[2], levels[3], levels[4]].includes("agree");
-  const shown = weights?.calibration ? xrayCalibrated(weights.calibration, p) : p;
-  return shown > 0.5 && guard ? { shown, raw: p } : null;
+  if (!(p > 0.5 && [levels[2], levels[3], levels[4]].includes("agree"))) return null;
+  const cal = weights?.calibration || null;
+  return { raw: p, shown: cal ? xrayCalibrated(cal, p) : null, tier: xrayTier(cal, p) };
 }
 
 function validXRayWeights(w) {
@@ -2573,19 +2590,24 @@ async function queryWorkerExactDuplicates(db, target, limit = 25) {
       if (weights) {
         const v = workerChallengerPosterior(weights, target, r);
         if (v === null) continue;
-        r.xray_posterior = v.shown;
+        if (typeof v.shown === "number") r.xray_posterior = v.shown;
         r.xray_posterior_raw = v.raw;
+        r.xray_tier = v.tier;
         r.xray_weights = weights.id;
       } else if (!workerCandidateMatchesTarget(target, r)) {
         continue;
       }
       if (dupMap.has(r.id) && dupMap.get(r.id).xray_photo_group) {
         r.xray_photo_group = true;
+        r.xray_tier = "sure";
       }
       dupMap.set(r.id, r);
     }
   }
-  return Array.from(dupMap.values()).sort((a, b) => (Number(a.price_usd) || 0) - (Number(b.price_usd) || 0));
+  const tierRank = d => (d.xray_tier === "maybe" ? 1 : 0);
+  return Array.from(dupMap.values()).sort(
+    (a, b) => tierRank(a) - tierRank(b) || (Number(a.price_usd) || 0) - (Number(b.price_usd) || 0)
+  );
 }
 
 async function enrichDuplicatesIfNeeded(db, dups, maxCount = 3) {
@@ -2735,18 +2757,19 @@ async function buildPhoneReport(db, parsed, live, postTarget = null) {
     const rDups = await queryWorkerExactDuplicates(db, r, 15);
     for (const d of rDups) {
       if (d && d.id && !relatedIds.has(d.id) && !phoneDupMap.has(d.id)) {
-        phoneDupMap.set(d.id, { dup: d, refPrice });
+        phoneDupMap.set(d.id, { dup: d, refPrice, ref: r });
       }
     }
   }
   if (phoneDupMap.size > 0) {
+    const tierRank = d => (d.xray_tier === "maybe" ? 1 : 0);
     const sortedPhoneDups = Array.from(phoneDupMap.values()).sort(
-      (a, b) => (Number(a.dup.price_usd) || 0) - (Number(b.dup.price_usd) || 0)
+      (a, b) => tierRank(a.dup) - tierRank(b.dup) || (Number(a.dup.price_usd) || 0) - (Number(b.dup.price_usd) || 0)
     );
     await enrichDuplicatesIfNeeded(db, sortedPhoneDups.map(item => item.dup), 3);
     lines.push("");
-    lines.push("🎯 <b>იგივე ბინა სხვაგან:</b>");
-    for (const { dup, refPrice } of sortedPhoneDups.slice(0, 4)) {
+    lines.push("🎯 <b>ამ ნომრის სხვა ბინები სხვაგანაც:</b>");
+    for (const { dup, refPrice, ref } of sortedPhoneDups.slice(0, 4)) {
       const dPrice = Math.round(Number(dup.price_usd) || 0);
       const dSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
       const dOwner = formatOwnerBadge(dup.is_owner);
@@ -2759,6 +2782,8 @@ async function buildPhoneReport(db, parsed, live, postTarget = null) {
         else diffStr = " (იგივე ფასი)";
       }
       lines.push(`• <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}${dPhonePart}${duplicateSureness(dup)}`);
+      const sameAs = dup.xray_tier === "maybe" ? "შესაძლოა იგივეა, რაც" : "იგივეა, რაც";
+      lines.push(`  └ ${sameAs} $${Math.round(Number(ref.price_usd) || 0).toLocaleString()} · ${Number(ref.area_m2) || "?"} მ²${ref.district ? ` (${ref.district})` : ""}`);
     }
   }
 
@@ -3002,8 +3027,14 @@ async function handleXRayQuery(text, env, opts = {}) {
 
     lines.push("");
     if (duplicates.length > 0) {
-      lines.push("🎯 <b>იგივე ბინა სხვაგან:</b>");
+      let shownTier = null;
       for (const [i, dup] of duplicates.slice(0, 4).entries()) {
+        const dupTier = dup.xray_tier === "maybe" ? "maybe" : "sure";
+        if (dupTier !== shownTier) {
+          if (shownTier !== null) lines.push("");
+          lines.push(dupTier === "sure" ? "🎯 <b>იგივე ბინა სხვაგან:</b>" : "🤔 <b>შესაძლოა იგივე ბინაა:</b>");
+          shownTier = dupTier;
+        }
         const dupPrice = Math.round(Number(dup.price_usd) || 0);
         const dupSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
         const dupOwner = formatOwnerBadge(dup.is_owner);

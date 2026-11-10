@@ -1972,5 +1972,193 @@
    0.99
   ],
   "expected": 0.85
+ },
+ {
+  "name": "tier: at sure_above cut",
+  "fn": "tier",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.853746,
+      0.5333
+     ],
+     [
+      0.979429,
+      0.9375
+     ]
+    ],
+    "sure_above": 0.853746
+   },
+   0.853746
+  ],
+  "expected": "maybe"
+ },
+ {
+  "name": "tier: slightly above cut within rounding lower",
+  "fn": "tier",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.853746,
+      0.5333
+     ],
+     [
+      0.979429,
+      0.9375
+     ]
+    ],
+    "sure_above": 0.853746
+   },
+   0.8537464138631558
+  ],
+  "expected": "maybe"
+ },
+ {
+  "name": "tier: slightly above cut within rounding upper",
+  "fn": "tier",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.853746,
+      0.5333
+     ],
+     [
+      0.979429,
+      0.9375
+     ]
+    ],
+    "sure_above": 0.853746
+   },
+   0.8537464138631561
+  ],
+  "expected": "maybe"
+ },
+ {
+  "name": "tier: above cut",
+  "fn": "tier",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.853746,
+      0.5333
+     ],
+     [
+      0.979429,
+      0.9375
+     ]
+    ],
+    "sure_above": 0.853746
+   },
+   0.853747
+  ],
+  "expected": "sure"
+ },
+ {
+  "name": "tier: well above cut",
+  "fn": "tier",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.853746,
+      0.5333
+     ],
+     [
+      0.979429,
+      0.9375
+     ]
+    ],
+    "sure_above": 0.853746
+   },
+   0.9794
+  ],
+  "expected": "sure"
+ },
+ {
+  "name": "tier: cal without sure_above",
+  "fn": "tier",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.853746,
+      0.5333
+     ],
+     [
+      0.979429,
+      0.9375
+     ]
+    ]
+   },
+   0.9794
+  ],
+  "expected": "maybe"
+ },
+ {
+  "name": "tier: sure_above 1.0",
+  "fn": "tier",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.853746,
+      0.5333
+     ],
+     [
+      0.979429,
+      0.9375
+     ]
+    ],
+    "sure_above": 1.0
+   },
+   0.999
+  ],
+  "expected": "maybe"
+ },
+ {
+  "name": "calibrated: score within rounding stays in block",
+  "fn": "calibrated",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.853746,
+      0.5333
+     ],
+     [
+      0.979429,
+      0.9375
+     ]
+    ],
+    "sure_above": 0.853746
+   },
+   0.8537464138631561
+  ],
+  "expected": 0.5333
+ },
+ {
+  "name": "calibrated: score above block moves to next block",
+  "fn": "calibrated",
+  "args": [
+   {
+    "breakpoints": [
+     [
+      0.853746,
+      0.5333
+     ],
+     [
+      0.979429,
+      0.9375
+     ]
+    ],
+    "sure_above": 0.853746
+   },
+   0.853747
+  ],
+  "expected": 0.9375
  }
 ]

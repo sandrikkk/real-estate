@@ -42,6 +42,7 @@ from core.xray_weights import (  # noqa: E402
     gate,
     group_pairs,
     load_listings,
+    tier_report,
     valid_weights,
 )
 
@@ -159,6 +160,18 @@ def summary_text(
                 "⏳ ახალი წესი ჯერ ვერ ამტკიცებს, რომ ძველზე უკეთესია. ბოტი ძველ წესს იყენებს."
             )
 
+    tiers = report.get("tiers") or {}
+    sure = tiers.get("sure") or {}
+    maybe = tiers.get("maybe") or {}
+    sure_pairs = sure.get("pairs", 0)
+    maybe_pairs = maybe.get("pairs", 0)
+    if sure_pairs + maybe_pairs > 0:
+        sure_same = sure.get("same", 0)
+        maybe_same = maybe.get("same", 0)
+        lines.append(
+            f"შენი პასუხებით: 🎯 ხაზებიდან {sure_same}/{sure_pairs} იგივე ბინაა, 🤔 ხაზებიდან {maybe_same}/{maybe_pairs}."
+        )
+
     if sent is not None and sent > 0:
         lines.append(f"ამ კვირის შესამოწმებელი: {sent} წყვილი (ქვემოთ).")
 
@@ -225,6 +238,9 @@ def run(
         champ_id = champion.get("id") or "champion"
         calibrations[champ_id] = calibration(champion, records)
     calibrations[version] = calibration(weights, records)
+
+    active = champion if champion else {**weights, "id": version}
+    report["tiers"] = tier_report(active, records)
     jsonl = to_jsonl(records)
     labels_hash = hashlib.sha256(jsonl.encode("utf-8")).hexdigest()
 
