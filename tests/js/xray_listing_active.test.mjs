@@ -31,8 +31,10 @@ function recordingD1(routes = []) {
 }
 
 function serveSsGe(statusById) {
+  const calls = [];
   w.fetch = async (url) => {
     const u = new URL(String(url));
+    calls.push(u);
     if (u.hostname === "home.ss.ge" && u.pathname === "/api/refresh_access_token") {
       return new Response("{}", { status: 200, headers: { "x-ss-session-token": "tok" } });
     }
@@ -47,6 +49,7 @@ function serveSsGe(statusById) {
     }
     return new Response("offline", { status: 503 });
   };
+  return calls;
 }
 
 const flat = { district: "გლდანი", area_m2: 72, floor: "1", rooms: 3 };
@@ -174,6 +177,62 @@ test("an unreachable SS.ge keeps the duplicates", async () => {
     const text = await w.buildPhoneReport(db, parsed, { ...FRESH }, null, collect);
     assert.ok(text.includes(DUP_A.url));
     assert.ok(text.includes(DUP_B.url));
+  } finally {
+    goOffline();
+  }
+});
+
+test("masked-prefix rows are listed as unconfirmed while the lookup runs, with no verdict", async () => {
+  goOffline();
+  try {
+    const db = recordingD1([phoneRoute([{ ...MASKED_MYHOME }])]);
+    const text = await w.buildPhoneReport(db, parsed, { mode: "queued", rows: [] });
+    assert.ok(text.includes("📎 ბაზაში <b>1</b> განცხადებაა ნომრით, რომელიც <code>599111***</code>-ით იწყება."));
+    assert.ok(text.includes(MASKED_MYHOME.url));
+    assert.ok(text.includes("🔄 myhome-ზე ვეძებ"));
+    assert.ok(!text.includes("👤"));
+    assert.ok(!text.includes("ამ ნომრის სხვა ბინები სხვაგანაც"));
+    assert.ok(!db.log.some(e => /FROM properties WHERE district IN/.test(e.sql)));
+  } finally {
+    goOffline();
+  }
+});
+
+test("a failed lookup with only masked rows says MyHome could not be read", async () => {
+  goOffline();
+  try {
+    const db = recordingD1([phoneRoute([{ ...MASKED_MYHOME }])]);
+    const text = await w.buildPhoneReport(db, parsed, { mode: "failed", rows: [] });
+    assert.ok(text.includes("⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ."));
+    assert.ok(text.includes("📎"));
+  } finally {
+    goOffline();
+  }
+});
+
+test("an exact-number row hides the masked-prefix rows", async () => {
+  goOffline();
+  try {
+    const exact = { ...MASKED_MYHOME, id: "myhome_901", url: "https://www.myhome.ge/ka/pr/901/", phone_number: "599111222" };
+    const db = recordingD1([phoneRoute([exact, { ...MASKED_MYHOME }])]);
+    const text = await w.buildPhoneReport(db, parsed, { mode: "queued", rows: [] });
+    assert.ok(text.includes("https://www.myhome.ge/ka/pr/901/"));
+    assert.ok(!text.includes("https://www.myhome.ge/ka/pr/900/"));
+    assert.ok(!text.includes("📎"));
+  } finally {
+    goOffline();
+  }
+});
+
+test("one SS.ge token per batch", async () => {
+  const calls = serveSsGe({ 100: "Active", 201: "Expired", 202: "Active" });
+  try {
+    const db = recordingD1([phoneRoute([{ ...REF }]), dupRoute([{ ...DUP_A }, { ...DUP_B }])]);
+    const text = await w.buildPhoneReport(db, parsed, { ...FRESH }, null, {});
+    const tokenCalls = calls.filter(u => u.pathname === "/api/refresh_access_token").length;
+    const detailCalls = calls.filter(u => u.hostname === "api-gateway.ss.ge").length;
+    assert.equal(tokenCalls, 2);
+    assert.equal(detailCalls, 3);
   } finally {
     goOffline();
   }
