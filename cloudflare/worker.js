@@ -1603,7 +1603,28 @@ async function persistLiveEnrichment(db, rowId, merged) {
   } catch (e) {}
 }
 
-async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
+// An SS.ge session token, or null. One report fetches it once and reuses it for every listing.
+async function fetchSsGeToken() {
+  try {
+    const tokenRes = await fetch("https://home.ss.ge/api/refresh_access_token", {
+      method: "POST",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://home.ss.ge",
+        "Referer": "https://home.ss.ge/"
+      }
+    });
+    const setCookie = tokenRes.headers.get("set-cookie") || "";
+    const tokenMatch = setCookie.match(/ss-session-token=([^;\s,]+)/);
+    return tokenMatch ? tokenMatch[1] : (tokenRes.headers.get("x-ss-session-token") || null);
+  } catch (e) {
+    return null;
+  }
+}
+
+async function fetchLiveStatementDetails(source, sourceId, rawUrl, ssToken) {
+  // ssToken: undefined means fetch a token here; a string or null comes from fetchSsGeToken().
   // MyHome answers the Worker with a Cloudflare challenge (403) and its API with 401, so only
   // SS.ge is read live here; MyHome listings are read by the lookup job (ADR 0004).
   if (source !== "ss_ge") return null;
@@ -1616,18 +1637,7 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
   try {
     if (source === "ss_ge") {
       try {
-        const tokenRes = await fetch("https://home.ss.ge/api/refresh_access_token", {
-          method: "POST",
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Origin": "https://home.ss.ge",
-            "Referer": "https://home.ss.ge/"
-          }
-        });
-        const setCookie = tokenRes.headers.get("set-cookie") || "";
-        const tokenMatch = setCookie.match(/ss-session-token=([^;\s,]+)/);
-        const token = tokenMatch ? tokenMatch[1] : (tokenRes.headers.get("x-ss-session-token") || null);
+        const token = ssToken === undefined ? await fetchSsGeToken() : ssToken;
         if (token) {
           const detailsUrl = `https://api-gateway.ss.ge/v1/RealEstate/details?applicationId=${encodeURIComponent(sourceId)}&currencyId=2&updateViewCount=false`;
           const detailsRes = await fetch(detailsUrl, {
@@ -2661,11 +2671,13 @@ async function checkSsGeActive(db, rows) {
   const slice = (rows || [])
     .filter(r => r && r.source === "ss_ge" && r.is_active === undefined)
     .slice(0, SS_GE_ACTIVE_CHECKS);
+  if (slice.length === 0) return;
+  const token = await fetchSsGeToken();
   await Promise.all(
     slice.map(async row => {
       const srcId = row.source_id || String(row.id || "").replace(/^ss_ge_/, "");
       if (!srcId) return;
-      const details = await fetchLiveStatementDetails("ss_ge", srcId, row.url);
+      const details = await fetchLiveStatementDetails("ss_ge", srcId, row.url, token);
       if (!details) return;
       Object.assign(row, mergeLiveIntoRow(row, details));
       if (row.id) await persistLiveEnrichment(db, row.id, row);
@@ -2684,18 +2696,24 @@ async function buildPhoneReport(db, parsed, live, postTarget = null, collect = n
     .all();
   const fetched = results || [];
   let rows = fetched;
+  // Rows that match only the masked prefix (e.g. 500508***): maybe another person's number.
+  let unconfirmed = [];
   if (parsed.phone9) {
     const exactRows = fetched.filter(
       r => r.phone_number === parsed.formattedPhone || r.phone_number === parsed.phone9
     );
     if (exactRows.length > 0) rows = exactRows;
-    // Masked-prefix rows may be other people; do not mix them into an exact MyHome answer.
-    else if (live.mode === "fresh" && live.rows.length > 0) rows = [];
+    else {
+      // Masked-prefix rows may be other people: never count them as this number's listings.
+      if (!(live.mode === "fresh" && live.rows.length > 0)) unconfirmed = fetched;
+      rows = [];
+    }
   }
   // A complete live answer lists every active MyHome listing of this number, so a stored
   // MyHome row it lacks is either removed or another person's (masked-prefix match).
   if (parsed.phone9 && live.mode === "fresh" && !live.full) {
     rows = rows.filter(r => r.source !== "myhome");
+    unconfirmed = unconfirmed.filter(r => r.source !== "myhome");
   }
 
   const liveRows = live.rows || [];
@@ -2715,6 +2733,27 @@ async function buildPhoneReport(db, parsed, live, postTarget = null, collect = n
     ? `🔎 <b>ტელეფონის რენტგენი (პოსტის ნომერზე):</b> <code>${parsed.formattedPhone}</code>`
     : `🔎 <b>ტელეფონის რენტგენი:</b> <code>${parsed.formattedPhone}</code>`;
   const searching = "🔄 myhome-ზე ვეძებ, დაახლოებით 1 წუთში მოგწერ.";
+  if (rows.length === 0 && unconfirmed.length > 0) {
+    const out = [header, "", "ℹ️ ზუსტად ამ ნომერზე ჩვენს ბაზაში განცხადება ჯერ არ ფიქსირდება."];
+    const status = {
+      queued: searching,
+      failed: "⚠️ myhome-ის შედეგი ახლა ვერ მივიღეთ.",
+      fresh: "🌐 myhome-ზე ამ ნომერზე აქტიური განცხადება არ არის."
+    }[live.mode];
+    if (status) out.push(status);
+    out.push(
+      "",
+      `📎 ბაზაში <b>${unconfirmed.length}</b> განცხადებაა ნომრით, რომელიც <code>${parsed.maskedPhone}</code>-ით იწყება. ეს შეიძლება სხვისი იყოს, ამიტომ სტატუსს მათზე არ ვაფუძნებ:`
+    );
+    for (const r of unconfirmed.slice(0, 5)) {
+      const p = Math.round(Number(r.price_usd) || 0).toLocaleString();
+      const area = Number(r.area_m2) || 0;
+      const dist = r.district || "უცნობი უბანი";
+      const src = r.source === "myhome" ? "MyHome" : "SS.ge";
+      out.push(`• <a href="${r.url || "#"}">${src}</a> — <b>$${p}</b> | ${area} მ² | ${dist}`);
+    }
+    return out.join("\n");
+  }
   if (rows.length === 0) {
     if (live.mode === "fresh") {
       return `${header}\n\nℹ️ ამ ნომერზე განცხადება ვერ მოიძებნა ვერც myhome-ზე და ვერც ჩვენს ბაზაში.`;
