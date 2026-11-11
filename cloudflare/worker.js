@@ -1469,6 +1469,14 @@ function parseXRayInput(text) {
   return null;
 }
 
+// SS.ge's own answer to "is this listing still online": true, false, or null when it does not say.
+function ssGeIsActive(st) {
+  if (st.isInactiveApplication === true) return false;
+  if (typeof st.status === "string" && st.status) return st.status.toLowerCase() === "active";
+  if (st.isInactiveApplication === false) return true;
+  return null;
+}
+
 function parseSsGeStatementDetails(st, agentInfo = {}, html = "", sourceId = "", pageUrl = "") {
   const firstPhone = Array.isArray(st.applicationPhones) && st.applicationPhones.length > 0 ? st.applicationPhones[0] : null;
   const rawPhone = (firstPhone && (firstPhone.phoneNumber || firstPhone)) || st.user_phone_number || st.phoneNumber || st.phone_number || "";
@@ -1537,7 +1545,8 @@ function parseSsGeStatementDetails(st, agentInfo = {}, html = "", sourceId = "",
     user_type: userType,
     phone_number: phone9 ? formatGeorgianPhone(phone9) : null,
     author_id: rawUid ? String(rawUid) : null,
-    author_listings_count: appCount || null
+    author_listings_count: appCount || null,
+    is_active: ssGeIsActive(st)
   };
 }
 
@@ -1571,6 +1580,7 @@ function mergeLiveIntoRow(row, live) {
   if (liveCnt > 0 || prevCnt > 0) {
     merged.author_listings_count = Math.max(prevCnt, liveCnt);
   }
+  if (live.is_active === true || live.is_active === false) merged.is_active = live.is_active;
   return merged;
 }
 
@@ -1636,7 +1646,7 @@ async function fetchLiveStatementDetails(source, sourceId, rawUrl) {
             const st = await detailsRes.json();
             if (st && Number(st.applicationId || sourceId) === Number(sourceId)) {
               const parsedApi = parseSsGeStatementDetails(st, st.initialAgentInfoData || {}, "", sourceId, rawUrl);
-              if (parsedApi.is_owner !== null) {
+              if (parsedApi.is_owner !== null || parsedApi.is_active === false) {
                 return parsedApi;
               }
             }
@@ -2642,6 +2652,27 @@ async function enrichDuplicatesIfNeeded(db, dups, maxCount = 3) {
   );
 }
 
+// How many listings one report asks SS.ge about: a request budget, not a matching rule.
+const SS_GE_ACTIVE_CHECKS = 8;
+
+// Asks SS.ge whether each row is still online and sets row.is_active (true / false).
+// A row SS.ge could not be asked about keeps is_active undefined, which means unknown.
+async function checkSsGeActive(db, rows) {
+  const slice = (rows || [])
+    .filter(r => r && r.source === "ss_ge" && r.is_active === undefined)
+    .slice(0, SS_GE_ACTIVE_CHECKS);
+  await Promise.all(
+    slice.map(async row => {
+      const srcId = row.source_id || String(row.id || "").replace(/^ss_ge_/, "");
+      if (!srcId) return;
+      const details = await fetchLiveStatementDetails("ss_ge", srcId, row.url);
+      if (!details) return;
+      Object.assign(row, mergeLiveIntoRow(row, details));
+      if (row.id) await persistLiveEnrichment(db, row.id, row);
+    })
+  );
+}
+
 // The phone report. `live` is myHomeLiveState(): { mode: "fresh" | "queued" | "failed" | "none", rows, full }.
 async function buildPhoneReport(db, parsed, live, postTarget = null, collect = null) {
   const fmtParam = parsed.formattedPhone || parsed.maskedPhone || "";
@@ -2660,6 +2691,11 @@ async function buildPhoneReport(db, parsed, live, postTarget = null, collect = n
     if (exactRows.length > 0) rows = exactRows;
     // Masked-prefix rows may be other people; do not mix them into an exact MyHome answer.
     else if (live.mode === "fresh" && live.rows.length > 0) rows = [];
+  }
+  // A complete live answer lists every active MyHome listing of this number, so a stored
+  // MyHome row it lacks is either removed or another person's (masked-prefix match).
+  if (parsed.phone9 && live.mode === "fresh" && !live.full) {
+    rows = rows.filter(r => r.source !== "myhome");
   }
 
   const liveRows = live.rows || [];
@@ -2722,6 +2758,8 @@ async function buildPhoneReport(db, parsed, live, postTarget = null, collect = n
     }
   }
 
+  await checkSsGeActive(db, rows.slice(0, 5));
+
   const verdictTarget = postTarget || rows[0];
   const verdict = evaluateWorkerBrokerVerdict(verdictTarget, rows, liveRows.length ? "myhome-ზე და ბაზაში" : "ბაზაში");
   const more = live.mode === "fresh" && live.full ? "+" : "";
@@ -2746,7 +2784,8 @@ async function buildPhoneReport(db, parsed, live, postTarget = null, collect = n
     const area = Number(r.area_m2) || 0;
     const dist = r.district || "უცნობი უბანი";
     const src = r.source === "myhome" ? "MyHome" : "SS.ge";
-    lines.push(`• <a href="${r.url || "#"}">${src}</a> — <b>$${p}</b> | ${area} მ² | ${dist}`);
+    const gone = r.is_active === false ? " · 🚫 აღარ არის აქტიური" : "";
+    lines.push(`• <a href="${r.url || "#"}">${src}</a> — <b>$${p}</b> | ${area} მ² | ${dist}${gone}`);
   }
   if (live.mode === "fresh" && liveRows.length > 0) {
     lines.push(`🔗 <a href="${myHomeSearchUrl({ q: parsed.phone9 })}">ყველა განცხადება myhome-ზე</a>`);
@@ -2756,6 +2795,7 @@ async function buildPhoneReport(db, parsed, live, postTarget = null, collect = n
   const relatedIds = new Set(rows.map(r => r.id));
   const phoneDupMap = new Map();
   for (const r of rows.slice(0, 5)) {
+    if (r.is_active === false) continue;
     const refPrice = Number(r.price_usd) || 0;
     const rDups = await queryWorkerExactDuplicates(db, r, 15);
     for (const d of rDups) {
@@ -2769,33 +2809,37 @@ async function buildPhoneReport(db, parsed, live, postTarget = null, collect = n
     const sortedPhoneDups = Array.from(phoneDupMap.values()).sort(
       (a, b) => tierRank(a.dup) - tierRank(b.dup) || (Number(a.dup.price_usd) || 0) - (Number(b.dup.price_usd) || 0)
     );
-    await enrichDuplicatesIfNeeded(db, sortedPhoneDups.map(item => item.dup), 3);
-    lines.push("");
-    lines.push("🎯 <b>ამ ნომრის სხვა ბინები სხვაგანაც:</b>");
-    lines.push("ℹ️ ეს ამ ნომრის <b>სხვა</b> ბინებია, არა შენი პოსტი. ✅/❌: ზედა ხაზი და მის ქვეშ └ ერთი ბინაა?");
-    for (const [i, { dup, refPrice, ref }] of sortedPhoneDups.slice(0, 4).entries()) {
-      const dPrice = Math.round(Number(dup.price_usd) || 0);
-      const dSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
-      const dOwner = formatOwnerBadge(dup.is_owner);
-      const dPhonePart = dup.phone_number ? ` | 📞 <code>${dup.phone_number}</code>` : "";
-      let diffStr = "";
-      if (refPrice > 0 && dPrice > 0) {
-        const delta = Math.round(dPrice - refPrice);
-        if (delta < 0) diffStr = ` (<b>-$${Math.abs(delta).toLocaleString()} უფრო იაფად!</b>)`;
-        else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
-        else diffStr = " (იგივე ფასი)";
+    const checkedDups = sortedPhoneDups.slice(0, SS_GE_ACTIVE_CHECKS);
+    await checkSsGeActive(db, checkedDups.map(item => item.dup));
+    const shownDups = checkedDups.filter(item => item.dup.is_active !== false).slice(0, 4);
+    if (shownDups.length > 0) {
+      lines.push("");
+      lines.push("🎯 <b>ამ ნომრის სხვა ბინები სხვაგანაც:</b>");
+      lines.push("ℹ️ ეს ამ ნომრის <b>სხვა</b> ბინებია, არა შენი პოსტი. ✅/❌: ზედა ხაზი და მის ქვეშ └ ერთი ბინაა?");
+      for (const [i, { dup, refPrice, ref }] of shownDups.entries()) {
+        const dPrice = Math.round(Number(dup.price_usd) || 0);
+        const dSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
+        const dOwner = formatOwnerBadge(dup.is_owner);
+        const dPhonePart = dup.phone_number ? ` | 📞 <code>${dup.phone_number}</code>` : "";
+        let diffStr = "";
+        if (refPrice > 0 && dPrice > 0) {
+          const delta = Math.round(dPrice - refPrice);
+          if (delta < 0) diffStr = ` (<b>-$${Math.abs(delta).toLocaleString()} უფრო იაფად!</b>)`;
+          else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
+          else diffStr = " (იგივე ფასი)";
+        }
+        lines.push(`${i + 1}. <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}${dPhonePart}${duplicateSureness(dup)}`);
+        const sameAs = dup.xray_tier === "maybe" ? "შესაძლოა იგივეა, რაც" : "იგივეა, რაც";
+        lines.push(`  └ ${sameAs} <a href="${ref.url || "#"}">$${Math.round(Number(ref.price_usd) || 0).toLocaleString()}</a> · ${Number(ref.area_m2) || "?"} მ²${ref.district ? ` (${ref.district})` : ""}`);
       }
-      lines.push(`${i + 1}. <a href="${dup.url || "#"}">${dSrc}</a> — <b>$${dPrice.toLocaleString()}</b>${diffStr} | ${dOwner}${dPhonePart}${duplicateSureness(dup)}`);
-      const sameAs = dup.xray_tier === "maybe" ? "შესაძლოა იგივეა, რაც" : "იგივეა, რაც";
-      lines.push(`  └ ${sameAs} <a href="${ref.url || "#"}">$${Math.round(Number(ref.price_usd) || 0).toLocaleString()}</a> · ${Number(ref.area_m2) || "?"} მ²${ref.district ? ` (${ref.district})` : ""}`);
-    }
-    if (collect) {
-      collect.duplicates = sortedPhoneDups.slice(0, 4).map(({ dup, ref }) => ({
-        ...xrayResultCandidate(dup),
-        _ref: xrayResultCandidate(ref)
-      }));
-      collect.resultTarget = {};
-      collect.resultKind = "phone_dup";
+      if (collect) {
+        collect.duplicates = shownDups.map(({ dup, ref }) => ({
+          ...xrayResultCandidate(dup),
+          _ref: xrayResultCandidate(ref)
+        }));
+        collect.resultTarget = {};
+        collect.resultKind = "phone_dup";
+      }
     }
   }
 
