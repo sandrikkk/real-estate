@@ -15,7 +15,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -104,11 +104,20 @@ def telegram_photo_sender(token: str):
     return send_photo
 
 
+def photo_answers(records: List[Dict[str, Any]]) -> Tuple[int, int]:
+    """(same flat, answered) over the admin's ✅/❌ on photo-search lines (ADR 0005)."""
+    answered = [
+        r["label"] for r in records if r.get("reply_kind") == "photo" and r["label"] in (0, 1)
+    ]
+    return sum(answered), len(answered)
+
+
 def summary_text(
     version: str,
     summary: Dict[str, Any],
     report: Dict[str, Any],
     sent: Optional[int] = None,
+    photo: Optional[Tuple[int, int]] = None,
 ) -> str:
     lbl_counts = summary.get("label") or {}
     n1 = lbl_counts.get("1", 0)
@@ -170,6 +179,14 @@ def summary_text(
         maybe_same = maybe.get("same", 0)
         lines.append(
             f"შენი პასუხებით: 🎯 ხაზებიდან {sure_same}/{sure_pairs} იგივე ბინაა, 🤔 ხაზებიდან {maybe_same}/{maybe_pairs}."
+        )
+
+    if photo is not None:
+        same, answered = photo
+        lines.append(
+            f"📸 ფოტოთი ძებნის ხაზებიდან {same}/{answered} იგივე ბინაა."
+            if answered
+            else "📸 ფოტოთი ძებნაზე პასუხი ჯერ არ გაქვს."
         )
 
     if sent is not None and sent > 0:
@@ -367,7 +384,9 @@ def run(
                 "sendMessage",
                 {
                     "chat_id": chat_id,
-                    "text": summary_text(version, summary, report, sent=len(picks)),
+                    "text": summary_text(
+                        version, summary, report, sent=len(picks), photo=photo_answers(records)
+                    ),
                     "parse_mode": "HTML",
                 },
             )
