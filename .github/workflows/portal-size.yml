@@ -1,0 +1,36 @@
+name: Portal size
+
+# Manual, read-only count of Tbilisi flats on MyHome and SS.ge, all of them and inside
+# config/filters.json, to size a database that covers the whole market. The counts are in the
+# run summary.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  size:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install "pydantic>=2.0.0" "pydantic-settings>=2.0.0" "python-dotenv>=1.0.0" "curl_cffi>=0.7.0" "Pillow>=10.0.0"
+
+      - name: Count
+        env:
+          PYTHONUNBUFFERED: "1"
+          CLOUDFLARE_PROXY_URL: ${{ secrets.CLOUDFLARE_PROXY_URL }}
+          CLOUDFLARE_SYNC_KEY: ${{ secrets.CLOUDFLARE_SYNC_KEY }}
+        run: python scripts/portal_size.py
