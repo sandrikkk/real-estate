@@ -196,7 +196,7 @@ async def run_job(
         elif kind == "owner" and job.get("target_id") and owner_sources is not None:
             result = await lookup_owner(conn, str(job["target_id"]), owner_sources)
         elif kind == "photo" and job.get("target_id") and download is not None:
-            result = await lookup_photos(conn, str(job["target_id"]), download)
+            result = await lookup_photos(conn, str(job["target_id"]), download, owner_sources)
     except Exception as e:  # the user is told either way
         # The type only: the logs are public, and a message can carry the phone number.
         print(f"X-Ray lookup error: {type(e).__name__}")

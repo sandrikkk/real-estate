@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
 from core.dedup import (
     HASH_THRESHOLD,
@@ -30,11 +30,17 @@ from core.dedup import (
 )
 from core.xray import _clean_floor, _expand_district_aliases, parse_xray_input, snapshot_fields
 
+if TYPE_CHECKING:
+    from core.owner_search import Sources
+
 # Budgets, not matching thresholds: how many listings to show, how many hash rows to read per
 # D1 request, and how long to wait so that every photo of an album has reached D1.
 PHOTO_MAX_SHOWN = 5
 HASH_PAGE_SIZE = 5000
 ALBUM_SETTLE_SECONDS = 10
+# How many MyHome and SS.ge listings the live part downloads photos of: a work cap, the owner
+# search's own (core/owner_search.py MAX_PHOTO_CANDIDATES).
+LIVE_MAX_HASHED = 24
 
 Download = Callable[[str], Awaitable[Optional[bytes]]]
 
@@ -158,8 +164,10 @@ def photo_report(
     shown: List[Dict[str, Any]],
     counts: Dict[str, int],
     dropped: int,
+    live: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
-    """The follow-up text and its candidates, in the order of the numbered lines."""
+    """The follow-up text and its candidates, in the order of the numbered lines. `live` is
+    live_matches' answer, or None when the portals were not part of this search."""
     lines = [f"📸 <b>ფოტოებით შედარება</b> ({post_count} ფოტო)", ""]
     candidates: List[Dict[str, Any]] = []
     if shown:
@@ -182,6 +190,8 @@ def photo_report(
             lines.append(" | ".join(parts))
             candidates.append({**snapshot_fields(row), "photo_matches": counts.get(row["id"], 0)})
         lines += ["", "მონიშნე ქვემოთ: ✅ იგივე ბინაა, ❌ სხვაა, 🤷 ვერ ვხვდები."]
+    elif live and live["asked"]:
+        lines.append("ℹ️ ამ ფოტოებით განცხადება ვერ მოიძებნა.")
     else:
         lines.append("ℹ️ ჩვენს ბაზაში ამ ფოტოებით განცხადება ვერ მოიძებნა.")
     if dropped:
@@ -192,19 +202,96 @@ def photo_report(
     lines.append(
         f"ℹ️ შევადარე ჩვენი ბაზის {scanned} განცხადების ფოტოებს (ფოტოები ყველა განცხადებას არ აქვს)."
     )
+    if live is not None:
+        lines.append(_live_line(live))
     return "\n".join(lines), candidates
 
 
-def _caption_flat(conn: Any, batch_id: str) -> Dict[str, Any]:
+def _live_line(live: Dict[str, Any]) -> str:
+    if not live["asked"]:
+        return "ℹ️ myhome-სა და ss.ge-ზეც რომ მოვძებნო, ფოტოებს წარწერად დაურთე უბანი და ფართი."
+    names = {"myhome": "myhome", "ss.ge": "ss.ge"}
+    failed = [names[f] for f in live["failed"]]
+    line = f"ℹ️ myhome-სა და ss.ge-ზე ახლა შევამოწმე {live['checked']} განცხადების ფოტოები."
+    if failed:
+        line += f" {' და '.join(failed)} ახლა ვერ წავიკითხე."
+    return line
+
+
+def _caption(conn: Any, batch_id: str) -> Optional[str]:
     row = conn.execute(
         "SELECT caption FROM xray_photo_batches WHERE batch_id = ?", (batch_id,)
     ).fetchone()
-    caption = row["caption"] if row else None
+    return row["caption"] if row else None
+
+
+def _caption_flat(conn: Any, batch_id: str) -> Dict[str, Any]:
+    caption = _caption(conn, batch_id)
     parsed = parse_xray_input(caption) if caption else None
     return parsed if parsed and parsed.get("kind") == "fb_text" else {}
 
 
-async def lookup_photos(conn: Any, batch_id: str, download: Download) -> Dict[str, Any]:
+def _gap(a: Any, b: Any) -> float:
+    try:
+        a, b = float(a or 0), float(b or 0)
+    except (TypeError, ValueError):
+        return float("inf")
+    return abs(a - b) if a > 0 and b > 0 else float("inf")
+
+
+async def live_matches(
+    flat: Dict[str, Any], kept: List[str], shown_ids: set, sources: "Sources"
+) -> Dict[str, Any]:
+    """The post's photos against MyHome's and SS.ge's listings of the caption's district and
+    area window, from every seller: the owner search's queries without its owner filter.
+
+    Asks nothing without a district. Downloads the first photos of at most LIVE_MAX_HASHED
+    candidates, the closest area (then price) first, skipping listings already shown. Shows a
+    listing by the duplicate finder's rule (core/dedup.py is_photo_duplicate)."""
+    from core.owner_search import _image_urls, _myhome_candidates, _ssge_candidates
+
+    out: Dict[str, Any] = {"rows": [], "counts": {}, "checked": 0, "failed": [], "asked": False}
+    if not flat.get("district") or not kept or sources.image_hashes is None:
+        return out
+    out["asked"] = True
+    (myhome, _), (ssge, _) = await asyncio.gather(
+        _myhome_candidates(flat, sources, owners_only=False),
+        _ssge_candidates(flat, sources, owners_only=False),
+    )
+    out["failed"] = [name for name, rows in (("myhome", myhome), ("ss.ge", ssge)) if rows is None]
+    pool: Dict[str, Dict[str, Any]] = {}
+    for c in [*(myhome or []), *(ssge or [])]:
+        if c.get("id") and c["id"] not in shown_ids and c["id"] not in pool and _image_urls(c):
+            pool[c["id"]] = c
+    ranked = sorted(
+        pool.values(),
+        key=lambda c: (
+            _gap(c.get("area_m2"), flat.get("area_m2")),
+            _gap(c.get("price_usd"), flat.get("price_usd")),
+            c["id"],
+        ),
+    )[:LIVE_MAX_HASHED]
+    sem = asyncio.Semaphore(4)
+
+    async def _hashes(c: Dict[str, Any]) -> List[str]:
+        async with sem:
+            return (await sources.image_hashes(_image_urls(c)[:3])) or []
+
+    all_hashes = await asyncio.gather(*(_hashes(c) for c in ranked))
+    out["checked"] = len(ranked)
+    for c, hashes in zip(ranked, all_hashes):
+        n = count_image_matches(kept, hashes)
+        if n >= 1 and is_photo_duplicate(
+            n, flat.get("price_usd"), c.get("price_usd"), flat.get("area_m2"), c.get("area_m2")
+        ):
+            out["rows"].append(c)
+            out["counts"][c["id"]] = n
+    return out
+
+
+async def lookup_photos(
+    conn: Any, batch_id: str, download: Download, sources: Optional["Sources"] = None
+) -> Dict[str, Any]:
     post = await batch_hashes(conn, batch_id, download)
     if not post:
         return {"ok": False, "rows": [], "full": False}
@@ -234,9 +321,18 @@ async def lookup_photos(conn: Any, batch_id: str, download: Download) -> Dict[st
             rows[lid].get("area_m2"),
         )
     ]
-    confirmed.sort(key=lambda lid: (-counts[lid], float(rows[lid].get("price_usd") or 0), lid))
-    shown = [rows[lid] for lid in confirmed[:PHOTO_MAX_SHOWN]]
-    text, candidates = photo_report(len(post), len(listing_hashes), shown, counts, dropped)
+    found = [rows[lid] for lid in confirmed]
+    live = None
+    if sources is not None:
+        live_flat = dict(flat)
+        if "ქირავ" in (_caption(conn, batch_id) or ""):
+            live_flat["deal_type"] = "rent"
+        live = await live_matches(live_flat, kept, set(confirmed), sources)
+        found += live["rows"]
+        counts = {**counts, **live["counts"]}
+    found.sort(key=lambda r: (-counts[r["id"]], float(r.get("price_usd") or 0), r["id"]))
+    shown = found[:PHOTO_MAX_SHOWN]
+    text, candidates = photo_report(len(post), len(listing_hashes), shown, counts, dropped, live)
     return {
         "ok": True,
         "rows": shown,
