@@ -26,7 +26,7 @@ import asyncio
 import json
 import os
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from io import BytesIO
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -265,6 +265,7 @@ def search(
     post: List[List[str]],
     caption: Optional[Dict],
     threshold: int = HASH_THRESHOLD,
+    drop_renders: bool = True,
 ) -> List[str]:
     """The listings core/photo_match.lookup_photos would show for this album: a post photo
     found in two districts is dropped (logo or render), then core/dedup.py's rule."""
@@ -275,7 +276,7 @@ def search(
         districts = {index.facts[lid].get("district") for lid in ids if lid in index.facts}
         districts.discard(None)
         districts.discard("")
-        if len(districts) < 2:
+        if len(districts) < 2 or not drop_renders:
             kept.append(query)
             candidates |= ids
     caption = caption or {}
@@ -332,6 +333,41 @@ def evaluate_search(index: HashIndex, albums: List[Listing]) -> str:
     return "\n".join(lines)
 
 
+def render_diagnosis(index: HashIndex, albums: List[Listing]) -> str:
+    """Unedited albums searched with and without the "photo in two districts" drop, and the
+    district pairs behind the drops."""
+    posts = [[[dhash(EDITS["telegram"](img))] for img in photos] for _, _, photos in albums]
+    lines = [
+        '### 3b. The "photo in two districts" drop, unedited albums, plain dHash ≤ '
+        f"{HASH_THRESHOLD}",
+        "",
+        "| drop | caption | found | others |",
+        "|---|---|---:|---:|",
+    ]
+    for drop in (True, False):
+        for with_caption in (False, True):
+            found = others = 0
+            for (lid, group, _), post in zip(albums, posts):
+                caption = index.facts.get(lid) if with_caption else None
+                shown = search(index, post, caption, drop_renders=drop)
+                found += lid in shown
+                others += sum(
+                    1
+                    for s in shown
+                    if s != lid and not (group and index.facts[s].get("group_id") == group)
+                )
+            lines.append(
+                f"| {'on (today)' if drop else 'off'} | "
+                f"{'price + area' if with_caption else 'none'} | "
+                f"{found / len(albums):.0%} | {others / len(albums):.2f} |"
+            )
+    _, reasons = _render_scan(index)
+    lines += ["", "Most common district pairs behind a drop (stored photos):", ""]
+    lines += ["| districts | photos |", "|---|---:|"]
+    lines += [f"| {a} / {b} | {n} |" for (a, b), n in reasons.most_common(12)]
+    return "\n".join(lines)
+
+
 # --- 4. Mirrored re-posts ---
 
 
@@ -341,18 +377,30 @@ CHUNK = 200  # rows of the all-pairs comparison held in memory at once
 def render_mask(index: HashIndex, threshold: int = HASH_THRESHOLD) -> np.ndarray:
     """True for a stored photo found in the listings of two different districts: a logo or a
     render, which the photo search drops (core/photo_match.py flat_hashes)."""
+    return _render_scan(index, threshold)[0]
+
+
+def _render_scan(index: HashIndex, threshold: int = HASH_THRESHOLD):
+    """render_mask, and how often each pair of district names is the reason for a drop."""
     names = sorted({str(f.get("district")) for f in index.facts.values() if f.get("district")})
     code = {n: i for i, n in enumerate(names)}
     dcode = np.array(
         [code.get(str(index.facts.get(lid, {}).get("district")), -1) for lid in index.ids]
     )
     out = np.zeros(len(index.u64), dtype=bool)
+    reasons: Counter = Counter()
     for start in range(0, len(index.u64), CHUNK):
         near = _popcount(index.u64[start : start + CHUNK, None] ^ index.u64[None, :]) <= threshold
         for r, row in enumerate(near):
-            codes = dcode[row]
-            out[start + r] = len(np.unique(codes[codes >= 0])) >= 2
-    return out
+            codes = np.unique(dcode[row])
+            codes = codes[codes >= 0]
+            if len(codes) >= 2:
+                out[start + r] = True
+                if len(codes) == 2:
+                    reasons[(names[codes[0]], names[codes[1]])] += 1
+                else:
+                    reasons[("3+ districts", "")] += 1
+    return out, reasons
 
 
 def listing_pair_matches(
@@ -518,6 +566,7 @@ def main():
         format_report(evaluate(listings), len(listings)),
         mirror_hash_check(listings),
         evaluate_search(index, albums) if albums else "### 3. Search: no album to search with",
+        render_diagnosis(index, albums) if albums else "",
         mirrored_reposts(index),
     ]
     text = "\n\n".join(parts)

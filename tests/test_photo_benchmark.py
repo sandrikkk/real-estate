@@ -15,6 +15,7 @@ from scripts.photo_benchmark import (
     listing_pair_matches,
     mirror_hash,
     mirrored_reposts,
+    render_diagnosis,
     render_mask,
     search,
 )
@@ -136,6 +137,27 @@ class TestSearch(unittest.TestCase):
         post = self._post([shared, _picture(1)], mirrored=False)
         # Only one photo is left, and without a caption one photo cannot confirm.
         self.assertEqual(search(index, post, None), [])
+
+    def test_drop_can_be_switched_off(self):
+        shared = _picture(999)
+        listings = [
+            ("a", None, [shared, _picture(1)]),
+            ("b", None, [shared, _picture(2)]),
+        ]
+        index = _index(listings, districts={"a": "A", "b": "B"})
+        post = self._post([shared, _picture(1)], mirrored=False)
+        self.assertEqual(search(index, post, None, drop_renders=False), ["a"])
+
+    def test_render_diagnosis_names_the_district_pair(self):
+        shared = _picture(999)
+        listings = [
+            ("a", None, [shared, _picture(1), _picture(3)]),
+            ("b", None, [shared, _picture(2), _picture(4)]),
+        ]
+        index = _index(listings, districts={"a": "საბურთალო", "b": "ვაკე-საბურთალო"})
+        text = render_diagnosis(index, listings)
+        self.assertIn("| ვაკე-საბურთალო / საბურთალო | 2 |", text)
+        self.assertIn("| on (today) | none | 100% | 0.00 |", text)
 
     def test_one_photo_with_caption_is_confirmed(self):
         _, _, photos = self.listings[1]
