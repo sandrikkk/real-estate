@@ -255,9 +255,10 @@ async def strengthen_target(target: Dict[str, Any], sources: Sources) -> Dict[st
 
 
 async def _myhome_candidates(
-    target: Dict[str, Any], sources: Sources
+    target: Dict[str, Any], sources: Sources, owners_only: bool = True
 ) -> Tuple[Optional[List[dict]], bool]:
-    """The candidates (None when MyHome is down) and whether the last page read was full."""
+    """The candidates (None when MyHome is down) and whether the last page read was full.
+    With owners_only false, every seller's listings (the photo search's live part)."""
     urbans = _ids_for(target.get("district") or "", sources.myhome_urbans)
     if not urbans:
         return [], False
@@ -268,6 +269,8 @@ async def _myhome_candidates(
         "owner_type": "physical",
         "urbans": ",".join(str(u) for u in urbans),
     }
+    if not owners_only:
+        del params["owner_type"]
     if target.get("rooms"):
         params["room_types"] = str(target["rooms"])
     floor = _clean_floor(target.get("floor"))
@@ -292,9 +295,10 @@ async def _myhome_candidates(
 
 
 async def _ssge_candidates(
-    target: Dict[str, Any], sources: Sources
+    target: Dict[str, Any], sources: Sources, owners_only: bool = True
 ) -> Tuple[Optional[List[dict]], bool]:
-    """The candidates (None when SS.ge is down) and whether the last page read was full."""
+    """The candidates (None when SS.ge is down) and whether the last page read was full.
+    With owners_only false, every seller's listings (the photo search's live part)."""
     subdistricts = _ids_for(target.get("district") or "", sources.ssge_subdistricts)
     if not subdistricts:
         return [], False
@@ -308,6 +312,8 @@ async def _ssge_candidates(
         "subdistrictIds": subdistricts,
         "advancedSearch": {"individualEntityOnly": True},
     }
+    if not owners_only:
+        del payload["advancedSearch"]
     if target.get("rooms"):
         payload["rooms"] = [int(target["rooms"])]
     window = _area_window(target)
