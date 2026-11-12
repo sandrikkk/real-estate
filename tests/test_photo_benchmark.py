@@ -15,6 +15,7 @@ from scripts.photo_benchmark import (
     listing_pair_matches,
     mirror_hash,
     mirrored_reposts,
+    districts_conflict,
     render_diagnosis,
     render_mask,
     search,
@@ -146,7 +147,7 @@ class TestSearch(unittest.TestCase):
         ]
         index = _index(listings, districts={"a": "A", "b": "B"})
         post = self._post([shared, _picture(1)], mirrored=False)
-        self.assertEqual(search(index, post, None, drop_renders=False), ["a"])
+        self.assertEqual(search(index, post, None, drop="off"), ["a"])
 
     def test_render_diagnosis_names_the_district_pair(self):
         shared = _picture(999)
@@ -156,8 +157,10 @@ class TestSearch(unittest.TestCase):
         ]
         index = _index(listings, districts={"a": "საბურთალო", "b": "ვაკე-საბურთალო"})
         text = render_diagnosis(index, listings)
-        self.assertIn("| ვაკე-საბურთალო / საბურთალო | 2 |", text)
-        self.assertIn("| on (today) | none | 100% | 0.00 |", text)
+        # Vake-Saburtalo is an alias of Saburtalo: today drops the shared photo, aliases keep it.
+        self.assertIn("Stored photos dropped, today: 2 of 6.", text)
+        self.assertIn("Stored photos dropped, aliases: 0 of 6.", text)
+        self.assertIn("| today | none | 100% | 0.00 |", text)
 
     def test_one_photo_with_caption_is_confirmed(self):
         _, _, photos = self.listings[1]
@@ -172,6 +175,21 @@ class TestSearch(unittest.TestCase):
         self.assertEqual(text.count("| dHash |"), 2)
         self.assertEqual(text.count("| dHash + mirrored query |"), 2)
         self.assertIn("| dHash | none | 100% / 0.00 |", text)
+
+
+class TestDistrictsConflict(unittest.TestCase):
+    def test_today_drops_any_two_names(self):
+        self.assertTrue(districts_conflict({"სანზონა", "სან. ზონა"}, "today"))
+        self.assertFalse(districts_conflict({"ვაკე", None, ""}, "today"))
+
+    def test_aliases_keep_names_of_one_district(self):
+        self.assertFalse(districts_conflict({"სანზონა", "სან. ზონა"}, "aliases"))
+        self.assertFalse(districts_conflict({"საბურთალო", "ვაშლიჯვარი"}, "aliases"))
+        self.assertTrue(districts_conflict({"ვაკე", "ისანი"}, "aliases"))
+        self.assertTrue(districts_conflict({"სანზონა", "სან. ზონა", "ისანი"}, "aliases"))
+
+    def test_off_never_drops(self):
+        self.assertFalse(districts_conflict({"ვაკე", "ისანი"}, "off"))
 
 
 class TestMirroredReposts(unittest.TestCase):

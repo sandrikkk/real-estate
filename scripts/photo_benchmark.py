@@ -227,6 +227,26 @@ def mirror_hash_check(listings: List[Listing]) -> str:
 
 # --- 3. Search ---
 
+DROPS = ("today", "aliases", "off")
+
+
+def districts_conflict(districts, drop: str) -> bool:
+    """Whether a photo found in these districts is dropped as a logo or a render.
+    today: any two names; aliases: two names neither of which is the other's alias
+    (core/xray.py DISTRICT_ALIASES); off: never."""
+    names = sorted({str(d).strip() for d in districts if d and str(d).strip()})
+    if drop == "off" or len(names) < 2:
+        return False
+    if drop == "today":
+        return True
+    from core.xray import _expand_district_aliases
+
+    return any(
+        b not in _expand_district_aliases(a) and a not in _expand_district_aliases(b)
+        for i, a in enumerate(names)
+        for b in names[i + 1 :]
+    )
+
 
 class HashIndex:
     """Every stored hash with its listing, and the listing facts the photo rule reads."""
@@ -265,7 +285,7 @@ def search(
     post: List[List[str]],
     caption: Optional[Dict],
     threshold: int = HASH_THRESHOLD,
-    drop_renders: bool = True,
+    drop: str = "today",
 ) -> List[str]:
     """The listings core/photo_match.lookup_photos would show for this album: a post photo
     found in two districts is dropped (logo or render), then core/dedup.py's rule."""
@@ -274,9 +294,7 @@ def search(
     for query in post:
         ids = {index.ids[i] for i in index.hits(query, threshold)}
         districts = {index.facts[lid].get("district") for lid in ids if lid in index.facts}
-        districts.discard(None)
-        districts.discard("")
-        if len(districts) < 2 or not drop_renders:
+        if not districts_conflict(districts, drop):
             kept.append(query)
             candidates |= ids
     caption = caption or {}
@@ -344,12 +362,12 @@ def render_diagnosis(index: HashIndex, albums: List[Listing]) -> str:
         "| drop | caption | found | others |",
         "|---|---|---:|---:|",
     ]
-    for drop in (True, False):
+    for drop in DROPS:
         for with_caption in (False, True):
             found = others = 0
             for (lid, group, _), post in zip(albums, posts):
                 caption = index.facts.get(lid) if with_caption else None
-                shown = search(index, post, caption, drop_renders=drop)
+                shown = search(index, post, caption, drop=drop)
                 found += lid in shown
                 others += sum(
                     1
@@ -357,12 +375,15 @@ def render_diagnosis(index: HashIndex, albums: List[Listing]) -> str:
                     if s != lid and not (group and index.facts[s].get("group_id") == group)
                 )
             lines.append(
-                f"| {'on (today)' if drop else 'off'} | "
+                f"| {drop} | "
                 f"{'price + area' if with_caption else 'none'} | "
                 f"{found / len(albums):.0%} | {others / len(albums):.2f} |"
             )
-    _, reasons = _render_scan(index)
-    lines += ["", "Most common district pairs behind a drop (stored photos):", ""]
+    for drop in ("today", "aliases"):
+        mask, _ = _render_scan(index, drop=drop)
+        lines.append(f"\nStored photos dropped, {drop}: {int(mask.sum())} of {len(mask)}.")
+    _, reasons = _render_scan(index, drop="aliases")
+    lines += ["", "Most common district pairs still dropped with aliases (stored photos):", ""]
     lines += ["| districts | photos |", "|---|---:|"]
     lines += [f"| {a} / {b} | {n} |" for (a, b), n in reasons.most_common(12)]
     return "\n".join(lines)
@@ -380,8 +401,9 @@ def render_mask(index: HashIndex, threshold: int = HASH_THRESHOLD) -> np.ndarray
     return _render_scan(index, threshold)[0]
 
 
-def _render_scan(index: HashIndex, threshold: int = HASH_THRESHOLD):
-    """render_mask, and how often each pair of district names is the reason for a drop."""
+def _render_scan(index: HashIndex, threshold: int = HASH_THRESHOLD, drop: str = "today"):
+    """render_mask for a drop rule, and how often each pair of district names is the reason
+    for a drop."""
     names = sorted({str(f.get("district")) for f in index.facts.values() if f.get("district")})
     code = {n: i for i, n in enumerate(names)}
     dcode = np.array(
@@ -394,7 +416,7 @@ def _render_scan(index: HashIndex, threshold: int = HASH_THRESHOLD):
         for r, row in enumerate(near):
             codes = np.unique(dcode[row])
             codes = codes[codes >= 0]
-            if len(codes) >= 2:
+            if districts_conflict([names[c] for c in codes], drop):
                 out[start + r] = True
                 if len(codes) == 2:
                     reasons[(names[codes[0]], names[codes[1]])] += 1
