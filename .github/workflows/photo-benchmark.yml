@@ -1,13 +1,17 @@
 name: Photo Hash Benchmark
 
 # Manual, read-only measurement of how well the photo hash finds an edited copy of a listing
-# photo (mirror, crop, watermark, Telegram recompression). The table is in the run summary.
+# photo (mirror, crop, watermark, Telegram recompression), how the X-Ray photo search does with an
+# edited album, and how often re-posters mirror photos. The tables are in the run summary.
 on:
   workflow_dispatch:
     inputs:
       limit:
-        description: "Listings to take a photo from (default 300)"
+        description: "Listings to take photos from (default 300)"
         default: "300"
+      albums:
+        description: "Albums to search with (default 100)"
+        default: "100"
 
 permissions:
   contents: read
@@ -15,7 +19,7 @@ permissions:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -29,7 +33,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install "pydantic>=2.0.0" "pydantic-settings>=2.0.0" "python-dotenv>=1.0.0" "curl_cffi>=0.7.0" "Pillow>=10.0.0"
+        run: pip install "pydantic>=2.0.0" "pydantic-settings>=2.0.0" "python-dotenv>=1.0.0" "curl_cffi>=0.7.0" "Pillow>=10.0.0" "numpy>=2.0"
 
       - name: Run the benchmark
         env:
@@ -38,4 +42,5 @@ jobs:
           CLOUDFLARE_SYNC_KEY: ${{ secrets.CLOUDFLARE_SYNC_KEY }}
           USE_CLOUDFLARE_D1: "True"
           LIMIT: ${{ inputs.limit }}
-        run: python scripts/photo_benchmark.py --limit "${LIMIT:-300}"
+          ALBUMS: ${{ inputs.albums }}
+        run: python scripts/photo_benchmark.py --limit "${LIMIT:-300}" --albums "${ALBUMS:-100}"
