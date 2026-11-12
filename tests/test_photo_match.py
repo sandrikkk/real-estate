@@ -152,6 +152,27 @@ class TestLookupPhotos(PhotoMatchCase):
             "ℹ️ 1 ფოტო სხვადასხვა უბნის განცხადებებშია (ლოგო ან რენდერი), ამიტომ არ ჩავთვალე.", text
         )
 
+    def test_a_photo_in_two_names_of_one_district_is_not_dropped(self):
+        # The same flat on SS.ge under an alias of the MyHome district: one district, not a logo.
+        self.listing("myhome_1", [1, 2, 3])
+        self.listing("ss_ge_9", [1, 2, 3], source="ss_ge", district="დიღომი")
+        self.post([1, 2, 3])
+        result = self.run_lookup()
+        text = result["result"]["text"]
+        self.assertEqual(
+            sorted(c["id"] for c in result["result"]["candidates"]), ["myhome_1", "ss_ge_9"]
+        )
+        self.assertNotIn("ლოგო ან რენდერი", text)
+
+    def test_a_photo_in_three_districts_is_dropped_even_if_two_are_aliases(self):
+        self.listing("myhome_1", [1, 2, 3])
+        self.listing("ss_ge_9", [1], source="ss_ge", district="დიღომი")
+        self.listing("ss_ge_10", [1], source="ss_ge", district="ისანი")
+        self.post([1, 2, 3])
+        result = self.run_lookup()
+        self.assertEqual([c["id"] for c in result["result"]["candidates"]], ["myhome_1"])
+        self.assertIn("ℹ️ 1 ფოტო სხვადასხვა უბნის განცხადებებშია", result["result"]["text"])
+
     def test_no_match_says_so_and_still_names_the_coverage(self):
         self.listing("myhome_1", [1, 2, 3])
         self.post([8, 9])

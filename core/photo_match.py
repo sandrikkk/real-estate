@@ -9,7 +9,8 @@ the follow-up text with its candidates for the ✅/❌ buttons.
 
 The threshold and the rule are core/dedup.py's. One thing is new and needs no number: a photo
 that is found in the listings of two different districts is a logo or a render, because a flat
-is in one district, so it is not counted.
+is in one district, so it is not counted. Two names of one district (an alias in core/xray.py
+DISTRICT_ALIASES) count as one district.
 
 Nothing here prints a batch id (it holds the chat id) or a photo link.
 """
@@ -27,7 +28,7 @@ from core.dedup import (
     hamming,
     is_photo_duplicate,
 )
-from core.xray import _clean_floor, parse_xray_input, snapshot_fields
+from core.xray import _clean_floor, _expand_district_aliases, parse_xray_input, snapshot_fields
 
 # Budgets, not matching thresholds: how many listings to show, how many hash rows to read per
 # D1 request, and how long to wait so that every photo of an album has reached D1.
@@ -118,13 +119,23 @@ def load_properties(conn: Any, ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _districts_conflict(districts: Iterable[str]) -> bool:
+    """Two of these names are different districts: neither is in the other's alias list."""
+    names = sorted({str(d).strip() for d in districts if d and str(d).strip()})
+    return any(
+        b not in _expand_district_aliases(a) and a not in _expand_district_aliases(b)
+        for i, a in enumerate(names)
+        for b in names[i + 1 :]
+    )
+
+
 def flat_hashes(
     post: List[str], per_hash: Dict[str, List[str]], rows: Dict[str, Dict[str, Any]]
 ) -> Tuple[List[str], int]:
     """The post hashes to count, and how many were dropped.
 
     A photo found in the listings of two different districts is a logo or a render: a flat is
-    in one district.
+    in one district. Aliases of one district are one district.
     """
     kept: List[str] = []
     dropped = 0
@@ -134,7 +145,7 @@ def flat_hashes(
             for lid in per_hash.get(h, [])
             if lid in rows and rows[lid].get("district")
         }
-        if len(districts) >= 2:
+        if _districts_conflict(districts):
             dropped += 1
         else:
             kept.append(h)
