@@ -43,4 +43,4 @@ jobs:
           USE_CLOUDFLARE_D1: "True"
           LIMIT: ${{ inputs.limit }}
           ALBUMS: ${{ inputs.albums }}
-        run: python scripts/photo_benchmark.py --limit "${LIMIT:-300}" --albums "${ALBUMS:-100}"
+        run: python scripts/diag_photo_live.py
