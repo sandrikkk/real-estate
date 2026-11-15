@@ -481,8 +481,10 @@ class DatabaseEngine:
                         ("initial_price_usd", "REAL"),
                         ("author_id", "TEXT"),
                         ("author_listings_count", "INTEGER"),
-                        # Set when MyHome no longer has the listing (scripts/xray_lookup.py "alive").
+                        # Set when MyHome no longer has the listing (core/myhome_alive.py).
                         ("delisted_at", "TEXT"),
+                        # When the nightly sweep last read it on MyHome (scripts/check_delisted.py).
+                        ("alive_checked_at", "TEXT"),
                     ]:
                         if col_name not in cols:
                             try:
@@ -598,6 +600,8 @@ class DatabaseEngine:
                     )
                 if "delisted_at" not in cols:
                     cursor.execute("ALTER TABLE properties ADD COLUMN delisted_at TEXT")
+                if "alive_checked_at" not in cols:
+                    cursor.execute("ALTER TABLE properties ADD COLUMN alive_checked_at TEXT")
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_properties_deal_type ON properties(deal_type)"
                 )

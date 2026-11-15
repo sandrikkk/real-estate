@@ -1,0 +1,48 @@
+name: MyHome deleted-listing sweep
+
+# Nightly: marks MyHome listings in D1 that MyHome deleted (scripts/check_delisted.py), so no
+# X-Ray reply, photo search or owner search shows them.
+on:
+  schedule:
+    # 03:17 Tbilisi (23:17 UTC), between the night scrapes.
+    - cron: '17 23 * * *'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Listings to read (default 2000)"
+        default: "2000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: myhome-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install "pydantic>=2.0.0" "pydantic-settings>=2.0.0" "python-dotenv>=1.0.0" "curl_cffi>=0.7.0" "Pillow>=10.0.0"
+
+      - name: Sweep
+        env:
+          PYTHONUNBUFFERED: "1"
+          CLOUDFLARE_PROXY_URL: ${{ secrets.CLOUDFLARE_PROXY_URL }}
+          CLOUDFLARE_SYNC_KEY: ${{ secrets.CLOUDFLARE_SYNC_KEY }}
+          USE_CLOUDFLARE_D1: "True"
+          LIMIT: ${{ inputs.limit }}
+        run: python scripts/check_delisted.py --limit "${LIMIT:-2000}"
