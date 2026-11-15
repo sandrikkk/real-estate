@@ -65,6 +65,24 @@ class TestTextModel(unittest.TestCase):
         self.assertLess(p["rent"], 0.7)
         self.assertEqual(m["version"], 2)
 
+    def test_bias_stays_zero_on_unbalanced_classes(self):
+        texts = []
+        labels = []
+        for i in range(60):
+            texts.append(f"იყიდება {i + 1} ოთახიანი ბინა {50 + i} კვ.მ ფასი {80000 + i * 1000}$")
+            labels.append("sale")
+        for i in range(20):
+            texts.append(
+                f"ქირავდება {i + 1} ოთახიანი ბინა {50 + i} კვ.მ ფასი {500 + i * 50}$ თვეში"
+            )
+            labels.append("rent")
+        m = train(texts, labels, ["sale", "rent"], "deal_type")
+        self.assertEqual(m["bias"], [0.0, 0.0])
+        p = predict(m, "")
+        self.assertAlmostEqual(p["sale"], 0.5, places=9)
+        self.assertAlmostEqual(p["rent"], 0.5, places=9)
+        self.assertGreaterEqual(predict(m, "ქირავდება ბინა")["rent"], 0.9)
+
     def test_pick_threshold(self):
         # Case 1: High accuracy starting at 0.50 with >= 50 samples
         probs = [0.96] * 60
