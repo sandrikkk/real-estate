@@ -175,3 +175,99 @@ class TestLookupWithPortals(PhotoMatchCase):
         text = self.lookup(sources)["result"]["text"]
         self.assertIn("ℹ️ ამ ფოტოებით განცხადება ვერ მოიძებნა.", text)
         self.assertNotIn("ჩვენს ბაზაში ამ ფოტოებით", text)
+
+
+# --- The caption's phone number: every photo of that number's MyHome listings ---
+from core.photo_match import PHONE_MAX_LISTINGS, PHONE_MAX_PHOTOS, phone_matches  # noqa: E402
+from tests.test_owner_search import page  # noqa: E402
+
+PHONE = "501100253"
+
+
+def phone_web(listings, images, masked=f"{PHONE[:6]}***"):
+    """MyHome's search for the number, and its first hit's page carrying `masked`."""
+    web = FakeWeb([], {})
+    web.pages[myhome_search_url({"q": PHONE})] = search_page({"q": PHONE}, listings)
+    if listings:
+        statement = {**listings[0], "user_phone_number": masked}
+        web.pages[f"https://www.myhome.ge/ka/pr/{listings[0]['id']}/"] = page(
+            [{"state": {"data": {"data": {"statement": statement}}}}]
+        )
+    calls = []
+
+    async def image_hashes(urls):
+        calls.append(list(urls))
+        return [images[u] for u in urls if u in images]
+
+    return dataclasses.replace(web.sources(), image_hashes=image_hashes), calls
+
+
+def by_phone(flat, sources, kept=(A, X), shown_ids=()):
+    import asyncio
+
+    return asyncio.run(phone_matches(flat, list(kept), set(shown_ids), sources))
+
+
+class TestPhoneMatches(unittest.TestCase):
+    FLAT = {"phone_9": PHONE, "area_m2": 56.1}
+
+    def test_one_equal_photo_deep_in_the_listing_is_enough_on_the_same_number(self):
+        # The Nutsubidze post: no price, one photo, and it is the listing's 5th.
+        photos = [f"p{k}" for k in range(1, 17)]
+        images = {u: C for u in photos}
+        images["p5"] = B  # A, recompressed
+        listing = mh(26209700, photos, area=56.1)
+        sources, calls = phone_web([listing], images)
+        found = by_phone(self.FLAT, sources)
+        self.assertEqual([r["id"] for r in found["rows"]], ["myhome_26209700"])
+        self.assertEqual(found["counts"]["myhome_26209700"], 1)
+        self.assertEqual(calls, [photos])  # every photo, not the first three
+        self.assertEqual(found["checked"], 1)
+
+    def test_no_equal_photo_shows_nothing(self):
+        listing = mh(7, ["p1", "p2"])
+        sources, _ = phone_web([listing], {"p1": C, "p2": C})
+        self.assertEqual(by_phone(self.FLAT, sources)["rows"], [])
+
+    def test_another_numbers_listings_are_not_read(self):
+        # MyHome ignored the filter: its first hit carries another number.
+        listing = mh(7, ["p1"])
+        sources, calls = phone_web([listing], {"p1": A}, masked="599999***")
+        found = by_phone(self.FLAT, sources)
+        self.assertEqual(found["rows"], [])
+        self.assertEqual(calls, [])
+
+    def test_no_number_in_the_caption_asks_nothing(self):
+        sources, calls = phone_web([mh(7, ["p1"])], {"p1": A})
+        found = by_phone({"area_m2": 56.1}, sources)
+        self.assertFalse(found["asked"])
+        self.assertEqual(calls, [])
+
+    def test_a_listing_already_shown_is_not_read_again(self):
+        sources, calls = phone_web([mh(7, ["p1"])], {"p1": A})
+        self.assertEqual(by_phone(self.FLAT, sources, shown_ids={"myhome_7"})["rows"], [])
+        self.assertEqual(calls, [])
+
+    def test_reads_at_most_the_caps_closest_area_first(self):
+        far = [mh(100 + n, [f"f{n}"], area=90) for n in range(PHONE_MAX_LISTINGS)]
+        close = mh(7, [f"c{k}" for k in range(PHONE_MAX_PHOTOS + 5)], area=56)
+        sources, calls = phone_web([*far, close], {"c0": A})
+        found = by_phone(self.FLAT, sources)
+        self.assertEqual(len(calls), PHONE_MAX_LISTINGS)
+        self.assertEqual(len(calls[0]), PHONE_MAX_PHOTOS)
+        self.assertEqual([r["id"] for r in found["rows"]], ["myhome_7"])
+
+
+class TestLookupByPhone(PhotoMatchCase):
+    def test_the_numbers_listing_is_shown_with_its_mark(self):
+        photos = [f"p{k}" for k in range(1, 9)]
+        images = {u: hash_of(50 + k) for k, u in enumerate(photos)}
+        images["p6"] = hash_of(1)
+        listing = mh(26209700, photos, area=56.1, price={"2": {"price_total": 123000}})
+        sources, _ = phone_web([listing], images)
+        self.post([1, 2], caption="ფართობი: 56.1 კვ.მ ☎️501 100 253")
+        result = asyncio.run(lookup_photos(self.conn, BATCH, self.download, sources))
+        text = result["result"]["text"]
+        self.assertEqual([c["id"] for c in result["result"]["candidates"]], ["myhome_26209700"])
+        self.assertIn("ემთხვევა 1 ფოტო | 📞 იგივე ნომერი", text)
+        self.assertIn("ℹ️ myhome-ზე ამ ნომრის 1 განცხადების ყველა ფოტო შევამოწმე.", text)
