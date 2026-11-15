@@ -41,6 +41,10 @@ ALBUM_SETTLE_SECONDS = 10
 # How many MyHome and SS.ge listings the live part downloads photos of: a work cap, the owner
 # search's own (core/owner_search.py MAX_PHOTO_CANDIDATES).
 LIVE_MAX_HASHED = 24
+# The caption's phone number: how many of its MyHome listings, and how many photos of each, the
+# job reads. A post often shows a listing's later photos; work caps, not tuned.
+PHONE_MAX_LISTINGS = 6
+PHONE_MAX_PHOTOS = 20
 
 Download = Callable[[str], Awaitable[Optional[bytes]]]
 
@@ -165,6 +169,7 @@ def photo_report(
     counts: Dict[str, int],
     dropped: int,
     live: Optional[Dict[str, Any]] = None,
+    by_phone: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """The follow-up text and its candidates, in the order of the numbered lines. `live` is
     live_matches' answer, or None when the portals were not part of this search."""
@@ -187,6 +192,8 @@ def photo_report(
             if row.get("district"):
                 parts.append(str(row["district"]))
             parts.append(f"ემთხვევა {counts.get(row['id'], 0)} ფოტო")
+            if by_phone and row["id"] in by_phone["counts"]:
+                parts.append("📞 იგივე ნომერი")
             lines.append(" | ".join(parts))
             candidates.append({**snapshot_fields(row), "photo_matches": counts.get(row["id"], 0)})
         lines += ["", "მონიშნე ქვემოთ: ✅ იგივე ბინაა, ❌ სხვაა, 🤷 ვერ ვხვდები."]
@@ -204,6 +211,10 @@ def photo_report(
     )
     if live is not None:
         lines.append(_live_line(live))
+    if by_phone and by_phone["asked"]:
+        lines.append(
+            f"ℹ️ myhome-ზე ამ ნომრის {by_phone['checked']} განცხადების ყველა ფოტო შევამოწმე."
+        )
     return "\n".join(lines), candidates
 
 
@@ -229,6 +240,13 @@ def _caption_flat(conn: Any, batch_id: str) -> Dict[str, Any]:
     caption = _caption(conn, batch_id)
     parsed = parse_xray_input(caption) if caption else None
     return parsed if parsed and parsed.get("kind") == "fb_text" else {}
+
+
+def _caption_phone(conn: Any, batch_id: str) -> Optional[str]:
+    """The caption's phone number, also when the caption is only a number (kind "phone")."""
+    caption = _caption(conn, batch_id)
+    parsed = parse_xray_input(caption) if caption else None
+    return (parsed or {}).get("phone_9")
 
 
 def _gap(a: Any, b: Any) -> float:
@@ -289,6 +307,55 @@ async def live_matches(
     return out
 
 
+async def phone_matches(
+    flat: Dict[str, Any], kept: List[str], shown_ids: set, sources: "Sources"
+) -> Dict[str, Any]:
+    """The post's photos against every photo of the caption number's MyHome listings.
+
+    MyHome's search by number (the owner search's, with its guard: the first hit's masked
+    number must be this one). A listing on the same number with one equal photo is the same
+    flat: the number already ties it to the post, so the price is not needed as well."""
+    from core.owner_search import _image_urls, _statement_from_html
+    from core.xray import (
+        extract_next_data,
+        find_statements_list,
+        live_phone_result,
+        myhome_search_url,
+    )
+
+    out: Dict[str, Any] = {"rows": [], "counts": {}, "checked": 0, "asked": False}
+    phone9 = flat.get("phone_9")
+    if not phone9 or not kept or sources.image_hashes is None:
+        return out
+    out["asked"] = True
+    html = await sources.myhome_html(myhome_search_url({"q": phone9}))
+    items = find_statements_list(extract_next_data(html), {"q": phone9}) if html else None
+    if not items:
+        return out
+    first = _statement_from_html(
+        await sources.myhome_html(f"https://www.myhome.ge/ka/pr/{items[0].get('id')}/")
+    )
+    rows = live_phone_result(phone9, items, first, None)["rows"]
+    ranked = sorted(
+        (r for r in rows if r.get("id") and r["id"] not in shown_ids and _image_urls(r)),
+        key=lambda r: (
+            _gap(r.get("area_m2"), flat.get("area_m2")),
+            _gap(r.get("price_usd"), flat.get("price_usd")),
+            r["id"],
+        ),
+    )[:PHONE_MAX_LISTINGS]
+    all_hashes = await asyncio.gather(
+        *(sources.image_hashes(_image_urls(r)[:PHONE_MAX_PHOTOS]) for r in ranked)
+    )
+    out["checked"] = len(ranked)
+    for r, hashes in zip(ranked, all_hashes):
+        n = count_image_matches(kept, hashes or [])
+        if n >= 1:
+            out["rows"].append(r)
+            out["counts"][r["id"]] = n
+    return out
+
+
 async def lookup_photos(
     conn: Any, batch_id: str, download: Download, sources: Optional["Sources"] = None
 ) -> Dict[str, Any]:
@@ -323,6 +390,7 @@ async def lookup_photos(
     ]
     found = [rows[lid] for lid in confirmed]
     live = None
+    by_phone = None
     if sources is not None:
         live_flat = dict(flat)
         if "ქირავ" in (_caption(conn, batch_id) or ""):
@@ -330,9 +398,15 @@ async def lookup_photos(
         live = await live_matches(live_flat, kept, set(confirmed), sources)
         found += live["rows"]
         counts = {**counts, **live["counts"]}
+        phone_flat = {**flat, "phone_9": _caption_phone(conn, batch_id)}
+        by_phone = await phone_matches(phone_flat, kept, {r["id"] for r in found}, sources)
+        found += by_phone["rows"]
+        counts = {**counts, **by_phone["counts"]}
     found.sort(key=lambda r: (-counts[r["id"]], float(r.get("price_usd") or 0), r["id"]))
     shown = found[:PHOTO_MAX_SHOWN]
-    text, candidates = photo_report(len(post), len(listing_hashes), shown, counts, dropped, live)
+    text, candidates = photo_report(
+        len(post), len(listing_hashes), shown, counts, dropped, live, by_phone
+    )
     return {
         "ok": True,
         "rows": shown,

@@ -295,7 +295,8 @@ def scraper_sources(
         else None
     )
     image_hashes = (
-        (lambda urls: _compute_hashes(urls, max_images=3))
+        # Every URL given: each caller picks how many photos of a listing it reads.
+        (lambda urls: _compute_hashes(urls, max_images=len(urls)))
         if conn is not None and download is not None
         else None
     )
