@@ -14,7 +14,7 @@ NGRAM_SIZES = (3, 4, 5)
 MIN_DF = 5  # a feature must appear in at least 5 training texts
 MAX_FEATURES = 20000  # vocabulary before training, by document frequency, ties by the string
 EPOCHS = 5
-LEARNING_RATE = 0.1
+LEARNING_RATE = 1.0
 L2 = 1e-6
 SEED = 42
 MAX_JSON_BYTES = 90_000  # D1 statement limit is 100 KB
@@ -49,13 +49,14 @@ def predict(model: Dict[str, Any], text: str) -> Dict[str, float]:
     n_classes = len(classes)
     bias: List[float] = model.get("bias") or [0.0] * n_classes
     weights: Dict[str, List[float]] = model.get("weights") or {}
+    scale = 1.0 / math.sqrt(len(feats)) if feats else 0.0
 
     scores = list(bias)
     for f in feats:
         w_f = weights.get(f)
         if w_f is not None:
             for c in range(n_classes):
-                scores[c] += w_f[c]
+                scores[c] += scale * w_f[c]
 
     max_s = max(scores)
     exps = [math.exp(s - max_s) for s in scores]
@@ -86,6 +87,8 @@ def train(texts: List[str], labels: List[str], classes: List[str], kind: str) ->
     """Train a character n-gram logistic regression model using SGD."""
     # 1. Feature extraction and vocabulary selection
     doc_features: List[List[str]] = [features(t) for t in texts]
+    # Each text's features count 1/sqrt(n) so a long text is not more confident.
+    scales: List[float] = [1.0 / math.sqrt(len(fs)) if fs else 0.0 for fs in doc_features]
     df_counter: Counter = Counter()
     for feats in doc_features:
         for f in feats:
@@ -126,9 +129,10 @@ def train(texts: List[str], labels: List[str], classes: List[str], kind: str) ->
             label_idx = class_to_idx[label]
             s_weight = sample_weights[label]
             f_list = filtered_doc_features[idx]
+            x = scales[idx]
 
             # Forward pass: score = bias + sum(w)
-            scores = [bias[c] + sum(w[f][c] for f in f_list) for c in range(n_classes)]
+            scores = [bias[c] + x * sum(w[f][c] for f in f_list) for c in range(n_classes)]
             max_s = max(scores)
             exps = [math.exp(s - max_s) for s in scores]
             sum_exps = sum(exps)
@@ -140,7 +144,7 @@ def train(texts: List[str], labels: List[str], classes: List[str], kind: str) ->
                 g = (p[c] - y_c) * s_weight
                 bias[c] -= LEARNING_RATE * g
                 for f in f_list:
-                    w[f][c] -= LEARNING_RATE * (g + L2 * w[f][c])
+                    w[f][c] -= LEARNING_RATE * (g * x + L2 * w[f][c])
 
     # 4. Rounding and pruning
     rounded_bias = [round(b, 4) for b in bias]
@@ -152,7 +156,7 @@ def train(texts: List[str], labels: List[str], classes: List[str], kind: str) ->
 
     model: Dict[str, Any] = {
         "kind": kind,
-        "version": 1,
+        "version": 2,
         "classes": classes,
         "bias": rounded_bias,
         "weights": rounded_w,

@@ -2305,8 +2305,8 @@
    "იყიდება ბინა"
   ],
   "expected": {
-   "sale": 0.996316,
-   "rent": 0.003684
+   "sale": 0.999932,
+   "rent": 6.8e-05
   }
  },
  {
@@ -2316,8 +2316,8 @@
    "ქირავდება ბინა"
   ],
   "expected": {
-   "sale": 0.005486,
-   "rent": 0.994514
+   "sale": 0.000215,
+   "rent": 0.999785
   }
  },
  {
@@ -2325,6 +2325,17 @@
   "fn": "text_predict",
   "args": [
    "სასწრაფოდ"
+  ],
+  "expected": {
+   "sale": 0.549834,
+   "rent": 0.450166
+  }
+ },
+ {
+  "name": "text_predict: empty text gives the bias only",
+  "fn": "text_predict",
+  "args": [
+   ""
   ],
   "expected": {
    "sale": 0.549834,

@@ -2588,13 +2588,14 @@ function textModelPredict(model, text) {
   const nClasses = classes.length;
   const bias = model.bias || classes.map(() => 0.0);
   const weights = model.weights || {};
+  const scale = feats.length ? 1 / Math.sqrt(feats.length) : 0;
 
   const scores = [...bias];
   for (const f of feats) {
     const wF = weights[f];
     if (wF) {
       for (let c = 0; c < nClasses; c++) {
-        scores[c] += wF[c];
+        scores[c] += scale * wF[c];
       }
     }
   }
