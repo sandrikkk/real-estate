@@ -16,7 +16,7 @@ from core import text_model  # noqa: E402
 from core.database import D1Client, D1Connection  # noqa: E402
 
 KINDS = ("deal_type",)  # PR 3 adds "number_role", PR 4 adds "metro"
-TARGET = {"deal_type": 0.98}
+TARGET = {"deal_type": 0.99}  # the Facebook check allows 1 wrong in ~74, i.e. about 98.6%
 MIN_TEXT = 30  # characters; shorter descriptions are skipped
 PAGE = 1000
 
