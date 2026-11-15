@@ -1,9 +1,63 @@
+import json
+import re
 import urllib.parse
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Any, List, Optional
+
 from curl_cffi.requests import AsyncSession
-from core.models import PropertyListing, SearchFilters
+
 from config import settings
+from core.models import PropertyListing, SearchFilters
+
+_DESCRIPTION_KEYS = ("ka", "text", "alllanguagetogather", "en", "ru")
+# The start of a JSON text whose end was cut off: {"KA":"...
+_JSON_TEXT_RE = re.compile(r'\{\s*"(ka|text|en|ru)"\s*:\s*"(.*)', re.S | re.I)
+# Where that first language's text ends: a closing quote before the next key or the last brace.
+_JSON_TEXT_END_RE = re.compile(r'"\s*(?:,\s*"[A-Za-z]+"\s*:|\}\s*$)')
+
+
+def _description_from_dict(data: dict) -> str:
+    """The first non-empty text of a portal's multi-language description."""
+    lowered = {str(k).lower(): v for k, v in data.items()}
+    for key in _DESCRIPTION_KEYS:
+        value = lowered.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def clean_description(raw: Any) -> str:
+    """A listing description as plain text.
+
+    Portals send it as a dict of languages, and some sellers paste it as JSON text
+    ({"KA": ...}), sometimes encoded twice. Other text is returned unchanged.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, dict):
+        return _description_from_dict(raw)
+    text = str(raw)
+    body = text.strip().lstrip("\u200c").strip()
+    if not body.startswith("{"):
+        return text
+    for candidate in (body, '"' + body + '"'):
+        try:
+            data = json.loads(candidate, strict=False)
+            if isinstance(data, str):
+                data = json.loads(data, strict=False)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and any(str(k).lower() in _DESCRIPTION_KEYS for k in data):
+            return _description_from_dict(data)
+    # Portals cut long text, so the JSON may have no end: keep its first language's text.
+    match = _JSON_TEXT_RE.match(body.replace('\\"', '"'))
+    if not match:
+        return text
+    value = match.group(2)
+    end = _JSON_TEXT_END_RE.search(value)
+    if end:
+        value = value[: end.start()]
+    return value.replace("\\n", "\n")
 
 
 def with_proxy_key(headers: Optional[dict] = None) -> dict:

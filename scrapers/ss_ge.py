@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from curl_cffi.requests import AsyncSession
 from config import settings
 from core.models import PropertyListing, SearchFilters
-from scrapers.base import BaseScraper, with_proxy_key
+from scrapers.base import BaseScraper, clean_description, with_proxy_key
 from scrapers.myhome import (
     METRO_STATIONS,
     CONDITIONS,
@@ -499,11 +499,7 @@ class SSGeScraper(BaseScraper):
             elif isinstance(first_p, str):
                 phone_number = first_p
 
-        raw_desc = app_data.get("comment") or app_data.get("description") or ""
-        if isinstance(raw_desc, dict):
-            comment = raw_desc.get("ka") or raw_desc.get("text") or str(raw_desc)
-        else:
-            comment = str(raw_desc or "")
+        comment = clean_description(app_data.get("comment") or app_data.get("description") or "")
         clean_phone = _extract_phone_number(phone_number, comment)
 
         cond_name = app_data.get("state")
@@ -782,11 +778,7 @@ class SSGeScraper(BaseScraper):
                 or item.get("user_title")
                 or "ბინა SS.ge-ზე"
             )
-            raw_desc = item.get("comment") or item.get("description") or ""
-            if isinstance(raw_desc, dict):
-                description = raw_desc.get("ka") or raw_desc.get("text") or str(raw_desc)
-            else:
-                description = str(raw_desc or "")
+            description = clean_description(item.get("comment") or item.get("description") or "")
 
             floor = (
                 str(item.get("floor"))
