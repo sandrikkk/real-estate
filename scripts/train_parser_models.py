@@ -108,6 +108,7 @@ def run_deal_type(rows: List[Dict[str, Any]], fb_posts: List[Dict[str, Any]]) ->
     fb_checked = 0
     fb_confident = 0
     fb_wrong = 0
+    fb_errors: List[Dict[str, Any]] = []
     for post in fb_posts:
         exp = post.get("expected") or {}
         exp_deal = exp.get("deal_type")
@@ -117,6 +118,16 @@ def run_deal_type(rows: List[Dict[str, Any]], fb_posts: List[Dict[str, Any]]) ->
             probs = text_model.predict(model, text)
             pred_deal = max(probs, key=probs.get)
             prob = probs[pred_deal]
+            if pred_deal != exp_deal:
+                fb_errors.append(
+                    {
+                        "id": post.get("id"),
+                        "expected": exp_deal,
+                        "pred": pred_deal,
+                        "prob": round(prob, 4),
+                        "snippet": text[:200],
+                    }
+                )
             if threshold is not None and prob >= threshold:
                 fb_confident += 1
                 if pred_deal != exp_deal:
@@ -139,6 +150,7 @@ def run_deal_type(rows: List[Dict[str, Any]], fb_posts: List[Dict[str, Any]]) ->
         "fb_wrong": fb_wrong,
         "passed": passed,
         "errors": sorted(test_errors, key=lambda e: -e["prob"])[:20],
+        "fb_errors": sorted(fb_errors, key=lambda e: -e["prob"])[:20],
     }
 
     return {"model": model, "passed": passed, "report": report}

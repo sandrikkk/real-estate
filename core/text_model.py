@@ -108,6 +108,7 @@ def train(texts: List[str], labels: List[str], classes: List[str], kind: str) ->
     n_classes = len(classes)
     class_to_idx = {cls: idx for idx, cls in enumerate(classes)}
     w: Dict[str, List[float]] = {f: [0.0] * n_classes for f in vocab}
+    # Classes are balanced by sample weight, so the prior is uniform: the bias is never trained.
     bias: List[float] = [0.0] * n_classes
 
     # Class balancing weights: n_total / (n_classes * n_of_its_class)
@@ -142,7 +143,6 @@ def train(texts: List[str], labels: List[str], classes: List[str], kind: str) ->
             for c in range(n_classes):
                 y_c = 1.0 if c == label_idx else 0.0
                 g = (p[c] - y_c) * s_weight
-                bias[c] -= LEARNING_RATE * g
                 for f in f_list:
                     w[f][c] -= LEARNING_RATE * (g * x + L2 * w[f][c])
 

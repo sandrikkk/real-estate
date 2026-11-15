@@ -146,8 +146,11 @@ class TestTrainParserModels(unittest.TestCase):
                 "fb_confident",
                 "fb_wrong",
                 "passed",
+                "fb_errors",
             ):
                 self.assertIn(field, report)
+            self.assertIsInstance(report["fb_errors"], list)
+            self.assertLessEqual(len(report["fb_errors"]), 20)
 
     def test_report_lines_show_class_counts_and_errors_on_one_line_each(self):
         report = {
