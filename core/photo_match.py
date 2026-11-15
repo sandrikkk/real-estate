@@ -117,7 +117,7 @@ def load_properties(conn: Any, ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
         marks = ",".join("?" for _ in chunk)
         rows = conn.execute(
             "SELECT id, source, url, price_usd, area_m2, floor, total_floors, district"
-            f" FROM properties WHERE id IN ({marks})",
+            f" FROM properties WHERE id IN ({marks}) AND delisted_at IS NULL",
             tuple(chunk),
         ).fetchall()
         for r in rows:

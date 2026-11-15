@@ -481,6 +481,8 @@ class DatabaseEngine:
                         ("initial_price_usd", "REAL"),
                         ("author_id", "TEXT"),
                         ("author_listings_count", "INTEGER"),
+                        # Set when MyHome no longer has the listing (scripts/xray_lookup.py "alive").
+                        ("delisted_at", "TEXT"),
                     ]:
                         if col_name not in cols:
                             try:
@@ -594,6 +596,8 @@ class DatabaseEngine:
                     cursor.execute(
                         "ALTER TABLE properties ADD COLUMN author_listings_count INTEGER"
                     )
+                if "delisted_at" not in cols:
+                    cursor.execute("ALTER TABLE properties ADD COLUMN delisted_at TEXT")
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_properties_deal_type ON properties(deal_type)"
                 )

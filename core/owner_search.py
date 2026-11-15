@@ -337,7 +337,8 @@ def _d1_candidates(target: Dict[str, Any], conn: Any) -> List[dict]:
     aliases = _expand_district_aliases(target.get("district") or "")
     if aliases:
         sql = [
-            f"SELECT * FROM properties WHERE district IN ({', '.join('?' for _ in aliases)})",
+            f"SELECT * FROM properties WHERE district IN ({', '.join('?' for _ in aliases)})"
+            " AND delisted_at IS NULL",
             "AND (deal_type IS NULL OR deal_type = ?)",
         ]
         params: List[Any] = [*aliases, target.get("deal_type") or "sale"]
@@ -353,7 +354,8 @@ def _d1_candidates(target: Dict[str, Any], conn: Any) -> List[dict]:
             rows[r["id"]] = dict(r)
     if target.get("group_id"):
         for r in conn.execute(
-            "SELECT * FROM properties WHERE group_id = ?", (target["group_id"],)
+            "SELECT * FROM properties WHERE group_id = ? AND delisted_at IS NULL",
+            (target["group_id"],),
         ).fetchall():
             rows[r["id"]] = dict(r)
     return list(rows.values())

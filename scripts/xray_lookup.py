@@ -12,6 +12,8 @@ curl_cffi, the way the scraper does, and hands the result back:
    (core/owner_search.py) and stores the follow-up text with its ✅/❌ candidates;
    a "photo" job downloads the photos of a post from Telegram, hashes them, compares them with
    every photo hash in D1 (core/photo_match.py, ADR 0005) and stores the follow-up the same way;
+   an "alive" job reads the MyHome listings a reply showed from D1 unchecked, marks a deleted
+   one with properties.delisted_at and stores a follow-up naming it;
 3. save the rows to `xray_live_listings`, fill the owner fields of a listing already in
    `properties` (the Worker's persistLiveEnrichment did this before), and never insert there;
 4. mark the job done or failed and ask the Worker to send the follow-up message
@@ -40,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import settings  # noqa: E402
 from core.database import D1Client, D1Connection  # noqa: E402
 from core.dedup import MAX_IMAGE_BYTES, _compute_hashes  # noqa: E402
-from core.owner_search import Sources, owner_report, search_owner  # noqa: E402
+from core.owner_search import Sources, _statement_from_html, owner_report, search_owner  # noqa: E402
 from core.photo_match import batch_hashes, lookup_photos  # noqa: E402
 from core.xray import (  # noqa: E402
     MYHOME_SEARCH_PAGE_SIZE,
@@ -197,6 +199,8 @@ async def run_job(
             result = await lookup_owner(conn, str(job["target_id"]), owner_sources)
         elif kind == "photo" and job.get("target_id") and download is not None:
             result = await lookup_photos(conn, str(job["target_id"]), download, owner_sources)
+        elif kind == "alive" and job.get("target_id"):
+            result = await lookup_alive(conn, str(job["target_id"]), fetch_html)
     except Exception as e:  # the user is told either way
         # The type only: the logs are public, and a message can carry the phone number.
         print(f"X-Ray lookup error: {type(e).__name__}")
@@ -211,6 +215,76 @@ async def run_job(
     conn.commit()
     notify(job_id)
     return {"status": status, "found": len(result["rows"]), "full": result["full"]}
+
+
+# The most listings one "alive" job reads: a work cap (a reply shows at most 4 duplicates).
+ALIVE_MAX = 8
+
+
+def _myhome_page(source_id: str) -> str:
+    return f"https://www.myhome.ge/ka/pr/{source_id}/"
+
+
+async def _looks_deleted(fetch_html: FetchHtml, source_id: str) -> Optional[bool]:
+    """True when MyHome's page for the listing loads without it (deleted) or shows it inactive,
+    False when it is there, None when the page did not load (says nothing)."""
+    html = await fetch_html(_myhome_page(source_id))
+    if html is None:
+        return None
+    statement = _statement_from_html(html)
+    return statement is None or statement.get("is_active") is False
+
+
+async def lookup_alive(conn: Any, ids_json: str, fetch_html: FetchHtml) -> Dict[str, Any]:
+    """Marks the deleted ones among a reply's MyHome listings. `ids_json` lists the reply's
+    candidates in its order, so the follow-up names a deleted one by its number there.
+
+    Before marking, the newest MyHome listing in D1 is read as a control: when it too looks
+    deleted, MyHome's page has changed and nothing is marked."""
+    ids = [str(i) for i in json.loads(ids_json)][:ALIVE_MAX]
+    marks = ",".join("?" for _ in ids)
+    rows = (
+        {
+            r["id"]: dict(r)
+            for r in conn.execute(
+                f"SELECT id, source, source_id, price_usd FROM properties WHERE id IN ({marks})",
+                tuple(ids),
+            ).fetchall()
+        }
+        if ids
+        else {}
+    )
+    gone = []
+    for n, lid in enumerate(ids, 1):
+        r = rows.get(lid)
+        if r and r["source"] == "myhome" and r.get("source_id"):
+            if await _looks_deleted(fetch_html, str(r["source_id"])):
+                gone.append((n, r))
+    if gone:
+        control = conn.execute(
+            "SELECT source_id FROM properties WHERE source = 'myhome' AND delisted_at IS NULL"
+            f" AND id NOT IN ({marks}) ORDER BY scraped_at DESC LIMIT 1",
+            tuple(ids),
+        ).fetchone()
+        if (
+            control is None
+            or await _looks_deleted(fetch_html, str(control["source_id"])) is not False
+        ):
+            print("X-Ray alive: the control listing did not read as live, nothing marked")
+            gone = []
+    now = utc_now_iso()
+    for _, r in gone:
+        conn.execute("UPDATE properties SET delisted_at = ? WHERE id = ?", (now, r["id"]))
+    conn.commit()
+    text = None
+    if gone:
+        lines = ["🚫 <b>myhome-ზე შევამოწმე: ეს განცხადება წაშლილია (აღარ არის აქტიური)</b>"]
+        for n, r in gone:
+            lines.append(f"{n}. MyHome — ${round(float(r['price_usd'] or 0)):,}")
+        lines.append("ℹ️ აღარ გაჩვენებ.")
+        text = "\n".join(lines)
+    result = {"gone": [r["id"] for _, r in gone], "text": text}
+    return {"ok": True, "rows": [], "full": False, "result": result}
 
 
 def scraper_sources(
