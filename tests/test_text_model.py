@@ -49,6 +49,22 @@ class TestTextModel(unittest.TestCase):
         p = predict(m1, "ქირავდება ბინა მე-5 სართულზე")
         self.assertGreaterEqual(p["rent"], 0.9)
 
+    def test_text_without_signal_is_not_confident(self):
+        texts = []
+        labels = []
+        for i in range(40):
+            texts.append(f"იყიდება {i + 1} ოთახიანი ბინა {50 + i} კვ.მ ფასი {80000 + i * 1000}$")
+            labels.append("sale")
+            texts.append(
+                f"ქირავდება {i + 1} ოთახიანი ბინა {50 + i} კვ.მ ფასი {500 + i * 50}$ თვეში"
+            )
+            labels.append("rent")
+        m = train(texts, labels, ["sale", "rent"], "deal_type")
+        p = predict(m, "დარეკეთ ტელეფონის ნომერზე")
+        self.assertGreater(p["rent"], 0.3)
+        self.assertLess(p["rent"], 0.7)
+        self.assertEqual(m["version"], 2)
+
     def test_pick_threshold(self):
         # Case 1: High accuracy starting at 0.50 with >= 50 samples
         probs = [0.96] * 60
