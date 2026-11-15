@@ -8,9 +8,16 @@ with the owner search's FakeWeb.
 
 import dataclasses
 import unittest
+from unittest import mock
 
-from core.photo_match import LIVE_MAX_HASHED, live_matches
-from core.xray import myhome_search_url
+from core.photo_match import (
+    LIVE_MAX_HASHED,
+    LIVE_MAX_PAGES,
+    LIVE_PHOTOS_PER_LISTING,
+    _live_line,
+    live_matches,
+)
+from core.xray import MYHOME_SEARCH_PAGE_SIZE, myhome_search_url
 from tests.test_owner_search import FakeWeb, item, search_page, ssge_row
 
 A, B = "0000000000000000", "00000000000000ff"  # one photo, recompressed (8 bits apart)
@@ -124,6 +131,43 @@ class TestLiveMatches(unittest.TestCase):
         run(rent, sources)
         self.assertTrue(any("deal_types=2" in u for u in web.requested))
         self.assertEqual(web.payloads[0]["realEstateDealType"], 1)
+
+    def test_reads_past_the_owner_search_pages(self):
+        full = MYHOME_SEARCH_PAGE_SIZE
+        pages = {
+            "1": [mh(100 + n, [f"a{n}"], area=82) for n in range(full)],
+            "2": [mh(200 + n, [f"b{n}"], area=82) for n in range(full)],
+            "3": [mh(5, ["u1", "u2"], area=72)],
+        }
+        web, sources, calls = web_with([], images={"u1": A, "u2": C})
+        for p in range(1, LIVE_MAX_PAGES + 1):
+            q = {**PARAMS, "page": str(p)}
+            web.pages[myhome_search_url(q)] = search_page(q, pages.get(str(p), []))
+        found = run(FLAT, sources)
+        self.assertEqual([r["id"] for r in found["rows"]], ["myhome_5"])
+        self.assertEqual(found["checked"], 2 * full + 1)
+        self.assertFalse(found["more"])
+
+    def test_downloads_up_to_the_photo_budget_per_listing(self):
+        photos = [f"u{n}" for n in range(LIVE_PHOTOS_PER_LISTING + 3)]
+        _, sources, calls = web_with([mh(5, photos)], images={})
+        run(FLAT, sources)
+        self.assertEqual(calls, [photos[:LIVE_PHOTOS_PER_LISTING]])
+
+    def test_more_listings_than_the_budget_are_reported(self):
+        items = [mh(100 + n, [f"f{n}"], area=72) for n in range(3)]
+        _, sources, calls = web_with(items, images={})
+        with mock.patch("core.photo_match.LIVE_MAX_HASHED", 2):
+            found = run(FLAT, sources)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(found["more"])
+        self.assertIn("ყველა ვერ შევამოწმე", _live_line(found))
+
+    def test_all_listings_checked_says_nothing_more(self):
+        _, sources, _ = web_with([mh(5, ["u1"])], images={})
+        found = run(FLAT, sources)
+        self.assertFalse(found["more"])
+        self.assertNotIn("ყველა ვერ შევამოწმე", _live_line(found))
 
 
 if __name__ == "__main__":

@@ -255,10 +255,14 @@ async def strengthen_target(target: Dict[str, Any], sources: Sources) -> Dict[st
 
 
 async def _myhome_candidates(
-    target: Dict[str, Any], sources: Sources, owners_only: bool = True
+    target: Dict[str, Any],
+    sources: Sources,
+    owners_only: bool = True,
+    pages: int = PAGES_PER_PORTAL,
 ) -> Tuple[Optional[List[dict]], bool]:
     """The candidates (None when MyHome is down) and whether the last page read was full.
-    With owners_only false, every seller's listings (the photo search's live part)."""
+    With owners_only false, every seller's listings (the photo search's live part).
+    pages is how many result pages to read at most."""
     urbans = _ids_for(target.get("district") or "", sources.myhome_urbans)
     if not urbans:
         return [], False
@@ -281,7 +285,7 @@ async def _myhome_candidates(
         params["area_from"], params["area_to"] = str(window[0]), str(window[1])
     found: List[dict] = []
     last_page_size = 0
-    for page in range(1, PAGES_PER_PORTAL + 1):
+    for page in range(1, pages + 1):
         rows = await _myhome_rows(sources, {**params, "page": str(page)})
         if rows is None:
             if page == 1:
@@ -295,10 +299,14 @@ async def _myhome_candidates(
 
 
 async def _ssge_candidates(
-    target: Dict[str, Any], sources: Sources, owners_only: bool = True
+    target: Dict[str, Any],
+    sources: Sources,
+    owners_only: bool = True,
+    pages: int = PAGES_PER_PORTAL,
 ) -> Tuple[Optional[List[dict]], bool]:
     """The candidates (None when SS.ge is down) and whether the last page read was full.
-    With owners_only false, every seller's listings (the photo search's live part)."""
+    With owners_only false, every seller's listings (the photo search's live part).
+    pages is how many result pages to read at most."""
     subdistricts = _ids_for(target.get("district") or "", sources.ssge_subdistricts)
     if not subdistricts:
         return [], False
@@ -321,7 +329,7 @@ async def _ssge_candidates(
         payload["areaFrom"], payload["areaTo"] = window
     found: List[dict] = []
     last_page_size = 0
-    for page in range(1, PAGES_PER_PORTAL + 1):
+    for page in range(1, pages + 1):
         items = await sources.ssge_search({**payload, "page": page})
         if items is None:
             return (None, False) if page == 1 else (found, last_page_size >= SSGE_PAGE_SIZE)
