@@ -1754,7 +1754,8 @@ async function loadSavedListing(db, listingId) {
 
 // Records the job and dispatches the workflow. `job` is { kind: "phone", phone9 },
 // { kind: "listing", listingId }, { kind: "owner" | "photo", targetId } or
-// { kind: "alive", targetId: JSON list of shown row ids }. Returns the job id, or null.
+// { kind: "alive", targetId: JSON { ids, rows, price, target } of the MyHome duplicates a reply
+// left out }. Returns the job id, or null.
 async function queueMyHomeLookup(env, chatId, job) {
   const token = env && (env.GITHUB_PAT || env.GITHUB_TOKEN);
   if (!env || !env.DB || !token || !chatId) {
@@ -1837,13 +1838,38 @@ async function handleXRayFollowup(request, env) {
         replyMarkup = feedbackKeyboard(job.id, result.candidates, []);
       }
     } else if (job.kind === "alive") {
-      // Says something only when the job found a shown MyHome listing deleted.
+      // The reply left its MyHome duplicates out; the job read them on MyHome. Shows the ones
+      // still there with their ✅/❌ rows; a deleted one is never shown.
+      let pending = null;
       let result = null;
       try {
+        pending = JSON.parse(job.target_id || "null");
         result = job.status === "done" && job.result ? JSON.parse(job.result) : null;
       } catch (err) {}
-      if (!result || !result.text) return json({ success: true, sent: false });
-      text = result.text;
+      if (!pending || !Array.isArray(pending.rows)) return json({ success: true, sent: false });
+      if (!result) {
+        text = "⚠️ myhome-ზე შესაძლო დუბლიკატები ვერ შევამოწმე, ამიტომ არ გაჩვენებ.";
+      } else {
+        const live = new Set(result.live || []);
+        const unknown = new Set(result.unknown || []);
+        const shown = pending.rows
+          .filter(r => live.has(r.id) || unknown.has(r.id))
+          .map(r => (unknown.has(r.id) ? { ...r, xray_unchecked: true } : r));
+        const gone = (result.gone || []).length;
+        const lines = [`🔄 <b>myhome-ზე შევამოწმე შესაძლო დუბლიკატები</b>`];
+        if (shown.length > 0) {
+          lines.push("", ...duplicateLines(shown, Number(pending.price) || 0));
+          shown.forEach((r, i) => {
+            if (r.xray_unchecked) lines.push(`⚠️ ${i + 1}: myhome-ის გვერდი ვერ გაიხსნა, აქტიურობა შეუმოწმებელია.`);
+          });
+        }
+        if (gone > 0) lines.push("", `🚫 ${gone} განცხადება myhome-დან წაშლილია, არ გაჩვენებ.`);
+        if (shown.length === 0 && gone === 0) lines.push("", "ℹ️ შესაძლო დუბლიკატი ვერ დადასტურდა.");
+        text = lines.join("\n");
+        const candidates = shown.map(({ xray_unchecked, is_owner, phone_number, ...c }) => c);
+        const resultId = await saveXRayResult(env, job.chat_id, "dup", pending.target || {}, candidates, null);
+        replyMarkup = xrayReplyMarkup(null, resultId, candidates, []);
+      }
     } else if (job.kind === "listing") {
       // The job saved the listing's row, so the X-Ray now reads it without queueing again.
       // No chat id is passed on: that could queue another lookup.
@@ -2534,6 +2560,33 @@ function resetXRayWeightsCache() {
 
 // " · სავარაუდოდ 98%" for a pair the passed weights scored; " · იგივე ფოტოები" for a photo-group
 // match; nothing under the §5.5 rule. Capped at 99%: a guess is never shown as certain.
+// The numbered duplicate lines of an X-Ray reply, grouped under their 🎯/🤔 headers.
+function duplicateLines(dups, currPrice) {
+  const lines = [];
+  let shownTier = null;
+  for (const [i, dup] of dups.entries()) {
+    const dupTier = dup.xray_tier === "maybe" ? "maybe" : "sure";
+    if (dupTier !== shownTier) {
+      if (shownTier !== null) lines.push("");
+      lines.push(dupTier === "sure" ? "🎯 <b>იგივე ბინა სხვაგან:</b>" : "🤔 <b>შესაძლოა იგივე ბინაა:</b>");
+      shownTier = dupTier;
+    }
+    const dupPrice = Math.round(Number(dup.price_usd) || 0);
+    const dupSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
+    const dupOwner = formatOwnerBadge(dup.is_owner);
+    const dupPhonePart = dup.phone_number ? ` | 📞 <code>${dup.phone_number}</code>` : "";
+    let diffStr = "";
+    if (currPrice > 0 && dupPrice > 0) {
+      const delta = Math.round(dupPrice - currPrice);
+      if (delta < 0) diffStr = ` (<b>-$${Math.abs(delta).toLocaleString()} უფრო იაფად!</b>)`;
+      else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
+      else diffStr = " (იგივე ფასი)";
+    }
+    lines.push(`${i + 1}. <a href="${dup.url || "#"}">${dupSrc}</a> — <b>$${dupPrice.toLocaleString()}</b>${diffStr} | ${dupOwner}${dupPhonePart}${duplicateSureness(dup)}`);
+  }
+  return lines;
+}
+
 function duplicateSureness(dup) {
   if (dup && dup.xray_photo_group) return " · იგივე ფოტოები";
   if (dup && typeof dup.xray_posterior === "number") {
@@ -3131,45 +3184,47 @@ async function handleXRayQuery(text, env, opts = {}) {
       lines.push(`📊 <b>უბნის საშუალო ფასი (${target.district}):</b> $${bench.avg_m2.toLocaleString()}/მ² (${sign} საბაზროსთან)`);
     }
 
-    lines.push("");
-    if (duplicates.length > 0) {
-      let shownTier = null;
-      for (const [i, dup] of duplicates.slice(0, 4).entries()) {
-        const dupTier = dup.xray_tier === "maybe" ? "maybe" : "sure";
-        if (dupTier !== shownTier) {
-          if (shownTier !== null) lines.push("");
-          lines.push(dupTier === "sure" ? "🎯 <b>იგივე ბინა სხვაგან:</b>" : "🤔 <b>შესაძლოა იგივე ბინაა:</b>");
-          shownTier = dupTier;
-        }
-        const dupPrice = Math.round(Number(dup.price_usd) || 0);
-        const dupSrc = dup.source === "myhome" ? "MyHome.ge" : "SS.ge";
-        const dupOwner = formatOwnerBadge(dup.is_owner);
-        const dupPhonePart = dup.phone_number ? ` | 📞 <code>${dup.phone_number}</code>` : "";
-        let diffStr = "";
-        if (currPrice > 0 && dupPrice > 0) {
-          const delta = Math.round(dupPrice - currPrice);
-          if (delta < 0) diffStr = ` (<b>-$${Math.abs(delta).toLocaleString()} უფრო იაფად!</b>)`;
-          else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
-          else diffStr = " (იგივე ფასი)";
-        }
-        lines.push(`${i + 1}. <a href="${dup.url || "#"}">${dupSrc}</a> — <b>$${dupPrice.toLocaleString()}</b>${diffStr} | ${dupOwner}${dupPhonePart}${duplicateSureness(dup)}`);
+    // MyHome rows come from D1 unchecked (ADR 0004): one MyHome deleted since the last scrape
+    // must not be shown. They are left out here and an "alive" lookup job reads them; its
+    // follow-up shows the ones still on MyHome (handleXRayFollowup). A re-render without a chat
+    // id (a follow-up's own) leaves them out too: the first reply's job shows them. Only when
+    // the job cannot be queued are they shown unchecked, as before.
+    const myhomeDups = duplicates.filter(d => d && d.source === "myhome").slice(0, 4);
+    let shownDups = duplicates;
+    let pendingMyhome = 0;
+    if (myhomeDups.length > 0) {
+      const aliveJob = opts.chatId
+        ? await queueMyHomeLookup(env, opts.chatId, {
+            kind: "alive",
+            targetId: JSON.stringify({
+              ids: myhomeDups.map(d => d.id),
+              rows: myhomeDups.map(d => ({ ...xrayResultCandidate(d), source: "myhome", is_owner: d.is_owner, phone_number: d.phone_number || null })),
+              price: currPrice,
+              target: xrayResultTarget(target)
+            })
+          })
+        : null;
+      if (aliveJob || !opts.chatId) {
+        shownDups = duplicates.filter(d => !(d && d.source === "myhome"));
+        pendingMyhome = aliveJob ? myhomeDups.length : 0;
       }
-    } else {
+    }
+
+    lines.push("");
+    if (shownDups.length > 0) {
+      lines.push(...duplicateLines(shownDups.slice(0, 4), currPrice));
+    } else if (pendingMyhome === 0) {
       lines.push("🎯 <b>იგივე ბინა სხვაგან:</b> დუბლიკატი სხვა პორტალზე არ იძებნება.");
+    }
+    if (pendingMyhome > 0) {
+      if (shownDups.length > 0) lines.push("");
+      lines.push(`🔄 myhome-ზე ${pendingMyhome} შესაძლო დუბლიკატს ვამოწმებ, აქტიურია თუ არა. დაახლოებით 1 წუთში მოგწერ.`);
     }
 
     // What the ✅/❌ buttons under the reply refer to (see saveXRayResult).
-    if (opts.collect && duplicates.length > 0) {
-      opts.collect.duplicates = duplicates.slice(0, 4).map(xrayResultCandidate);
+    if (opts.collect && shownDups.length > 0) {
+      opts.collect.duplicates = shownDups.slice(0, 4).map(xrayResultCandidate);
       opts.collect.resultTarget = xrayResultTarget(target);
-    }
-
-    // MyHome rows come from D1 unchecked (ADR 0004): the lookup job reads them and marks a
-    // deleted one, so it is named in a follow-up and never shown again. Ids in reply order.
-    // Only with a chat id: a follow-up's own re-render passes none and queues nothing.
-    const shownDups = duplicates.slice(0, 4);
-    if (opts.chatId && shownDups.some(d => d && d.source === "myhome")) {
-      await queueMyHomeLookup(env, opts.chatId, { kind: "alive", targetId: JSON.stringify(shownDups.map(d => d.id)) });
     }
 
     return lines.join("\n");
