@@ -35,6 +35,8 @@ with open(
     os.path.join(REPO, "tests", "fixtures", "xray_weights_sample_v2.json"), encoding="utf-8"
 ) as f:
     SAMPLE_WEIGHTS_V2 = json.load(f)
+with open(os.path.join(REPO, "tests", "fixtures", "text_model_sample.json"), encoding="utf-8") as f:
+    SAMPLE_TEXT_MODEL = json.load(f)
 
 
 def run_vector(fn, args):
@@ -81,6 +83,15 @@ def run_vector(fn, args):
         from core.xray_weights import tier
 
         return tier(*args)
+    if fn == "text_features":
+        from core.text_model import features
+
+        return features(*args)
+    if fn == "text_predict":
+        from core.text_model import predict
+
+        p = predict(SAMPLE_TEXT_MODEL, *args)
+        return {k: round(v, 6) for k, v in p.items()}
     raise AssertionError(f"unknown vector function: {fn}")
 
 

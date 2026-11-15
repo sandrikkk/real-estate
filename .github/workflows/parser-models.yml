@@ -1,0 +1,54 @@
+name: Parser models
+
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: "Model kind to train"
+        type: choice
+        options:
+          - deal_type
+        default: deal_type
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parser-models
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install "pydantic>=2.0.0" "pydantic-settings>=2.0.0" "python-dotenv>=1.0.0" "curl_cffi>=0.7.0" "Pillow>=10.0.0"
+
+      - name: Train parser models
+        env:
+          PYTHONUNBUFFERED: "1"
+          CLOUDFLARE_PROXY_URL: ${{ secrets.CLOUDFLARE_PROXY_URL }}
+          CLOUDFLARE_SYNC_KEY: ${{ secrets.CLOUDFLARE_SYNC_KEY }}
+          KIND: ${{ inputs.kind }}
+        run: python scripts/train_parser_models.py --kind "${KIND}" --out-dir out
+
+      - name: Keep the run's files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parser-models-${{ github.run_id }}
+          path: out/
+          retention-days: 90
+          if-no-files-found: ignore

@@ -18,6 +18,9 @@ const sampleWeights = JSON.parse(
 const sampleWeightsV2 = JSON.parse(
   fs.readFileSync(path.join(repoRoot, "tests", "fixtures", "xray_weights_sample_v2.json"), "utf8")
 );
+const sampleTextModel = JSON.parse(
+  fs.readFileSync(path.join(repoRoot, "tests", "fixtures", "text_model_sample.json"), "utf8")
+);
 
 function runVector(fn, args) {
   switch (fn) {
@@ -44,6 +47,15 @@ function runVector(fn, args) {
     }
     case "calibrated": return w.xrayCalibrated(...args);
     case "tier": return w.xrayTier(...args);
+    case "text_features": return JSON.parse(JSON.stringify(w.textModelFeatures(...args)));
+    case "text_predict": {
+      const p = w.textModelPredict(sampleTextModel, ...args);
+      const res = {};
+      for (const [k, v] of Object.entries(p)) {
+        res[k] = Math.round(v * 1e6) / 1e6;
+      }
+      return res;
+    }
     default: throw new Error(`unknown vector function: ${fn}`);
   }
 }

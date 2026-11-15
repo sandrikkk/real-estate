@@ -2183,5 +2183,152 @@
    0.853747
   ],
   "expected": 0.9375
+ },
+ {
+  "name": "text_features: Georgian text",
+  "fn": "text_features",
+  "args": [
+   "ტესტი"
+  ],
+  "expected": [
+   " ტე",
+   " ტეს",
+   " ტესტ",
+   "ესტ",
+   "ესტი",
+   "ესტი ",
+   "სტი",
+   "სტი ",
+   "ტეს",
+   "ტესტ",
+   "ტესტი",
+   "ტი "
+  ]
+ },
+ {
+  "name": "text_features: digits and dollar",
+  "fn": "text_features",
+  "args": [
+   "85000$"
+  ],
+  "expected": [
+   " 00",
+   " 000",
+   " 0000",
+   "0$ ",
+   "00$",
+   "00$ ",
+   "000",
+   "000$",
+   "000$ ",
+   "0000",
+   "0000$",
+   "00000"
+  ]
+ },
+ {
+  "name": "text_features: emoji characters",
+  "fn": "text_features",
+  "args": [
+   "🔥 იყიდება 💥"
+  ],
+  "expected": [
+   " იყ",
+   " იყი",
+   " იყიდ",
+   "ბა ",
+   "დებ",
+   "დება",
+   "დება ",
+   "ება",
+   "ება ",
+   "იდე",
+   "იდებ",
+   "იდება",
+   "იყი",
+   "იყიდ",
+   "იყიდე",
+   "ყიდ",
+   "ყიდე",
+   "ყიდებ"
+  ]
+ },
+ {
+  "name": "text_features: uppercase Latin and Russian",
+  "fn": "text_features",
+  "args": [
+   "Rent КВАРТИРА"
+  ],
+  "expected": [
+   " re",
+   " ren",
+   " rent",
+   " кв",
+   " ква",
+   " квар",
+   "ent",
+   "ent ",
+   "ent к",
+   "nt ",
+   "nt к",
+   "nt кв",
+   "ren",
+   "rent",
+   "rent ",
+   "t к",
+   "t кв",
+   "t ква",
+   "арт",
+   "арти",
+   "артир",
+   "вар",
+   "варт",
+   "варти",
+   "ира",
+   "ира ",
+   "ква",
+   "квар",
+   "кварт",
+   "ра ",
+   "рти",
+   "ртир",
+   "ртира",
+   "тир",
+   "тира",
+   "тира "
+  ]
+ },
+ {
+  "name": "text_predict: sale keywords yield high sale probability",
+  "fn": "text_predict",
+  "args": [
+   "იყიდება ბინა"
+  ],
+  "expected": {
+   "sale": 0.996316,
+   "rent": 0.003684
+  }
+ },
+ {
+  "name": "text_predict: rent keywords yield high rent probability",
+  "fn": "text_predict",
+  "args": [
+   "ქირავდება ბინა"
+  ],
+  "expected": {
+   "sale": 0.005486,
+   "rent": 0.994514
+  }
+ },
+ {
+  "name": "text_predict: neutral text defaults to bias",
+  "fn": "text_predict",
+  "args": [
+   "სასწრაფოდ"
+  ],
+  "expected": {
+   "sale": 0.549834,
+   "rent": 0.450166
+  }
  }
 ]
