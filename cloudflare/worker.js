@@ -1753,7 +1753,8 @@ async function loadSavedListing(db, listingId) {
 }
 
 // Records the job and dispatches the workflow. `job` is { kind: "phone", phone9 },
-// { kind: "listing", listingId } or { kind: "owner", targetId }. Returns the job id, or null.
+// { kind: "listing", listingId }, { kind: "owner" | "photo", targetId } or
+// { kind: "alive", targetId: JSON list of shown row ids }. Returns the job id, or null.
 async function queueMyHomeLookup(env, chatId, job) {
   const token = env && (env.GITHUB_PAT || env.GITHUB_TOKEN);
   if (!env || !env.DB || !token || !chatId) {
@@ -1835,6 +1836,14 @@ async function handleXRayFollowup(request, env) {
       if (result && Array.isArray(result.candidates) && result.candidates.length > 0) {
         replyMarkup = feedbackKeyboard(job.id, result.candidates, []);
       }
+    } else if (job.kind === "alive") {
+      // Says something only when the job found a shown MyHome listing deleted.
+      let result = null;
+      try {
+        result = job.status === "done" && job.result ? JSON.parse(job.result) : null;
+      } catch (err) {}
+      if (!result || !result.text) return json({ success: true, sent: false });
+      text = result.text;
     } else if (job.kind === "listing") {
       // The job saved the listing's row, so the X-Ray now reads it without queueing again.
       // No chat id is passed on: that could queue another lookup.
@@ -2562,7 +2571,7 @@ async function queryWorkerExactDuplicates(db, target, limit = 25) {
   const targetId = target.id || "";
   if (target.group_id) {
     const { results } = await db
-      .prepare("SELECT * FROM properties WHERE group_id = ? AND id != ?")
+      .prepare("SELECT * FROM properties WHERE group_id = ? AND id != ? AND delisted_at IS NULL")
       .bind(target.group_id, targetId)
       .all();
     for (const r of results || []) {
@@ -2585,6 +2594,8 @@ async function queryWorkerExactDuplicates(db, target, limit = 25) {
       `SELECT * FROM properties WHERE district IN (${placeholders})`,
       "AND area_m2 BETWEEN ? AND ?",
       "AND id != ?",
+      // Marked by the lookup job's "alive" check: deleted from MyHome.
+      "AND delisted_at IS NULL",
       "AND (deal_type IS NULL OR deal_type = ?)"
     ];
     const params = [...aliases, area - 1.5, area + 1.5, targetId, dealType];
@@ -3151,6 +3162,14 @@ async function handleXRayQuery(text, env, opts = {}) {
     if (opts.collect && duplicates.length > 0) {
       opts.collect.duplicates = duplicates.slice(0, 4).map(xrayResultCandidate);
       opts.collect.resultTarget = xrayResultTarget(target);
+    }
+
+    // MyHome rows come from D1 unchecked (ADR 0004): the lookup job reads them and marks a
+    // deleted one, so it is named in a follow-up and never shown again. Ids in reply order.
+    // Only with a chat id: a follow-up's own re-render passes none and queues nothing.
+    const shownDups = duplicates.slice(0, 4);
+    if (opts.chatId && shownDups.some(d => d && d.source === "myhome")) {
+      await queueMyHomeLookup(env, opts.chatId, { kind: "alive", targetId: JSON.stringify(shownDups.map(d => d.id)) });
     }
 
     return lines.join("\n");
