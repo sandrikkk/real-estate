@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import sqlite3
 import tempfile
@@ -13,6 +15,7 @@ from scripts.train_parser_models import (
     MIN_TEXT,
     load_deal_rows,
     main,
+    report_lines,
     run_deal_type,
 )
 
@@ -145,6 +148,49 @@ class TestTrainParserModels(unittest.TestCase):
                 "passed",
             ):
                 self.assertIn(field, report)
+
+    def test_report_lines_show_class_counts_and_errors_on_one_line_each(self):
+        report = {
+            "by_class": {"sale": 10, "rent": 2},
+            "errors": [
+                {
+                    "id": "myhome_1",
+                    "label": "sale",
+                    "pred": "rent",
+                    "prob": 0.997,
+                    "snippet": "გირავდება ბინა\nვაკეში",
+                }
+            ],
+        }
+        lines = report_lines(report)
+        self.assertIn("by_class: rent=2 sale=10", lines)
+        self.assertIn("sale -> rent 0.997 myhome_1 | გირავდება ბინა ვაკეში", lines)
+
+    def test_errors_most_confident_first(self):
+        rows = load_deal_rows(self.conn)
+        for i in range(40):
+            rows.append(
+                {
+                    "id": f"wrong_{i}",
+                    "group_id": None,
+                    "description": (
+                        f"ქირავდება {i % 4 + 1}-ოთახიანი მყუდრო ბინა საბურთალოზე "
+                        f"{40 + i} კვ.მ ფასი {500 + i * 20}$ თვეში"
+                    ),
+                    "deal_type": "sale",
+                }
+            )
+        errors = run_deal_type(rows, [])["report"]["errors"]
+        self.assertTrue(errors)
+        probs = [e["prob"] for e in errors]
+        self.assertEqual(probs, sorted(probs, reverse=True))
+
+    def test_main_prints_report_lines(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["--kind", "deal_type", "--out-dir", tmp_dir], conn=self.conn)
+            self.assertIn("by_class: rent=150 sale=150", out.getvalue())
 
     def test_main_missing_settings_exits_2(self):
         with mock.patch("scripts.train_parser_models.settings.CLOUDFLARE_PROXY_URL", ""):

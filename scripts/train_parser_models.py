@@ -138,10 +138,20 @@ def run_deal_type(rows: List[Dict[str, Any]], fb_posts: List[Dict[str, Any]]) ->
         "fb_confident": fb_confident,
         "fb_wrong": fb_wrong,
         "passed": passed,
-        "errors": test_errors[:20],
+        "errors": sorted(test_errors, key=lambda e: -e["prob"])[:20],
     }
 
     return {"model": model, "passed": passed, "report": report}
+
+
+def report_lines(report: Dict[str, Any]) -> List[str]:
+    """The class counts and the wrong test answers, one line each, for the job log."""
+    counts = " ".join(f"{k}={v}" for k, v in sorted(report.get("by_class", {}).items()))
+    lines = [f"by_class: {counts}"]
+    for e in report.get("errors", []):
+        snippet = " ".join(str(e.get("snippet") or "").split())
+        lines.append(f"{e['label']} -> {e['pred']} {e['prob']} {e['id']} | {snippet}")
+    return lines
 
 
 def main(argv: Optional[List[str]] = None, conn: Optional[Any] = None) -> int:
@@ -199,6 +209,8 @@ def main(argv: Optional[List[str]] = None, conn: Optional[Any] = None) -> int:
         f"cov: {report['coverage']:.1%} | fb_wrong: {report['fb_wrong']} | "
         f"passed: {report['passed']}"
     )
+    for line in report_lines(report):
+        print(line)
 
     return 0
 
