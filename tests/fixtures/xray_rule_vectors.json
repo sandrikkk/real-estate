@@ -569,6 +569,29 @@
   }
  },
  {
+  "name": "verdict: the post alone is not a listing in the database",
+  "fn": "verdict",
+  "args": [
+   {
+    "id": "fb_input",
+    "is_owner": null,
+    "user_type": null,
+    "district": "გლდანი",
+    "area_m2": 61,
+    "floor": "7",
+    "rooms": 3,
+    "phone_number": "+995 571 01 00 75"
+   },
+   [],
+   "ბაზაში"
+  ],
+  "expected": {
+   "is_broker": false,
+   "badge": "⚠️ სტატუსი დაუზუსტებელია (გადაუმოწმებელი)",
+   "reason": "ამ ნომრით ბაზაში სხვა განცხადება არ იძებნება, ამიტომ მესაკუთრის სტატუსი დადასტურებული არ არის"
+  }
+ },
+ {
   "name": "verdict: an agent profile is a broker",
   "fn": "verdict",
   "args": [

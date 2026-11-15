@@ -608,7 +608,12 @@ def evaluate_broker_verdict(
         return {
             "is_broker": False,
             "badge": "⚠️ სტატუსი დაუზუსტებელია (გადაუმოწმებელი)",
-            "reason": "ბაზაში ფიქსირდება 1 განცხადება, თუმცა პორტალზე მესაკუთრის სტატუსი დადასტურებული არ არის",
+            # The post alone is the sender's text, not a listing found in the database.
+            "reason": (
+                "ამ ნომრით ბაზაში სხვა განცხადება არ იძებნება, ამიტომ მესაკუთრის სტატუსი დადასტურებული არ არის"
+                if post_is_row and len(all_rows) == 1
+                else "ბაზაში ფიქსირდება 1 განცხადება, თუმცა პორტალზე მესაკუთრის სტატუსი დადასტურებული არ არის"
+            ),
             "unique_apartments": max(1, unique_apartments),
             "total_listings": max(1, total_listings),
         }

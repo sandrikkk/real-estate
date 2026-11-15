@@ -2324,7 +2324,10 @@ function evaluateWorkerBrokerVerdict(target, relatedRows, where = "ბაზა�
     return {
       isBroker: false,
       badge: "⚠️ სტატუსი დაუზუსტებელია (გადაუმოწმებელი)",
-      reason: "ბაზაში ფიქსირდება 1 განცხადება, თუმცა პორტალზე მესაკუთრის სტატუსი დადასტურებული არ არის"
+      // The post alone is the sender's text, not a listing found in the database.
+      reason: postIsRow && allRows.length === 1
+        ? "ამ ნომრით ბაზაში სხვა განცხადება არ იძებნება, ამიტომ მესაკუთრის სტატუსი დადასტურებული არ არის"
+        : "ბაზაში ფიქსირდება 1 განცხადება, თუმცა პორტალზე მესაკუთრის სტატუსი დადასტურებული არ არის"
     };
   }
 
