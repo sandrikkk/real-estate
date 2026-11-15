@@ -2561,6 +2561,54 @@ function resetXRayWeightsCache() {
   XRAY_WEIGHTS = undefined;
 }
 
+// Twin of core/text_model.py (normalize, features, predict).
+function textModelNormalize(text) {
+  if (!text) return "  ";
+  let t = String(text).toLowerCase();
+  t = t.replace(/[0-9]/g, "0");
+  t = t.replace(/[^ა-ჰa-zа-яё0$]+/g, " ");
+  return " " + t.trim() + " ";
+}
+
+function textModelFeatures(text) {
+  const t = textModelNormalize(text);
+  const res = new Set();
+  const tLen = t.length;
+  for (const n of [3, 4, 5]) {
+    for (let i = 0; i <= tLen - n; i++) {
+      res.add(t.slice(i, i + n));
+    }
+  }
+  return Array.from(res).sort();
+}
+
+function textModelPredict(model, text) {
+  const feats = textModelFeatures(text);
+  const classes = model.classes;
+  const nClasses = classes.length;
+  const bias = model.bias || classes.map(() => 0.0);
+  const weights = model.weights || {};
+
+  const scores = [...bias];
+  for (const f of feats) {
+    const wF = weights[f];
+    if (wF) {
+      for (let c = 0; c < nClasses; c++) {
+        scores[c] += wF[c];
+      }
+    }
+  }
+
+  const maxS = Math.max(...scores);
+  const exps = scores.map(s => Math.exp(s - maxS));
+  const sumExps = exps.reduce((a, b) => a + b, 0);
+  const res = {};
+  for (let c = 0; c < nClasses; c++) {
+    res[classes[c]] = exps[c] / sumExps;
+  }
+  return res;
+}
+
 // " · სავარაუდოდ 98%" for a pair the passed weights scored; " · იგივე ფოტოები" for a photo-group
 // match; nothing under the §5.5 rule. Capped at 99%: a guess is never shown as certain.
 // The numbered duplicate lines of an X-Ray reply, grouped under their 🎯/🤔 headers.
