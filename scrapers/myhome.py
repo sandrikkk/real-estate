@@ -6,7 +6,7 @@ from curl_cffi.requests import AsyncSession
 from config import settings
 from core.district_prices import parse_price_table
 from core.models import PropertyListing, SearchFilters
-from scrapers.base import BaseScraper, with_proxy_key
+from scrapers.base import BaseScraper, clean_description, with_proxy_key
 
 
 METRO_STATIONS: Dict[int, str] = {
@@ -602,7 +602,7 @@ class MyHomeScraper(BaseScraper):
                 or item.get("user_title")
                 or "ბინა MyHome-ზე"
             )
-            description = item.get("comment") or item.get("description") or ""
+            description = clean_description(item.get("comment") or item.get("description") or "")
             city = item.get("city_name") or "თბილისი"
             urban_name = item.get("urban_name")
             district_name = item.get("district_name")
