@@ -1,0 +1,46 @@
+name: Parser eval
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parser-eval
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install "pydantic>=2.0.0" "pydantic-settings>=2.0.0" "python-dotenv>=1.0.0" "curl_cffi>=0.7.0" "Pillow>=10.0.0"
+
+      - name: Measure parser against portal listings
+        env:
+          PYTHONUNBUFFERED: "1"
+          CLOUDFLARE_PROXY_URL: ${{ secrets.CLOUDFLARE_PROXY_URL }}
+          CLOUDFLARE_SYNC_KEY: ${{ secrets.CLOUDFLARE_SYNC_KEY }}
+        run: python scripts/parser_eval.py --out-dir out
+
+      - name: Keep the run's files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parser-eval-${{ github.run_id }}
+          path: out/
+          retention-days: 90
+          if-no-files-found: ignore
