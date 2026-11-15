@@ -97,7 +97,16 @@ test("incident post still finds its real duplicate (same layout, same building h
     price_usd: 81000
   };
   const db = fakeD1([[/WHERE district IN/, () => [NADZALADEVI_ROW, sameFlat]]]);
-  const report = await w.handleXRayQuery(INCIDENT_FB, { DB: db });
+  // A chat with no GITHUB_PAT: the MyHome check cannot be queued, so the MyHome duplicate is
+  // shown in the reply itself (tests/js/xray_myhome_delisted.test.mjs has the queued case).
+  const realError = console.error;
+  console.error = () => {};
+  let report;
+  try {
+    report = await w.handleXRayQuery(INCIDENT_FB, { DB: db }, { chatId: 1 });
+  } finally {
+    console.error = realError;
+  }
   assert.ok(report.includes("myhome.ge/ka/pr/777/"), "the real duplicate was dropped");
   assert.ok(!report.includes("26524985"));
 });

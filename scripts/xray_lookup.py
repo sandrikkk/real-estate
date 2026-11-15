@@ -12,8 +12,8 @@ curl_cffi, the way the scraper does, and hands the result back:
    (core/owner_search.py) and stores the follow-up text with its ✅/❌ candidates;
    a "photo" job downloads the photos of a post from Telegram, hashes them, compares them with
    every photo hash in D1 (core/photo_match.py, ADR 0005) and stores the follow-up the same way;
-   an "alive" job reads the MyHome listings a reply showed from D1 unchecked, marks a deleted
-   one with properties.delisted_at and stores a follow-up naming it;
+   an "alive" job reads on MyHome the duplicates a reply left out (D1 has them unchecked),
+   marks a deleted one with properties.delisted_at and stores which are live for the follow-up;
 3. save the rows to `xray_live_listings`, fill the owner fields of a listing already in
    `properties` (the Worker's persistLiveEnrichment did this before), and never insert there;
 4. mark the job done or failed and ask the Worker to send the follow-up message
@@ -217,7 +217,7 @@ async def run_job(
     return {"status": status, "found": len(result["rows"]), "full": result["full"]}
 
 
-# The most listings one "alive" job reads: a work cap (a reply shows at most 4 duplicates).
+# The most listings one "alive" job reads: a work cap (a reply leaves out at most 4).
 ALIVE_MAX = 8
 
 
@@ -235,31 +235,38 @@ async def _looks_deleted(fetch_html: FetchHtml, source_id: str) -> Optional[bool
     return statement is None or statement.get("is_active") is False
 
 
-async def lookup_alive(conn: Any, ids_json: str, fetch_html: FetchHtml) -> Dict[str, Any]:
-    """Marks the deleted ones among a reply's MyHome listings. `ids_json` lists the reply's
-    candidates in its order, so the follow-up names a deleted one by its number there.
+async def lookup_alive(conn: Any, pending_json: str, fetch_html: FetchHtml) -> Dict[str, Any]:
+    """Reads on MyHome the duplicates a reply left out. `pending_json` is the Worker's
+    {"ids": [...], ...}; the result sorts the ids into live, gone (marked with
+    properties.delisted_at, never shown again) and unknown (the page did not load). The
+    Worker's follow-up shows the live ones (handleXRayFollowup).
 
     Before marking, the newest MyHome listing in D1 is read as a control: when it too looks
-    deleted, MyHome's page has changed and nothing is marked."""
-    ids = [str(i) for i in json.loads(ids_json)][:ALIVE_MAX]
+    deleted, MyHome's page has changed and nothing is marked or called live."""
+    pending = json.loads(pending_json)
+    ids = (
+        [str(i) for i in (pending.get("ids") or [])][:ALIVE_MAX]
+        if isinstance(pending, dict)
+        else []
+    )
     marks = ",".join("?" for _ in ids)
     rows = (
         {
             r["id"]: dict(r)
             for r in conn.execute(
-                f"SELECT id, source, source_id, price_usd FROM properties WHERE id IN ({marks})",
-                tuple(ids),
+                f"SELECT id, source, source_id FROM properties WHERE id IN ({marks})", tuple(ids)
             ).fetchall()
         }
         if ids
         else {}
     )
-    gone = []
-    for n, lid in enumerate(ids, 1):
+    live, gone, unknown = [], [], []
+    for lid in ids:
         r = rows.get(lid)
-        if r and r["source"] == "myhome" and r.get("source_id"):
-            if await _looks_deleted(fetch_html, str(r["source_id"])):
-                gone.append((n, r))
+        if not (r and r["source"] == "myhome" and r.get("source_id")):
+            continue
+        deleted = await _looks_deleted(fetch_html, str(r["source_id"]))
+        (unknown if deleted is None else gone if deleted else live).append(lid)
     if gone:
         control = conn.execute(
             "SELECT source_id FROM properties WHERE source = 'myhome' AND delisted_at IS NULL"
@@ -271,19 +278,12 @@ async def lookup_alive(conn: Any, ids_json: str, fetch_html: FetchHtml) -> Dict[
             or await _looks_deleted(fetch_html, str(control["source_id"])) is not False
         ):
             print("X-Ray alive: the control listing did not read as live, nothing marked")
-            gone = []
+            unknown, gone = unknown + gone, []
     now = utc_now_iso()
-    for _, r in gone:
-        conn.execute("UPDATE properties SET delisted_at = ? WHERE id = ?", (now, r["id"]))
+    for lid in gone:
+        conn.execute("UPDATE properties SET delisted_at = ? WHERE id = ?", (now, lid))
     conn.commit()
-    text = None
-    if gone:
-        lines = ["🚫 <b>myhome-ზე შევამოწმე: ეს განცხადება წაშლილია (აღარ არის აქტიური)</b>"]
-        for n, r in gone:
-            lines.append(f"{n}. MyHome — ${round(float(r['price_usd'] or 0)):,}")
-        lines.append("ℹ️ აღარ გაჩვენებ.")
-        text = "\n".join(lines)
-    result = {"gone": [r["id"] for _, r in gone], "text": text}
+    result = {"live": live, "gone": gone, "unknown": unknown}
     return {"ok": True, "rows": [], "full": False, "result": result}
 
 

@@ -1,7 +1,8 @@
-// A MyHome listing deleted from MyHome must not keep coming back in X-Ray replies.
-// The Worker cannot read MyHome (ADR 0004), so a reply that shows a MyHome duplicate queues an
-// "alive" job; the job marks a deleted one with properties.delisted_at, and the Worker's
-// duplicate reads skip marked rows. Runs the production cloudflare/worker.js offline.
+// A MyHome listing deleted from MyHome must never be shown in an X-Ray reply.
+// The Worker cannot read MyHome (ADR 0004), so a reply leaves its MyHome duplicates out and
+// queues an "alive" job; the job marks a deleted one with properties.delisted_at, and the
+// follow-up shows the live ones. The duplicate reads skip marked rows.
+// Runs the production cloudflare/worker.js offline.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadWorker } from "./load_worker.mjs";
@@ -69,20 +70,42 @@ test("the duplicate reads skip a row marked as deleted from MyHome", async () =>
   for (const r of reads) assert.match(r.sql, /delisted_at IS NULL/);
 });
 
-test("a reply showing a MyHome duplicate queues an alive job with the reply's ids in order", async () => {
+const replyOf = calls => telegram(calls, "sendMessage").find(c => c.body.text.includes("რენტგენი"));
+const pendingOf = db => JSON.parse(aliveJobs(db)[0].params[4]);
+
+test("a MyHome duplicate is left out of the reply and handed to an alive job", async () => {
   const calls = serveNetwork();
   try {
     const db = recordingD1([[/FROM properties WHERE district IN/, () => [SSGE_DUP, MYHOME_DUP]]]);
     await webhook(env(db), message(POST));
-    const reply = telegram(calls, "sendMessage").find(c => c.body.text.includes("რენტგენი"));
-    const order = ["ss_ge_5", "myhome_11"].sort(
-      (a, b) => reply.body.text.indexOf(`example/${a}`) - reply.body.text.indexOf(`example/${b}`)
-    );
+    const reply = replyOf(calls);
+    assert.ok(reply.body.text.includes("example/ss_ge_5"), reply.body.text);
+    assert.ok(!reply.body.text.includes("example/myhome_11"), reply.body.text);
+    assert.ok(reply.body.text.includes("myhome-ზე 1 შესაძლო დუბლიკატს ვამოწმებ"), reply.body.text);
+    // One ✅/❌ row: the SS.ge line only.
+    const saved = db.log.find(e => /INSERT INTO xray_results/.test(e.sql));
+    assert.deepEqual(JSON.parse(saved.params[4]).map(c => c.id), ["ss_ge_5"]);
     const jobs = aliveJobs(db);
     assert.equal(jobs.length, 1);
-    // (id, kind, phone9, listing_id, target_id, chat_id, created_at)
-    assert.deepEqual(JSON.parse(jobs[0].params[4]), order);
     assert.equal(jobs[0].params[5], String(CHAT));
+    const pending = pendingOf(db);
+    assert.deepEqual(pending.ids, ["myhome_11"]);
+    assert.equal(pending.rows[0].url, MYHOME_DUP.url);
+    assert.equal(pending.price, 60000);
+  } finally {
+    goOffline();
+  }
+});
+
+test("with only MyHome duplicates the reply does not say there is none", async () => {
+  const calls = serveNetwork();
+  try {
+    const db = recordingD1([[/FROM properties WHERE district IN/, () => [MYHOME_DUP]]]);
+    await webhook(env(db), message(POST));
+    const text = replyOf(calls).body.text;
+    assert.ok(!text.includes("დუბლიკატი სხვა პორტალზე არ იძებნება"), text);
+    assert.ok(!text.includes("example/myhome_11"), text);
+    assert.ok(text.includes("შესაძლო დუბლიკატს ვამოწმებ"), text);
   } finally {
     goOffline();
   }
@@ -99,36 +122,107 @@ test("a reply without a MyHome duplicate queues no alive job", async () => {
   }
 });
 
-const aliveJob = result => [
+test("when the job cannot be queued the MyHome duplicate is shown as before", async () => {
+  const calls = serveNetwork();
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    const db = recordingD1([[/FROM properties WHERE district IN/, () => [MYHOME_DUP]]]);
+    const { GITHUB_PAT, ...noToken } = env(db);
+    await webhook(noToken, message(POST));
+    assert.ok(replyOf(calls).body.text.includes("example/myhome_11"));
+  } finally {
+    console.error = realError;
+    goOffline();
+  }
+});
+
+test("a re-render without a chat id leaves MyHome duplicates out and queues nothing", async () => {
+  const db = recordingD1([[/FROM properties WHERE district IN/, () => [SSGE_DUP, MYHOME_DUP]]]);
+  const collect = {};
+  const text = await w.handleXRayQuery(POST, env(db), { collect });
+  assert.ok(text.includes("example/ss_ge_5"), text);
+  assert.ok(!text.includes("example/myhome_11"), text);
+  assert.deepEqual(JSON.parse(JSON.stringify(collect.duplicates.map(c => c.id))), ["ss_ge_5"]);
+  assert.equal(aliveJobs(db).length, 0);
+});
+
+const PENDING = {
+  ids: ["myhome_11", "myhome_12"],
+  rows: [
+    { ...MYHOME_DUP, xray_tier: "maybe", xray_posterior: 0.51 },
+    { ...row("myhome_12", "myhome", 61000) }
+  ],
+  price: 60000,
+  target: { district: "გლდანი" }
+};
+const aliveJob = (result, status = "done") => [
   /FROM xray_jobs WHERE id = \?/,
-  () => [{ id: "j7", kind: "alive", chat_id: String(CHAT), status: "done", result: JSON.stringify(result) }]
+  () => [{
+    id: "j7", kind: "alive", chat_id: String(CHAT), status,
+    target_id: JSON.stringify(PENDING), result: result ? JSON.stringify(result) : null
+  }]
 ];
 const followup = db =>
   w.handleXRayFollowup(new Request("https://worker.example/api/xray/followup", {
     method: "POST", headers: { "X-Sync-Key": "k1" }, body: JSON.stringify({ job_id: "j7" })
   }), env(db));
 
-test("the alive follow-up names a deleted listing, without buttons", async () => {
+test("the follow-up shows only the live MyHome duplicate, with its ✅/❌ row", async () => {
   const calls = serveNetwork();
   try {
-    const text = "🚫 <b>myhome-ზე შევამოწმე: ეს განცხადება წაშლილია (აღარ არის აქტიური)</b>\n1. MyHome — $79,000";
-    const res = await followup(recordingD1([aliveJob({ gone: ["myhome_11"], text })]));
+    const db = recordingD1([aliveJob({ live: ["myhome_12"], gone: ["myhome_11"], unknown: [] })]);
+    const res = await followup(db);
     assert.equal(res.status, 200);
     const sent = telegram(calls, "sendMessage");
     assert.equal(sent.length, 1);
-    assert.equal(sent[0].body.text, text);
-    assert.equal(sent[0].body.reply_markup, undefined);
+    const text = sent[0].body.text;
+    assert.ok(text.includes('1. <a href="https://example/myhome_12">MyHome.ge</a> — <b>$61,000</b>'), text);
+    assert.ok(!text.includes("myhome_11"), text);
+    assert.ok(!text.includes("79,000"), text);
+    assert.ok(text.includes("🚫 1 განცხადება myhome-დან წაშლილია"), text);
+    const saved = db.log.find(e => /INSERT INTO xray_results/.test(e.sql));
+    assert.deepEqual(JSON.parse(saved.params[4]).map(c => c.id), ["myhome_12"]);
+    const rows = sent[0].body.reply_markup.inline_keyboard;
+    assert.equal(rows.length, 1);
+    assert.match(rows[0][0].callback_data, /^fd:.+:0:y$/);
   } finally {
     goOffline();
   }
 });
 
-test("an alive job that found nothing deleted sends no message", async () => {
+test("when every MyHome duplicate was deleted the follow-up shows none and no buttons", async () => {
   const calls = serveNetwork();
   try {
-    const res = await followup(recordingD1([aliveJob({ gone: [], text: null })]));
-    assert.equal(res.status, 200);
-    assert.equal(telegram(calls, "sendMessage").length, 0);
+    await followup(recordingD1([aliveJob({ live: [], gone: ["myhome_11", "myhome_12"], unknown: [] })]));
+    const sent = telegram(calls, "sendMessage")[0];
+    assert.ok(sent.body.text.includes("🚫 2 განცხადება myhome-დან წაშლილია"), sent.body.text);
+    assert.ok(!sent.body.text.includes("example/"), sent.body.text);
+    assert.equal(sent.body.reply_markup, undefined);
+  } finally {
+    goOffline();
+  }
+});
+
+test("a page that did not load is shown with a warning", async () => {
+  const calls = serveNetwork();
+  try {
+    await followup(recordingD1([aliveJob({ live: [], gone: [], unknown: ["myhome_11"] })]));
+    const text = telegram(calls, "sendMessage")[0].body.text;
+    assert.ok(text.includes("example/myhome_11"), text);
+    assert.ok(text.includes("⚠️ 1: myhome-ის გვერდი ვერ გაიხსნა"), text);
+  } finally {
+    goOffline();
+  }
+});
+
+test("a failed alive job shows nothing unchecked and says so", async () => {
+  const calls = serveNetwork();
+  try {
+    await followup(recordingD1([aliveJob(null, "failed")]));
+    const sent = telegram(calls, "sendMessage")[0];
+    assert.ok(sent.body.text.includes("ვერ შევამოწმე, ამიტომ არ გაჩვენებ"), sent.body.text);
+    assert.ok(!sent.body.text.includes("example/"), sent.body.text);
   } finally {
     goOffline();
   }

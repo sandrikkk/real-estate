@@ -1,9 +1,9 @@
-"""An "alive" job: are the MyHome listings an X-Ray reply showed still on MyHome?
+"""An "alive" job: are the MyHome duplicates an X-Ray reply left out still on MyHome?
 
-The Worker cannot read MyHome (ADR 0004), so it shows MyHome duplicates from D1 unchecked. The
-reply queues an "alive" job with the shown listings' ids in reply order; the job reads each
-MyHome listing's page, marks a deleted one with properties.delisted_at (so no reply shows it
-again) and stores a follow-up naming it by its number in the reply.
+The Worker cannot read MyHome (ADR 0004), so a reply leaves its MyHome duplicates out and
+queues an "alive" job with their ids; the job reads each listing's page, marks a deleted one
+with properties.delisted_at (so no reply shows it again) and stores which are live, gone and
+unknown; the Worker's follow-up shows the live ones.
 
 A listing is deleted when its page loads without a statement or with is_active false. A page
 that does not load says nothing. A known live listing is read first as a control: when it
@@ -67,7 +67,7 @@ class TestAliveJob(unittest.TestCase):
         self.conn.execute(
             "INSERT INTO xray_jobs (id, kind, phone9, target_id, chat_id, status, created_at)"
             " VALUES (?, 'alive', '', ?, '777', 'queued', ?)",
-            (JOB_ID, json.dumps(ids), a_minute_ago()),
+            (JOB_ID, json.dumps({"ids": ids, "rows": []}), a_minute_ago()),
         )
         self.conn.commit()
 
@@ -95,7 +95,7 @@ class TestAliveJob(unittest.TestCase):
         row = self.conn.execute("SELECT result FROM xray_jobs WHERE id = ?", (JOB_ID,)).fetchone()
         return json.loads(row["result"])
 
-    def test_a_deleted_listing_is_marked_and_named_by_its_reply_number(self):
+    def test_a_deleted_listing_is_marked_and_the_live_one_is_named_live(self):
         self.queue(["ss_ge_12", "myhome_11", "myhome_13"])
         outcome, asked = self.run_alive(
             {url(99): statement_page(99), url(11): GONE_PAGE, url(13): statement_page(13)}
@@ -103,10 +103,9 @@ class TestAliveJob(unittest.TestCase):
         self.assertEqual(outcome["status"], "done")
         self.assertEqual(self.delisted(), {"myhome_11"})
         self.assertNotIn(url(12), asked)  # SS.ge rows are the Worker's to check
-        result = self.result()
-        self.assertEqual(result["gone"], ["myhome_11"])
-        self.assertIn("2. MyHome — $79,000", result["text"])
-        self.assertNotIn("81,000", result["text"])
+        self.assertEqual(
+            self.result(), {"live": ["myhome_13"], "gone": ["myhome_11"], "unknown": []}
+        )
         self.assertEqual(self.notified, [JOB_ID])
 
     def test_an_inactive_statement_counts_as_deleted(self):
@@ -118,14 +117,17 @@ class TestAliveJob(unittest.TestCase):
         self.queue(["myhome_11"])
         outcome, _ = self.run_alive({url(99): statement_page(99)})
         self.assertEqual(self.delisted(), set())
-        self.assertEqual(self.result(), {"gone": [], "text": None})
+        self.assertEqual(self.result(), {"live": [], "gone": [], "unknown": ["myhome_11"]})
         self.assertEqual(outcome["status"], "done")
 
     def test_when_the_control_looks_deleted_nothing_is_marked(self):
         self.queue(["myhome_11", "myhome_13"])
         _, asked = self.run_alive({url(99): GONE_PAGE, url(11): GONE_PAGE, url(13): GONE_PAGE})
         self.assertEqual(self.delisted(), set())
-        self.assertEqual(self.result(), {"gone": [], "text": None})
+        # Not marked, and not called live either: shown only with a warning.
+        self.assertEqual(
+            self.result(), {"live": [], "gone": [], "unknown": ["myhome_11", "myhome_13"]}
+        )
 
     def test_the_control_is_read_only_when_something_looks_deleted(self):
         self.queue(["myhome_13"])
