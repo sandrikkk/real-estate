@@ -38,9 +38,11 @@ if TYPE_CHECKING:
 PHOTO_MAX_SHOWN = 5
 HASH_PAGE_SIZE = 5000
 ALBUM_SETTLE_SECONDS = 10
-# How many MyHome and SS.ge listings the live part downloads photos of: a work cap, the owner
-# search's own (core/owner_search.py MAX_PHOTO_CANDIDATES).
-LIVE_MAX_HASHED = 24
+# The live part reads up to LIVE_MAX_PAGES result pages per portal and hashes the first
+# LIVE_PHOTOS_PER_LISTING photos of at most LIVE_MAX_HASHED listings; work caps, not thresholds.
+LIVE_MAX_PAGES = 10
+LIVE_MAX_HASHED = 300
+LIVE_PHOTOS_PER_LISTING = 6
 # The caption's phone number: how many of its MyHome listings, and how many photos of each, the
 # job reads. A post often shows a listing's later photos; work caps, not tuned.
 PHONE_MAX_LISTINGS = 6
@@ -226,6 +228,8 @@ def _live_line(live: Dict[str, Any]) -> str:
     line = f"ℹ️ myhome-სა და ss.ge-ზე ახლა შევამოწმე {live['checked']} განცხადების ფოტოები."
     if failed:
         line += f" {' და '.join(failed)} ახლა ვერ წავიკითხე."
+    if live.get("more"):
+        line += " ფილტრს მეტი განცხადებაც ემთხვევა, ყველა ვერ შევამოწმე."
     return line
 
 
@@ -263,18 +267,18 @@ async def live_matches(
     """The post's photos against MyHome's and SS.ge's listings of the caption's district and
     area window, from every seller: the owner search's queries without its owner filter.
 
-    Asks nothing without a district. Downloads the first photos of at most LIVE_MAX_HASHED
-    candidates, the closest area (then price) first, skipping listings already shown. Shows a
-    listing by the duplicate finder's rule (core/dedup.py is_photo_duplicate)."""
+    Asks nothing without a district. Downloads the first LIVE_PHOTOS_PER_LISTING photos of at most
+    LIVE_MAX_HASHED candidates, the closest area (then price) first, skipping listings already shown.
+    Shows a listing by the duplicate finder's rule (core/dedup.py is_photo_duplicate)."""
     from core.owner_search import _image_urls, _myhome_candidates, _ssge_candidates
 
     out: Dict[str, Any] = {"rows": [], "counts": {}, "checked": 0, "failed": [], "asked": False}
     if not flat.get("district") or not kept or sources.image_hashes is None:
         return out
     out["asked"] = True
-    (myhome, _), (ssge, _) = await asyncio.gather(
-        _myhome_candidates(flat, sources, owners_only=False),
-        _ssge_candidates(flat, sources, owners_only=False),
+    (myhome, myhome_more), (ssge, ssge_more) = await asyncio.gather(
+        _myhome_candidates(flat, sources, owners_only=False, pages=LIVE_MAX_PAGES),
+        _ssge_candidates(flat, sources, owners_only=False, pages=LIVE_MAX_PAGES),
     )
     out["failed"] = [name for name, rows in (("myhome", myhome), ("ss.ge", ssge)) if rows is None]
     pool: Dict[str, Dict[str, Any]] = {}
@@ -293,10 +297,12 @@ async def live_matches(
 
     async def _hashes(c: Dict[str, Any]) -> List[str]:
         async with sem:
-            return (await sources.image_hashes(_image_urls(c)[:3])) or []
+            return (await sources.image_hashes(_image_urls(c)[:LIVE_PHOTOS_PER_LISTING])) or []
 
     all_hashes = await asyncio.gather(*(_hashes(c) for c in ranked))
     out["checked"] = len(ranked)
+    # More listings fit the filter than were checked: pages left unread, or the budget.
+    out["more"] = bool(myhome_more or ssge_more or len(pool) > len(ranked))
     for c, hashes in zip(ranked, all_hashes):
         n = count_image_matches(kept, hashes)
         if n >= 1 and is_photo_duplicate(
