@@ -38,6 +38,10 @@ class TestCleanDescription(unittest.TestCase):
         raw = '\u200c{\\"KA\\":\\"იყიდება 1 ოთახიანი ბინა\\"}'
         self.assertEqual(clean_description(raw), "იყიდება 1 ოთახიანი ბინა")
 
+    def test_truncated_double_encoded_json(self):
+        raw = '{\\"KA\\":\\"იყიდება 1 ოთახიანი ბინა მეტრო'
+        self.assertEqual(clean_description(raw), "იყიდება 1 ოთახიანი ბინა მეტრო")
+
     def test_plain_text_is_unchanged(self):
         for raw in ("იყიდება ბინა {ახალი}", "{not json", '{"foo": "bar"}', "\u200cქირავდება ბინა"):
             self.assertEqual(clean_description(raw), raw)
