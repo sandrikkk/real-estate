@@ -42,7 +42,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import settings  # noqa: E402
 from core.database import D1Client, D1Connection  # noqa: E402
 from core.dedup import MAX_IMAGE_BYTES, _compute_hashes  # noqa: E402
-from core.owner_search import Sources, _statement_from_html, owner_report, search_owner  # noqa: E402
+from core.myhome_alive import looks_deleted  # noqa: E402
+from core.owner_search import Sources, owner_report, search_owner  # noqa: E402
 from core.photo_match import batch_hashes, lookup_photos  # noqa: E402
 from core.xray import (  # noqa: E402
     MYHOME_SEARCH_PAGE_SIZE,
@@ -221,20 +222,6 @@ async def run_job(
 ALIVE_MAX = 8
 
 
-def _myhome_page(source_id: str) -> str:
-    return f"https://www.myhome.ge/ka/pr/{source_id}/"
-
-
-async def _looks_deleted(fetch_html: FetchHtml, source_id: str) -> Optional[bool]:
-    """True when MyHome's page for the listing loads without it (deleted) or shows it inactive,
-    False when it is there, None when the page did not load (says nothing)."""
-    html = await fetch_html(_myhome_page(source_id))
-    if html is None:
-        return None
-    statement = _statement_from_html(html)
-    return statement is None or statement.get("is_active") is False
-
-
 async def lookup_alive(conn: Any, pending_json: str, fetch_html: FetchHtml) -> Dict[str, Any]:
     """Reads on MyHome the duplicates a reply left out. `pending_json` is the Worker's
     {"ids": [...], ...}; the result sorts the ids into live, gone (marked with
@@ -265,7 +252,7 @@ async def lookup_alive(conn: Any, pending_json: str, fetch_html: FetchHtml) -> D
         r = rows.get(lid)
         if not (r and r["source"] == "myhome" and r.get("source_id")):
             continue
-        deleted = await _looks_deleted(fetch_html, str(r["source_id"]))
+        deleted = await looks_deleted(fetch_html, str(r["source_id"]))
         (unknown if deleted is None else gone if deleted else live).append(lid)
     if gone:
         control = conn.execute(
@@ -275,7 +262,7 @@ async def lookup_alive(conn: Any, pending_json: str, fetch_html: FetchHtml) -> D
         ).fetchone()
         if (
             control is None
-            or await _looks_deleted(fetch_html, str(control["source_id"])) is not False
+            or await looks_deleted(fetch_html, str(control["source_id"])) is not False
         ):
             print("X-Ray alive: the control listing did not read as live, nothing marked")
             unknown, gone = unknown + gone, []
