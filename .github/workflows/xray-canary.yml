@@ -32,6 +32,8 @@ jobs:
       - name: Check MyHome
         env:
           PYTHONUNBUFFERED: "1"
+          CLOUDFLARE_PROXY_URL: ${{ secrets.CLOUDFLARE_PROXY_URL }}
+          CLOUDFLARE_SYNC_KEY: ${{ secrets.CLOUDFLARE_SYNC_KEY }}
         run: python scripts/xray_canary.py
 
       - name: Tell the admin on Telegram
