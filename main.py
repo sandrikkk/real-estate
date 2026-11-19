@@ -508,14 +508,6 @@ class RealEstateOrchestrator:
                     myhome_price_label=myhome_label,
                 )
 
-                # Re-check is_hot_deal flag in case condition was just enriched
-                if listing.price_per_m2 <= self.filter_engine.filters.hot_deal_price_per_sqm:
-                    if listing.condition_id in [1, 2] or (
-                        listing.condition_name and "გარემონტებული" in listing.condition_name
-                    ):
-                        listing.is_hot_deal = True
-                        listing.is_bargain = True
-
                 # 4. Save to Database
                 self.db.save_listing(listing)
 

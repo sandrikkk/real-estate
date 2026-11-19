@@ -147,7 +147,10 @@ class ListingFilter:
             if any(mr in loc_lower for mr in gldani_deep_mr):
                 return False
 
-        # Deal Tagging
+        # Deal Tagging (reset first: this runs again after detail enrichment changes the price)
+        listing.is_hot_deal = False
+        listing.deal_tag = None
+        listing.is_bargain = False
         if is_frame:
             if listing.price_per_m2 <= self.filters.value_frame_price_per_sqm:
                 listing.is_hot_deal = True

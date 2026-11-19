@@ -200,6 +200,37 @@ class TestFiltersValidation(unittest.TestCase):
         self.assertFalse(listing_normal.is_hot_deal)
         self.assertIsNone(listing_normal.deal_tag)
 
+    def test_hot_deal_tag_cleared_when_enriched_price_is_not_a_deal(self):
+        # Search price $65,000 / 50m² -> $1300/m² tags HOT DEAL; the live detail price is
+        # $90,000 -> $1800/m². The re-run of the hygiene filter must drop the stale tag.
+        listing = make_sample_listing(price_usd=65000.0, area_m2=50.0, condition_id=1)
+        self.assertTrue(self.filter_engine.matches_hygiene(listing))
+        self.assertEqual(listing.deal_tag, "🚨 HOT DEAL (RENOVATED)")
+
+        listing.price_usd = 90000.0
+        self.assertTrue(self.filter_engine.matches_hygiene(listing))
+        self.assertFalse(listing.is_hot_deal)
+        self.assertFalse(listing.is_bargain)
+        self.assertIsNone(listing.deal_tag)
+
+    def test_value_frame_tag_cleared_when_enriched_price_is_not_a_deal(self):
+        # White frame $50,000 / 50m² -> $1000/m² tags VALUE FRAME; live price $53,000 ->
+        # $1060/m², above the $1050/m² value-frame line but under the $54k frame cap.
+        listing = make_sample_listing(
+            price_usd=50000.0,
+            area_m2=50.0,
+            condition_id=7,
+            condition_name="თეთრი კარკასი",
+            description="თეთრი კარკასი",
+        )
+        self.assertTrue(self.filter_engine.matches_hygiene(listing))
+        self.assertEqual(listing.deal_tag, "🔥 VALUE FRAME (<$54k)")
+
+        listing.price_usd = 53000.0
+        self.assertTrue(self.filter_engine.matches_hygiene(listing))
+        self.assertFalse(listing.is_hot_deal)
+        self.assertIsNone(listing.deal_tag)
+
 
 if __name__ == "__main__":
     unittest.main()
