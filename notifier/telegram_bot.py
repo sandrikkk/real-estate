@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import html
 import re
 import sys
@@ -12,6 +13,9 @@ try:
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
+
+
+SOURCE_NAMES = {"myhome": "MyHome.ge", "ss_ge": "SS.ge", "area_ge": "Area.ge"}
 
 
 def _safe_print(text: str):
@@ -110,9 +114,7 @@ class TelegramNotifier:
         details_line = " | ".join(details_parts)
 
         # Direct listing link
-        source_name = {"myhome": "MyHome.ge", "ss_ge": "SS.ge", "area_ge": "Area.ge"}.get(
-            listing.source, listing.source.upper()
-        )
+        source_name = SOURCE_NAMES.get(listing.source, listing.source.upper())
         safe_url = html.escape(listing.url)
         link_line = f'🔗 <a href="{safe_url}">განცხადების ლინკი ({source_name})</a>'
 
@@ -246,6 +248,49 @@ class TelegramNotifier:
             if owner_phone:
                 safe_owner_phone = html.escape(owner_phone)
                 lines.append(f"📞 სავარაუდო მესაკუთრე: <b>{safe_owner_phone}</b>")
+
+        # History line (Feature 2)
+        history_parts = []
+
+        # 1. First seen
+        cand_dts = []
+        for val in [
+            getattr(listing, "first_seen_at", None),
+            dup_info.get("first_seen_at") if dup_info else None,
+        ]:
+            if val:
+                try:
+                    dt = datetime.fromisoformat(str(val))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    cand_dts.append(dt)
+                except Exception:
+                    pass
+
+        if cand_dts:
+            earliest_dt = min(cand_dts)
+            now = datetime.now(timezone.utc)
+            days = (now - earliest_dt).days
+            if days >= 1:
+                history_parts.append(f"პირველად ვნახეთ {days} დღის წინ")
+
+        # 2. Price: the listing's own first price. Another listing of the group may be another
+        # seller's asking price, so it is not this flat's price history.
+        initial = listing.initial_price_usd
+        if initial and listing.price_usd and initial - listing.price_usd >= 1:
+            history_parts.append(f"ფასი: ${initial:,.0f} → ${listing.price_usd:,.0f}")
+
+        # 3. Another portal
+        if dup_info:
+            sources = dup_info.get("sources") or set()
+            other_sources = [s for s in sources if s != listing.source]
+            if other_sources:
+                other_names = [SOURCE_NAMES.get(s, s) for s in sorted(other_sources)]
+                history_parts.append(f"ასევე იდო {', '.join(other_names)}-ზე")
+
+        if history_parts:
+            lines.append("")
+            lines.append(f"📅 <b>ისტორია:</b> {' · '.join(history_parts)}")
 
         return "\n".join(lines)
 

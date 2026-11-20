@@ -181,6 +181,153 @@ class TestTelegramFormatting(unittest.TestCase):
 
         asyncio.run(_test())
 
+    def test_history_line_all_parts(self):
+        from datetime import datetime, timezone, timedelta
+
+        first_seen = (datetime.now(timezone.utc) - timedelta(days=47)).isoformat()
+        listing = PropertyListing(
+            id="myhome_123",
+            source="myhome",
+            source_id="123",
+            title="ბინა",
+            price_usd=69000.0,
+            area_m2=50.0,
+            url="https://myhome.ge/pr/123",
+            first_seen_at=first_seen,
+            initial_price_usd=78000.0,
+        )
+        dup_info = {
+            "duplicate_count": 2,
+            "first_seen_at": (datetime.now(timezone.utc) - timedelta(days=20)).isoformat(),
+            "sources": {"myhome", "ss_ge"},
+        }
+        msg = self.notifier.format_message(listing, dup_info=dup_info)
+        self.assertIn("📅 <b>ისტორია:</b> ", msg)
+        self.assertIn("პირველად ვნახეთ 47 დღის წინ", msg)
+        self.assertIn("ფასი: $78,000 → $69,000", msg)
+        self.assertIn("ასევე იდო SS.ge-ზე", msg)
+        self.assertIn(
+            "📅 <b>ისტორია:</b> პირველად ვნახეთ 47 დღის წინ · ფასი: $78,000 → $69,000 · ასევე იდო SS.ge-ზე",
+            msg,
+        )
+
+    def test_history_price_ignores_another_listing_of_the_group(self):
+        """A dearer duplicate is another seller's asking price, not this flat's price history."""
+        listing = PropertyListing(
+            id="myhome_5",
+            source="myhome",
+            source_id="5",
+            title="ბინა",
+            price_usd=70000.0,
+            area_m2=50.0,
+            url="https://myhome.ge/pr/5",
+            initial_price_usd=70000.0,
+        )
+        dup_info = {"duplicate_count": 2, "sources": {"myhome"}, "max_initial_price_usd": 90000.0}
+        msg = self.notifier.format_message(listing, dup_info=dup_info)
+        self.assertNotIn("ფასი: $90,000", msg)
+        self.assertNotIn("📅", msg)
+
+    def test_history_line_missing_parts_and_days_under_one(self):
+        from datetime import datetime, timezone, timedelta
+
+        # 1. days < 1 (seen today / 0 days ago) -> first seen omitted
+        today = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        listing = PropertyListing(
+            id="myhome_124",
+            source="myhome",
+            source_id="124",
+            title="ბინა",
+            price_usd=69000.0,
+            area_m2=50.0,
+            url="https://myhome.ge/pr/124",
+            first_seen_at=today,
+            initial_price_usd=78000.0,
+        )
+        dup_info = {
+            "duplicate_count": 2,
+            "sources": {"myhome"},  # same portal only
+        }
+        msg = self.notifier.format_message(listing, dup_info=dup_info)
+        self.assertIn("📅 <b>ისტორია:</b> ფასი: $78,000 → $69,000", msg)
+        self.assertNotIn("პირველად ვნახეთ", msg)
+        self.assertNotIn("ასევე იდო", msg)
+
+        # 2. Only another portal
+        listing2 = PropertyListing(
+            id="ss_ge_125",
+            source="ss_ge",
+            source_id="125",
+            title="ბინა",
+            price_usd=70000.0,
+            area_m2=50.0,
+            url="https://ss.ge/pr/125",
+        )
+        dup_info2 = {
+            "duplicate_count": 2,
+            "sources": {"ss_ge", "myhome"},
+        }
+        msg2 = self.notifier.format_message(listing2, dup_info=dup_info2)
+        self.assertIn("📅 <b>ისტორია:</b> ასევე იდო MyHome.ge-ზე", msg2)
+        self.assertNotIn("პირველად ვნახეთ", msg2)
+        self.assertNotIn("ფასი:", msg2)
+
+        # 3. No history data at all -> no history line
+        listing3 = PropertyListing(
+            id="myhome_126",
+            source="myhome",
+            source_id="126",
+            title="ბინა",
+            price_usd=70000.0,
+            area_m2=50.0,
+            url="https://myhome.ge/pr/126",
+        )
+        msg3 = self.notifier.format_message(listing3)
+        self.assertNotIn("ისტორია", msg3)
+
+    def test_history_line_is_last_and_truncation_drops_it_first(self):
+        from datetime import datetime, timezone, timedelta
+
+        first_seen = (datetime.now(timezone.utc) - timedelta(days=50)).isoformat()
+        listing = PropertyListing(
+            id="myhome_127",
+            source="myhome",
+            source_id="127",
+            title="ბინა",
+            price_usd=60000.0,
+            area_m2=50.0,
+            url="https://myhome.ge/pr/127",
+            first_seen_at=first_seen,
+            initial_price_usd=70000.0,
+        )
+        dup_info = {
+            "duplicate_count": 2,
+            "sources": {"myhome", "ss_ge"},
+        }
+        msg = self.notifier.format_message(listing, dup_info=dup_info)
+        non_empty_lines = [line for line in msg.split("\n") if line.strip()]
+        self.assertTrue(non_empty_lines[-1].startswith("📅 <b>ისტორია:</b>"))
+
+        # Truncation drops the last line first and preserves link
+        truncated = TelegramNotifier._truncate_caption(msg, max_len=len(msg) - 20)
+        self.assertIn("განცხადების ლინკი", truncated)
+        self.assertNotIn("ისტორია", truncated)
+
+    def test_history_line_applies_to_rent(self):
+        listing = PropertyListing(
+            id="myhome_rent_1",
+            source="myhome",
+            source_id="rent_1",
+            deal_type="rent",
+            title="ქირავდება ბინა",
+            price_usd=500.0,
+            initial_price_usd=600.0,
+            area_m2=50.0,
+            url="https://myhome.ge/pr/rent_1",
+        )
+        msg = self.notifier.format_message(listing)
+        self.assertIn("📅 <b>ისტორია:</b> ფასი: $600 → $500", msg)
+
 
 if __name__ == "__main__":
     unittest.main()

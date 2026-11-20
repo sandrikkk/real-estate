@@ -739,6 +739,85 @@ def test_compute_hashes_downloads_images_concurrently():
     print("✅ test_compute_hashes_downloads_images_concurrently PASSED")
 
 
+def test_get_group_info_history_keys():
+    """_get_group_info should include first_seen_at (min scraped_at) and sources."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = DatabaseEngine(os.path.join(tmpdir, "test.db"))
+        detector = DuplicateDetector(db=db)
+
+        # Insert 2 listings belonging to the same group
+        group_id = "grp_hist_test"
+        with db._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO properties (
+                    id, source, source_id, title, price_usd, area_m2, price_per_m2,
+                    url, scraped_at, initial_price_usd, group_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "m_10",
+                    "myhome",
+                    "10",
+                    "Apt 1",
+                    70000.0,
+                    50.0,
+                    1400.0,
+                    "https://myhome.ge/10",
+                    "2026-10-01T10:00:00",
+                    75000.0,
+                    group_id,
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO properties (
+                    id, source, source_id, title, price_usd, area_m2, price_per_m2,
+                    url, scraped_at, initial_price_usd, group_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "s_20",
+                    "ss_ge",
+                    "20",
+                    "Apt 2",
+                    68000.0,
+                    50.0,
+                    1360.0,
+                    "https://ss.ge/20",
+                    "2026-10-05T12:00:00",
+                    None,
+                    group_id,
+                ),
+            )
+            conn.commit()
+
+        info = detector._get_group_info(group_id, "m_10")
+        assert info is not None
+        assert info["first_seen_at"] == "2026-10-01T10:00:00"
+        assert info["sources"] == {"myhome", "ss_ge"}
+        print("✅ test_get_group_info_history_keys PASSED")
+
+
+def test_get_group_info_skips_a_scraped_at_that_is_not_a_timestamp():
+    """One bad scraped_at must not break the duplicate check of an alert."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = DatabaseEngine(os.path.join(tmpdir, "test.db"))
+        detector = DuplicateDetector(db=db)
+        with db._connection() as conn:
+            for lid, scraped_at in (("m_1", "not a date"), ("m_2", "2026-10-03T09:00:00")):
+                conn.execute(
+                    "INSERT INTO properties (id, source, source_id, title, price_usd, area_m2,"
+                    " price_per_m2, url, scraped_at, group_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (lid, "myhome", lid, lid, 70000.0, 50.0, 1400.0, "u", scraped_at, "g"),
+                )
+            conn.commit()
+
+        info = detector._get_group_info("g", "m_1")
+        assert info["first_seen_at"] == "2026-10-03T09:00:00"
+
+
 class TestIndexNewListings(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
@@ -811,6 +890,8 @@ if __name__ == "__main__":
     test_duplicate_stats()
     test_no_images_no_match()
     test_compute_hashes_downloads_images_concurrently()
+    test_get_group_info_history_keys()
+    test_get_group_info_skips_a_scraped_at_that_is_not_a_timestamp()
 
     print("\n" + "=" * 60)
     print("  ✅ All 18 tests PASSED")

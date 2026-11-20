@@ -10,6 +10,7 @@ Architecture:
 """
 
 import asyncio
+from datetime import datetime, timezone
 import json
 from collections import defaultdict
 from io import BytesIO
@@ -70,6 +71,15 @@ def count_image_matches(
                 used_b.add(j)
                 break
     return count
+
+
+def _as_utc(value) -> Optional[datetime]:
+    """An ISO timestamp as an aware datetime (naive ones are UTC), or None when it is not one."""
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def is_photo_duplicate(matches: int, price_a, price_b, area_a, area_b) -> bool:
@@ -348,7 +358,8 @@ class DuplicateDetector:
         with self.db._connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id, price_usd, url, phone_number, published_at, is_owner, user_type "
+                "SELECT id, price_usd, url, phone_number, published_at, is_owner, user_type, "
+                "source, scraped_at "
                 "FROM properties WHERE group_id = ? ORDER BY price_usd ASC",
                 (group_id,),
             )
@@ -423,6 +434,11 @@ class DuplicateDetector:
                     owner_phone = best_cand[2]
 
         prices = [r["price_usd"] for r in rows]
+
+        seen = [(dt, str(r["scraped_at"])) for r in rows if (dt := _as_utc(r.get("scraped_at")))]
+        first_seen_at = min(seen)[1] if seen else None
+        sources = {r["source"] for r in rows if r.get("source")}
+
         return {
             "group_id": group_id,
             "duplicate_count": len(rows),
@@ -435,6 +451,8 @@ class DuplicateDetector:
             "is_new_best_price": is_new_best,
             "is_strictly_lower": is_strictly_lower,
             "is_first_owner": is_first_owner,
+            "first_seen_at": first_seen_at,
+            "sources": sources,
         }
 
     # --- Main entry point ---

@@ -433,6 +433,44 @@ class TestBatchDatabaseOperations(unittest.TestCase):
         self.assertEqual(len(mock_client.batch.call_args_list[0][0][0]), 50)
         self.assertEqual(len(mock_client.batch.call_args_list[1][0][0]), 10)
 
+    def test_classify_scraped_listings_sets_first_seen_at_and_initial_price_usd_and_caches(self):
+        from datetime import datetime, timezone
+
+        item = self._create_sample_listing("item_hist_1", price=75000.0)
+        item.initial_price_usd = 80000.0
+        item.scraped_at = datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        self.db.save_listings_batch([item])
+
+        # Clear in-memory caches to simulate a new run or cold start
+        self.db._seen_ids.clear()
+        self.db._seen_prices.clear()
+        if hasattr(self.db, "_seen_meta"):
+            self.db._seen_meta.clear()
+
+        # Listing price dropped from 75k to 70k
+        dropped = self._create_sample_listing("item_hist_1", price=70000.0)
+        candidates, price_drops = self.db.classify_scraped_listings([dropped])
+
+        self.assertEqual([c.id for c in candidates], ["item_hist_1"])
+        self.assertEqual(price_drops, {"item_hist_1": 75000.0})
+        self.assertIsNotNone(dropped.first_seen_at)
+        self.assertTrue(dropped.first_seen_at.startswith("2026-10-01"))
+        self.assertEqual(dropped.initial_price_usd, 80000.0)
+        self.assertIn("item_hist_1", getattr(self.db, "_seen_meta", {}))
+
+        # Second call with another object (e.g. app.py loop skipping DB query via _seen_prices)
+        dropped_again = self._create_sample_listing("item_hist_1", price=69000.0)
+        candidates2, price_drops2 = self.db.classify_scraped_listings([dropped_again])
+        self.assertEqual([c.id for c in candidates2], ["item_hist_1"])
+        self.assertIsNotNone(dropped_again.first_seen_at)
+        self.assertTrue(dropped_again.first_seen_at.startswith("2026-10-01"))
+        self.assertEqual(dropped_again.initial_price_usd, 80000.0)
+
+        # Brand new listing has no stored row
+        brand_new = self._create_sample_listing("brand_new_item", price=55000.0)
+        candidates3, _ = self.db.classify_scraped_listings([brand_new])
+        self.assertIsNone(brand_new.first_seen_at)
+
 
 if __name__ == "__main__":
     unittest.main()

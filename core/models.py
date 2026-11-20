@@ -138,6 +138,7 @@ class PropertyListing(BaseModel):
     previous_price_usd: Optional[float] = None
     price_drop_usd: Optional[float] = None
     initial_price_usd: Optional[float] = None
+    first_seen_at: Optional[str] = None
     author_id: Optional[str] = None
     author_listings_count: Optional[int] = None
 
