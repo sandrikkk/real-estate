@@ -515,7 +515,20 @@ class SSGeScraper(BaseScraper):
 
         p_usd, p_gel = self._extract_prices(app_data)
         raw_uid = app_data.get("userId") or agency_id
+
+        is_inactive = app_data.get("isInactiveApplication")
+        status_val = app_data.get("status")
+        if is_inactive is True:
+            is_active = False
+        elif isinstance(status_val, str) and status_val:
+            is_active = status_val.lower() == "active"
+        elif is_inactive is False:
+            is_active = True
+        else:
+            is_active = None
+
         return {
+            "is_active": is_active,
             "is_owner": is_owner,
             "agency_id": agency_id,
             "agency_name": agency_name,

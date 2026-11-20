@@ -376,6 +376,63 @@ class TestBatchDatabaseOperations(unittest.TestCase):
         self.assertEqual(len(mock_client.batch.call_args_list[0][0][0]), 50)
         self.assertEqual(len(mock_client.batch.call_args_list[1][0][0]), 10)
 
+    def test_watchlist_updates_chunked_at_50(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+        from core.watchlist import check_watches
+
+        mock_client = MagicMock(spec=D1Client)
+        mock_client.batch.return_value = []
+        d1_db = DatabaseEngine(db_path=self.db_path, use_d1=False)
+        d1_db.use_d1 = True
+        d1_db.d1_client = mock_client
+
+        # Seed 60 watch rows in the mock client query result
+        rows = [
+            {
+                "chat_id": f"chat_{i}",
+                "listing_id": f"myhome_{i}",
+                "status": "active",
+                "last_price_usd": 60000.0,
+                "last_checked_at": "2026-11-20T00:00:00Z",
+                "ended_at": None,
+                "source": "myhome",
+                "source_id": str(i),
+                "url": f"https://myhome.ge/pr/{i}",
+                "district": "საბურთალო",
+                "area_m2": 50.0,
+                "price_usd": 60000.0,
+                "images_json": "[]",
+                "group_id": None,
+                "delisted_at": None,
+            }
+            for i in range(60)
+        ]
+        mock_client.query.return_value = {"success": True, "results": rows, "meta": {}}
+
+        cycle_prices = {f"myhome_{i}": 55000.0 for i in range(60)}
+
+        mock_dedup = MagicMock()
+        mock_dedup._get_hashes_batch.return_value = {}
+        mock_notifier = MagicMock()
+        mock_notifier.send_watch_update = AsyncMock(return_value=True)
+
+        asyncio.run(
+            check_watches(
+                db=d1_db,
+                dedup=mock_dedup,
+                notifier=mock_notifier,
+                scrapers=[],
+                cycle_prices=cycle_prices,
+                new_listings=[],
+                alerted=set(),
+            )
+        )
+
+        self.assertEqual(mock_client.batch.call_count, 2)
+        self.assertEqual(len(mock_client.batch.call_args_list[0][0][0]), 50)
+        self.assertEqual(len(mock_client.batch.call_args_list[1][0][0]), 10)
+
 
 if __name__ == "__main__":
     unittest.main()

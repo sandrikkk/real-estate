@@ -660,7 +660,8 @@ async function handleMessage(msg, token, kv, env) {
     const welcome = (
       `🏢 <b>მოგესალმებით Tbilisi Real Estate Radar-ში!</b>\n\n` +
       `ეს ბოტი ავტომატურად ასკანერებს <b>MyHome.ge</b> და <b>SS.ge</b> პორტალებს 24/7 რეჟიმში და ახალ ბინებს მომენტალურად გიგზავნით.\n` +
-      `🔍 <b>რენტგენი (X-Ray):</b> ჩააგდეთ ჩატში ბინის ლინკი, ტელეფონის ნომერი ან FB პოსტის ტექსტი გადასამოწმებლად.\n\n` +
+      `🔍 <b>რენტგენი (X-Ray):</b> ჩააგდეთ ჩატში ბინის ლინკი, ტელეფონის ნომერი ან FB პოსტის ტექსტი გადასამოწმებლად.\n` +
+      `👁 <b>/watchlist</b> — ბინები, რომლებსაც თვალყურს ადევნებ.\n\n` +
       formatSettingsSummary(user)
     );
     await sendTelegram(token, "sendMessage", {
@@ -714,6 +715,19 @@ async function handleMessage(msg, token, kv, env) {
       text: formatSettingsSummary(user),
       parse_mode: "HTML",
       reply_markup: getMainKeyboard(user)
+    });
+    return;
+  }
+
+  // Watchlist command: /watchlist
+  if (text.startsWith("/watchlist")) {
+    const msg = await watchlistMessage(env, chatId);
+    await sendTelegram(token, "sendMessage", {
+      chat_id: chatId,
+      text: msg.text,
+      parse_mode: "HTML",
+      reply_markup: msg.reply_markup,
+      disable_web_page_preview: true
     });
     return;
   }
@@ -777,6 +791,12 @@ async function handleCallbackQuery(cb, token, kv, env) {
   const data = cb.data;
   const userKey = `USER_${chatId}`;
   let user = (await kv.get(userKey, "json")) || { ...DEFAULT_USER_PROFILE, chat_id: chatId };
+
+  // Watchlist buttons: w:, uw:, uwl: answer callback directly with toasts
+  if (typeof data === "string" && (data.startsWith("w:") || data.startsWith("uw:") || data.startsWith("uwl:"))) {
+    await handleWatchCallback(env, token, cb, data);
+    return;
+  }
 
   // Answer callback to remove loading state in Telegram client
   await sendTelegram(token, "answerCallbackQuery", { callback_query_id: cb.id });
@@ -1088,6 +1108,155 @@ function getDistrictsKeyboard(user) {
   ]);
 
   return { inline_keyboard: rows };
+}
+
+function escapeHtml(str) {
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function watchlistMessage(env, chatId) {
+  if (!env || !env.DB) {
+    return {
+      text: "ახლა ვერ მოხერხდა, სცადე რამდენიმე წუთში.",
+      reply_markup: undefined
+    };
+  }
+  let results = [];
+  try {
+    const res = await env.DB.prepare(
+      "SELECT w.listing_id, w.last_price_usd, w.created_at, p.url, p.district, p.area_m2 FROM watchlist w LEFT JOIN properties p ON p.id = w.listing_id WHERE w.chat_id = ? AND w.status = 'active' ORDER BY w.created_at DESC LIMIT 30"
+    ).bind(String(chatId)).all();
+    results = res && res.results ? res.results : [];
+  } catch (err) {
+    console.error("watchlistMessage error:", err && err.message);
+    return {
+      text: "ახლა ვერ მოხერხდა, სცადე რამდენიმე წუთში.",
+      reply_markup: undefined
+    };
+  }
+
+  if (results.length === 0) {
+    return {
+      text: "👁 ჯერ არცერთ ბინას არ ადევნებ თვალყურს. ალერტზე დააჭირე „👁 თვალყური ადევნე“.",
+      reply_markup: undefined
+    };
+  }
+
+  const lines = [`👁 <b>თვალყურს ადევნებ: ${results.length} ბინას</b>`, ""];
+  const buttons = [];
+  results.forEach((r, idx) => {
+    const num = idx + 1;
+    const url = escapeHtml(r.url || "#");
+    const dist = escapeHtml(r.district || "");
+    const area = escapeHtml(r.area_m2 || "?");
+    const loc = dist ? `${dist}, ${area} მ²` : `${area} მ²`;
+    const price = r.last_price_usd !== null && r.last_price_usd !== undefined
+      ? Math.round(Number(r.last_price_usd) || 0).toLocaleString("en-US")
+      : "?";
+    lines.push(`${num}. <a href="${url}">${loc}</a> — $${price}`);
+    buttons.push({ text: `🗑 ${num}`, callback_data: `uwl:${r.listing_id}` });
+  });
+
+  const keyboard = [];
+  for (let i = 0; i < buttons.length; i += 5) {
+    keyboard.push(buttons.slice(i, i + 5));
+  }
+
+  return {
+    text: lines.join("\n"),
+    reply_markup: { inline_keyboard: keyboard }
+  };
+}
+
+async function handleWatchCallback(env, token, cb, data) {
+  const chatId = String(cb.message.chat.id);
+  const toast = (text) => sendTelegram(token, "answerCallbackQuery", { callback_query_id: cb.id, text });
+
+  if (!env || !env.DB) {
+    await toast("ახლა ვერ მოხერხდა, სცადე რამდენიმე წუთში");
+    return;
+  }
+
+  try {
+    if (data.startsWith("w:")) {
+      const listingId = data.slice(2);
+      const prop = await env.DB.prepare("SELECT id, price_usd FROM properties WHERE id = ?").bind(listingId).first();
+      if (!prop) {
+        await toast("ბინა ვერ ვიპოვე");
+        return;
+      }
+      const countRes = await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM watchlist WHERE chat_id = ? AND status = 'active' AND listing_id != ?"
+      ).bind(chatId, listingId).first();
+      const n = (countRes && Number(countRes.n)) || 0;
+      if (n >= 30) {
+        await toast("მაქსიმუმ 30 ბინა. /watchlist-ში მოხსენი რომელიმე");
+        return;
+      }
+      const nowIso = new Date().toISOString();
+      await env.DB.prepare(
+        "INSERT INTO watchlist (chat_id, listing_id, status, last_price_usd, created_at) VALUES (?, ?, 'active', ?, ?) ON CONFLICT(chat_id, listing_id) DO UPDATE SET status='active', last_price_usd=excluded.last_price_usd, ended_at=NULL"
+      ).bind(chatId, listingId, prop.price_usd, nowIso).run();
+
+      await sendTelegram(token, "editMessageReplyMarkup", {
+        chat_id: cb.message.chat.id,
+        message_id: cb.message.message_id,
+        reply_markup: {
+          inline_keyboard: [[{ text: "🗑 თვალყურის მოხსნა", callback_data: `uw:${listingId}` }]]
+        }
+      });
+      await toast("👁 თვალყურს ვადევნებ");
+      return;
+    }
+
+    if (data.startsWith("uw:")) {
+      const listingId = data.slice(3);
+      const nowIso = new Date().toISOString();
+      await env.DB.prepare(
+        "UPDATE watchlist SET status='removed', ended_at=? WHERE chat_id=? AND listing_id=? AND status='active'"
+      ).bind(nowIso, chatId, listingId).run();
+
+      await sendTelegram(token, "editMessageReplyMarkup", {
+        chat_id: cb.message.chat.id,
+        message_id: cb.message.message_id,
+        reply_markup: {
+          inline_keyboard: [[{ text: "👁 თვალყური ადევნე", callback_data: `w:${listingId}` }]]
+        }
+      });
+      await toast("თვალყურის დევნება მოიხსნა");
+      return;
+    }
+
+    if (data.startsWith("uwl:")) {
+      const listingId = data.slice(4);
+      const nowIso = new Date().toISOString();
+      await env.DB.prepare(
+        "UPDATE watchlist SET status='removed', ended_at=? WHERE chat_id=? AND listing_id=? AND status='active'"
+      ).bind(nowIso, chatId, listingId).run();
+
+      const msg = await watchlistMessage(env, chatId);
+      const editPayload = {
+        chat_id: cb.message.chat.id,
+        message_id: cb.message.message_id,
+        text: msg.text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true
+      };
+      if (msg.reply_markup) {
+        editPayload.reply_markup = msg.reply_markup;
+      }
+      await sendTelegram(token, "editMessageText", editPayload);
+      await sendTelegram(token, "answerCallbackQuery", { callback_query_id: cb.id });
+      return;
+    }
+  } catch (err) {
+    console.error("Watch callback error:", err && err.message);
+    await toast("ახლა ვერ მოხერხდა, სცადე რამდენიმე წუთში");
+  }
 }
 
 /**

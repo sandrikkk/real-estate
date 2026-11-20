@@ -596,6 +596,38 @@ class TestScrapers(unittest.TestCase):
         self.assertFalse(scraper._api_disabled)
         scraper.fetch_html.assert_not_called()
 
+    def test_ss_ge_is_active_four_cases(self):
+        scraper = SSGeScraper()
+
+        # Case 1: isInactiveApplication is True -> False
+        data1 = {"isInactiveApplication": True, "status": "active"}
+        p1 = scraper._parse_statement_details_data(data1)
+        self.assertIsNotNone(p1)
+        self.assertIs(p1["is_active"], False)
+
+        # Case 2: status is a non-empty string -> status.lower() == "active"
+        data2_active = {"status": "Active"}
+        p2_active = scraper._parse_statement_details_data(data2_active)
+        self.assertIsNotNone(p2_active)
+        self.assertIs(p2_active["is_active"], True)
+
+        data2_inactive = {"status": "Archived"}
+        p2_inactive = scraper._parse_statement_details_data(data2_inactive)
+        self.assertIsNotNone(p2_inactive)
+        self.assertIs(p2_inactive["is_active"], False)
+
+        # Case 3: isInactiveApplication is False -> True
+        data3 = {"isInactiveApplication": False}
+        p3 = scraper._parse_statement_details_data(data3)
+        self.assertIsNotNone(p3)
+        self.assertIs(p3["is_active"], True)
+
+        # Case 4: Otherwise -> None
+        data4 = {"description": "Apt"}
+        p4 = scraper._parse_statement_details_data(data4)
+        self.assertIsNotNone(p4)
+        self.assertIsNone(p4["is_active"])
+
 
 if __name__ == "__main__":
     unittest.main()

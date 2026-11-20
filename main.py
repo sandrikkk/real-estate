@@ -227,9 +227,18 @@ class RealEstateOrchestrator:
                 seen_in_batch.add(listing.id)
                 unique_listings.append(listing)
 
+        cycle_prices = {
+            item.id: item.price_usd
+            for item in unique_listings
+            if item.price_usd and item.price_usd > 0
+        }
+        alerted = set()
+
         # 2. Batch check which scraped listing IDs are genuinely NEW or have an in-place price drop
         new_listings, price_drops = self.db.classify_scraped_listings(unique_listings)
         new_count = len(new_listings)
+        # Listings first seen in this cycle; new_listings also holds known ones that dropped price.
+        first_seen = [item for item in new_listings if item.id not in price_drops]
 
         # 3. Batch check unnotified listing IDs for each active user (only for candidate listings)
         new_ids = [item.id for item in new_listings]
@@ -551,6 +560,7 @@ class RealEstateOrchestrator:
                                     user_sent_count.get(user.chat_id, 0) + 1
                                 )
                                 self.db.mark_user_notified(user.chat_id, listing.id)
+                                alerted.add((str(user.chat_id), listing.id))
                                 unnotified_ids_by_user.get(str(user.chat_id), set()).discard(
                                     listing.id
                                 )
@@ -576,11 +586,32 @@ class RealEstateOrchestrator:
         if indexed:
             print(f"[Dedup]: Hashed the photos of {indexed} new listing(s) for the X-Ray")
 
+        # Check active watchlists
+        watch_updates = 0
+        try:
+            from core.watchlist import check_watches
+
+            watch_counts = await check_watches(
+                db=self.db,
+                dedup=self.dedup,
+                notifier=self.telegram_notifier,
+                scrapers=self.scrapers,
+                cycle_prices=cycle_prices,
+                new_listings=first_seen,
+                alerted=alerted,
+            )
+            watch_updates = sum(watch_counts.values()) if isinstance(watch_counts, dict) else 0
+        except DatabaseUnavailableError:
+            raise
+        except Exception as e:
+            print(f"[Watchlist Warning]: Watch check failed: {e}")
+
         stats = {
             "total_fetched": len(all_listings),
             "new_listings": new_count,
             "matched_filters": matched_count,
             "notifications_sent": notified_count,
+            "watch_updates": watch_updates,
         }
         print(
             f"--- [Cycle Summary]: Fetched: {stats['total_fetched']} | New: {stats['new_listings']} | Matched: {stats['matched_filters']} | Alerts: {stats['notifications_sent']} ---\n"
