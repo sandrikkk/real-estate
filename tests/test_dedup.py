@@ -867,6 +867,15 @@ class TestIndexNewListings(unittest.TestCase):
         mock_compute.assert_not_called()
 
 
+def load_tests(loader, tests, pattern):
+    """unittest discover only collects TestCase classes, so the module-level tests above never
+    ran in the suite (or in the deploy gate). Add each of them as a case."""
+    for name, func in sorted(globals().items()):
+        if name.startswith("test_") and callable(func):
+            tests.addTest(unittest.FunctionTestCase(func))
+    return tests
+
+
 if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("  Running Duplicate Detector Tests (v2)")
