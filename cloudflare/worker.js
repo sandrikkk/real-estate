@@ -2630,11 +2630,11 @@ function duplicateLines(dups, currPrice) {
     let diffStr = "";
     if (currPrice > 0 && dupPrice > 0) {
       const delta = Math.round(dupPrice - currPrice);
-      if (delta < 0) diffStr = ` (<b>-$${Math.abs(delta).toLocaleString()} უფრო იაფად!</b>)`;
-      else if (delta > 0) diffStr = ` (+$${delta.toLocaleString()} უფრო ძვირად)`;
+      if (delta < 0) diffStr = ` (<b>-$${Math.abs(delta).toLocaleString("en-US")} უფრო იაფად!</b>)`;
+      else if (delta > 0) diffStr = ` (+$${delta.toLocaleString("en-US")} უფრო ძვირად)`;
       else diffStr = " (იგივე ფასი)";
     }
-    lines.push(`${i + 1}. <a href="${dup.url || "#"}">${dupSrc}</a> — <b>$${dupPrice.toLocaleString()}</b>${diffStr} | ${dupOwner}${dupPhonePart}${duplicateSureness(dup)}`);
+    lines.push(`${i + 1}. <a href="${dup.url || "#"}">${dupSrc}</a> — <b>$${dupPrice.toLocaleString("en-US")}</b>${diffStr} | ${dupOwner}${dupPhonePart}${duplicateSureness(dup)}`);
   }
   return lines;
 }
