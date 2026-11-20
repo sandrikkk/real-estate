@@ -552,6 +552,13 @@ async function handleMessage(msg, token, kv, env) {
     };
   }
 
+  // A command cancels a pending price or area input. Without this, every command, /start
+  // included, got "არასწორი ფორმატი" until two numbers were sent.
+  if (user.state && text.startsWith("/")) {
+    user.state = null;
+    await kv.put(userKey, JSON.stringify(user));
+  }
+
   // Check state: awaiting price or area input
   if (user.state === "awaiting_price") {
     const nums = text.match(/\d+/g);
