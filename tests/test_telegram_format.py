@@ -49,7 +49,9 @@ class TestTelegramFormatting(unittest.TestCase):
         self.assertIn("🏢 სართული: <b>4/9</b>", msg)
 
         # 5. Direct link
-        self.assertIn('🔗 <a href="https://www.myhome.ge/ka/pr/9999">განცხადების ლინკი (MyHome.ge)</a>', msg)
+        self.assertIn(
+            '🔗 <a href="https://www.myhome.ge/ka/pr/9999">განცხადების ლინკი (MyHome.ge)</a>', msg
+        )
 
         # 6. One-tap call link
         self.assertIn('📞 <a href="tel:+995599123456">+995 599 12 34 56</a>', msg)
@@ -127,6 +129,57 @@ class TestTelegramFormatting(unittest.TestCase):
         }
         msg_with_dup = self.notifier.format_message(listing, dup_info=dup_info)
         self.assertEqual(msg_with_dup.count("📉 წინა ფასი:"), 1)
+
+    def test_send_notification_passes_reply_markup_with_watch_button(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        async def _test():
+            notifier = TelegramNotifier(bot_token="test_token", chat_id="123")
+            bot_mock = AsyncMock()
+            notifier.bot = bot_mock
+
+            listing_with_photo = PropertyListing(
+                id="myhome_12345",
+                source="myhome",
+                source_id="12345",
+                title="Apt",
+                price_usd=50000,
+                area_m2=45,
+                url="https://myhome.ge/pr/12345",
+                images=["https://example.com/1.jpg"],
+            )
+            await notifier.send_notification(listing_with_photo)
+            self.assertEqual(bot_mock.send_photo.call_count, 1)
+            _, kwargs = bot_mock.send_photo.call_args
+            self.assertIn("reply_markup", kwargs)
+            markup = kwargs["reply_markup"]
+            self.assertIsNotNone(markup)
+            self.assertEqual(markup.inline_keyboard[0][0].callback_data, "w:myhome_12345")
+            self.assertEqual(markup.inline_keyboard[0][0].text, "👁 თვალყური ადევნე")
+
+            # Text-only send (no images)
+            bot_mock.reset_mock()
+            listing_no_photo = PropertyListing(
+                id="ss_ge_67890",
+                source="ss_ge",
+                source_id="67890",
+                title="Apt",
+                price_usd=50000,
+                area_m2=45,
+                url="https://ss.ge/pr/67890",
+                images=[],
+            )
+            await notifier.send_notification(listing_no_photo)
+            self.assertEqual(bot_mock.send_message.call_count, 1)
+            _, kwargs = bot_mock.send_message.call_args
+            self.assertIn("reply_markup", kwargs)
+            markup = kwargs["reply_markup"]
+            self.assertIsNotNone(markup)
+            self.assertEqual(markup.inline_keyboard[0][0].callback_data, "w:ss_ge_67890")
+            self.assertEqual(markup.inline_keyboard[0][0].text, "👁 თვალყური ადევნე")
+
+        asyncio.run(_test())
 
 
 if __name__ == "__main__":

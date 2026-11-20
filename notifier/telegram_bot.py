@@ -6,7 +6,7 @@ from typing import Optional
 from core.models import PropertyListing
 
 try:
-    from telegram import Bot
+    from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.constants import ParseMode
 
     TELEGRAM_AVAILABLE = True
@@ -171,7 +171,9 @@ class TelegramNotifier:
         # In-place price drop on an existing listing (when not already rendered as a duplicate cluster new lowest price)
         in_place_prev = getattr(listing, "previous_price_usd", None)
         has_dup_strictly_lower = bool(
-            dup_info and dup_info.get("duplicate_count", 0) > 1 and dup_info.get("is_strictly_lower")
+            dup_info
+            and dup_info.get("duplicate_count", 0) > 1
+            and dup_info.get("is_strictly_lower")
         )
         if (
             in_place_prev is not None
@@ -187,9 +189,7 @@ class TelegramNotifier:
                 else f"${in_place_prev:,.2f}"
             )
             drop_str = (
-                f"${price_drop:,.0f}"
-                if price_drop == int(price_drop)
-                else f"${price_drop:,.2f}"
+                f"${price_drop:,.0f}" if price_drop == int(price_drop) else f"${price_drop:,.2f}"
             )
             lines.append("")
             lines.append("🔻 <b>ფასი დააკლდა!</b>")
@@ -304,6 +304,14 @@ class TelegramNotifier:
         if not self.bot or not recipient_id:
             return False
 
+        reply_markup = None
+        if TELEGRAM_AVAILABLE and listing.id:
+            cb_data = f"w:{listing.id}"
+            if len(cb_data.encode("utf-8")) <= 64:
+                reply_markup = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("👁 თვალყური ადევნე", callback_data=cb_data)]]
+                )
+
         try:
             # Send photo with caption if image is available
             if listing.images and len(listing.images) > 0:
@@ -316,6 +324,7 @@ class TelegramNotifier:
                             photo=first_image,
                             caption=caption_html,
                             parse_mode=ParseMode.HTML,
+                            reply_markup=reply_markup,
                         )
                     )
                     await asyncio.sleep(0.2)
@@ -330,12 +339,42 @@ class TelegramNotifier:
                     text=message_html,
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=False,
+                    reply_markup=reply_markup,
                 )
             )
             await asyncio.sleep(0.2)
             return True
         except Exception as e:
             print(f"[Telegram Notification Error for {recipient_id}]: {e}")
+            return False
+
+    async def send_watch_update(
+        self,
+        chat_id: str,
+        text_html: str,
+        reply_markup=None,
+    ) -> bool:
+        """Sends a watchlist update notification to a specific chat."""
+        if self.enable_console or not self.bot:
+            _safe_print(f"[WATCH UPDATE for {chat_id}]:\n{text_html}")
+
+        if not self.bot or not chat_id:
+            return False
+
+        try:
+            await self._call_with_retry_after(
+                lambda: self.bot.send_message(
+                    chat_id=chat_id,
+                    text=text_html,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                    reply_markup=reply_markup,
+                )
+            )
+            await asyncio.sleep(0.2)
+            return True
+        except Exception as e:
+            print(f"[Telegram Watch Update Error for {chat_id}]: {e}")
             return False
 
     async def send_market_report(self, report_text: str) -> bool:

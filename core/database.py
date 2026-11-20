@@ -149,6 +149,22 @@ XRAY_TABLES_DDL = (
     PHOTO_HASH_ATTEMPTS_DDL,
 )
 
+WATCHLIST_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS watchlist (
+        chat_id TEXT NOT NULL,
+        listing_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        last_price_usd REAL,
+        created_at TEXT NOT NULL,
+        last_checked_at TEXT,
+        ended_at TEXT,
+        PRIMARY KEY (chat_id, listing_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist(status)",
+)
+
 # Columns added after the X-Ray tables first shipped. CREATE TABLE IF NOT EXISTS never adds a
 # column to a table that already exists, and production D1 got the first version on 2026-11-07.
 XRAY_ADDED_COLUMNS = (
@@ -504,6 +520,8 @@ class DatabaseEngine:
                     )
                     for stmt in XRAY_TABLES_DDL:
                         cursor.execute(stmt)
+                    for stmt in WATCHLIST_DDL:
+                        cursor.execute(stmt)
                     _add_missing_xray_columns(cursor)
                 except Exception as e:
                     print(f"[D1 Migration Warning]: {e}")
@@ -633,6 +651,8 @@ class DatabaseEngine:
                     "CREATE INDEX IF NOT EXISTS idx_properties_group_id ON properties(group_id)"
                 )
                 for stmt in XRAY_TABLES_DDL:
+                    cursor.execute(stmt)
+                for stmt in WATCHLIST_DDL:
                     cursor.execute(stmt)
                 _add_missing_xray_columns(cursor)
 
