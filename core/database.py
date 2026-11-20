@@ -351,6 +351,7 @@ class DatabaseEngine:
         self.seen_ids_path = Path(self.db_path).parent / "seen_ids.txt"
         self._seen_ids = self._load_seen_ids()
         self._seen_prices: Dict[str, float] = {}
+        self._seen_meta: Dict[str, tuple[Optional[str], Optional[float]]] = {}
         self.user_seen_path = Path(self.db_path).parent / "user_seen.json"
         self._user_seen: Dict[str, Set[str]] = defaultdict(set)
         self._load_user_seen()
@@ -759,6 +760,15 @@ class DatabaseEngine:
 
         return [lid for lid in listing_ids if lid not in self._seen_ids and lid not in seen_in_db]
 
+    def _remember_first_seen(self, item: PropertyListing) -> None:
+        """Caches what classify_scraped_listings would read back for a listing saved now, since
+        the next classify call skips ids it already knows (the app.py loop)."""
+        if not item.id or item.id in self._seen_meta:
+            return
+        scraped_at = item.scraped_at.isoformat() if item.scraped_at else None
+        initial = item.initial_price_usd or item.price_usd
+        self._seen_meta[item.id] = (scraped_at, float(initial) if initial and initial > 0 else None)
+
     def classify_scraped_listings(self, listings: list) -> tuple[list, dict]:
         """Batch-classifies scraped listings into genuinely new listings and existing listings
         whose price_usd dropped strictly below the stored price_usd (with 0 extra D1 row reads)."""
@@ -773,22 +783,45 @@ class DatabaseEngine:
                 for i in range(0, len(to_check), CHUNK_SIZE):
                     chunk = to_check[i : i + CHUNK_SIZE]
                     placeholders = ",".join(["?"] * len(chunk))
-                    sql = f"SELECT id, price_usd FROM properties WHERE id IN ({placeholders})"
+                    sql = f"SELECT id, price_usd, scraped_at, initial_price_usd FROM properties WHERE id IN ({placeholders})"
                     cursor.execute(sql, tuple(chunk))
                     for row in cursor.fetchall():
                         lid = row["id"] if hasattr(row, "__getitem__") else row[0]
                         raw_price = row["price_usd"] if hasattr(row, "__getitem__") else row[1]
+                        scraped_at = row["scraped_at"] if hasattr(row, "__getitem__") else row[2]
+                        raw_init_price = (
+                            row["initial_price_usd"] if hasattr(row, "__getitem__") else row[3]
+                        )
                         self._seen_ids.add(lid)
                         if raw_price is not None:
                             try:
                                 self._seen_prices[lid] = float(raw_price)
                             except (TypeError, ValueError):
                                 pass
+                        init_price = None
+                        if raw_init_price is not None:
+                            try:
+                                p = float(raw_init_price)
+                                if p > 0:
+                                    init_price = p
+                            except (TypeError, ValueError):
+                                pass
+                        self._seen_meta[lid] = (
+                            str(scraped_at) if scraped_at is not None else None,
+                            init_price,
+                        )
 
         candidates = []
         price_drops = {}
         for item in listings:
             lid = item.id
+            if lid in self._seen_meta:
+                stored_scraped_at, stored_init_price = self._seen_meta[lid]
+                if stored_scraped_at is not None:
+                    item.first_seen_at = stored_scraped_at
+                if stored_init_price is not None:
+                    item.initial_price_usd = stored_init_price
+
             stored_price = self._seen_prices.get(lid)
             if stored_price is None and lid not in self._seen_ids:
                 candidates.append(item)
@@ -870,6 +903,7 @@ class DatabaseEngine:
         self._append_seen_id(listing.id)
         if listing.id and listing.price_usd and listing.price_usd > 0:
             self._seen_prices[listing.id] = float(listing.price_usd)
+        self._remember_first_seen(listing)
         with self._connection() as conn:
             cursor = conn.cursor()
             try:
@@ -965,6 +999,7 @@ class DatabaseEngine:
             self._append_seen_id(item.id)
             if item.id and item.price_usd and item.price_usd > 0:
                 self._seen_prices[item.id] = float(item.price_usd)
+            self._remember_first_seen(item)
 
         sql = """
             INSERT INTO properties (
